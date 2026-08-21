@@ -1,0 +1,19 @@
+{
+  "name": "gigahack-test",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Automated test suite for the GigaHack MV/MZ mod menu. Three engines, one harness.",
+  "scripts": {
+    "test": "node run.js",
+    "test:mv": "node run.js --engine=mv",
+    "test:mv-modded": "node run.js --engine=mv-modded",
+    "test:all": "node lint.js && node run.js && node run.js --engine=mv && node run.js --engine=mv-modded",
+    "lint": "node lint.js"
+  },
+  "devDependencies": {
+    "playwright": "^1.56.1"
+  },
+  "dependencies": {
+    "acorn": "^8.18.0"
+  }
+}

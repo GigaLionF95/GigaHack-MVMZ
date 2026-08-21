@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.tar.gz
+*.zip
+.DS_Store
+gigahack-test/shot-*.png
+gigahack-test/shots-*/
+gigahack-test/node_modules/

@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>GigaHack harness (MV)</title>
+  <style>
+    html,body{margin:0;padding:0;background:#101010;height:100%;overflow:hidden}
+    #GameCanvas{position:absolute;left:0;top:0;
+      background:repeating-linear-gradient(135deg,#17181a 0 8px,#1a1b1d 8px 16px)}
+  </style>
+</head>
+<body>
+<!-- The engine sets the canvas z-index INLINE (MV rpg_core.js:2489,
+     MZ rmmz_core.js:891). It is inline here for the same reason: on MV,
+     Graphics._modifyExistingElements zeroes every positive inline z-index in
+     the document at boot, and a stylesheet rule would not be a test of it. -->
+<canvas id="GameCanvas" width="1280" height="720" style="z-index:1"></canvas>
+
+<!-- Stock RPG Maker MV 1.6.1. No third-party plugins.
+     Load order is core -> engine -> [plugins] -> fixtures -> the 26 modules,
+     and it is spelled out here rather than implied by one file's line numbers. -->
+<script src="stubs/core.js"></script>
+<script src="stubs/engine-mv.js"></script>
+<script src="stubs/fixtures.js"></script>
+
+<script src="../gigahack/js/plugins/GigaHack_Core.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Caps.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Store.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Profile.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_UI.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Shell.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Hooks.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Tabs.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Compat.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Index.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Vars.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Inv.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Party.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Backup.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Map.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Events.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Battle.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Text.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Forge.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Player.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Encounters.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Gallery.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Steam.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Save.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Console.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Boot.js"></script>
+
+<!-- SceneManager.run + the boot scene, after the mod's aliases are installed. -->
+<script>window.__engineBoot();</script>
+</body>
+</html>
