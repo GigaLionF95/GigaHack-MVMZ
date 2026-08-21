@@ -2,6 +2,7 @@
 # Publish GigaHack MV/MZ to GitHub: commit, push, tag, and cut the release.
 #
 #   ./publish.sh
+#   ./publish.sh --fast     skip the browser suite (needs Playwright installed)
 #
 # Run this from inside this folder, on a machine logged in to GitHub. It does
 # not carry any credentials of its own — it uses your git config and your `gh`
@@ -13,6 +14,11 @@ set -euo pipefail
 REPO="GigaLionF95/GigaHack-MVMZ"
 TAG="v2.0.0"
 TITLE="GigaHack MV/MZ 2.0.0"
+
+# Arguments are passed straight through to build-release.sh. The only one that
+# matters is --fast, which skips the browser suite when Playwright and its
+# Chromium are not installed on this machine. Everything else still runs.
+BUILD_ARGS="$*"
 
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -88,7 +94,7 @@ git update-index --refresh >/dev/null 2>&1 || true
 # git that does not match the source it claims to come from is worse than no
 # archive at all.
 step "Building the release archives"
-bash ./build-release.sh
+bash ./build-release.sh $BUILD_ARGS
 
 VER="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' gigahack/manifest.json | head -1)"
 [ "v$VER" = "$TAG" ] || die "gigahack/manifest.json says $VER but this script is set to publish $TAG. Fix one of them."

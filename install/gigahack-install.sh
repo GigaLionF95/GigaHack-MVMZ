@@ -187,11 +187,26 @@ build_entries() {
 }
 
 insert_block() {
-	# $1 = stripped plugins.js content on stdin, writes the new file to stdout.
-	# Uses awk over the whole file as one string so the last ']' is
-	# unambiguous even on a minified single-line file.
-	entries="$1"
-	awk -v entries="$entries" '
+	# $1 = a file holding the entries block
+	# $2 = a file holding the stripped plugins.js
+	# Writes the new file to stdout.
+	#
+	# The entries arrive as a FILE, not through `awk -v`. Passing them as a
+	# variable works on GNU awk and fails on every other implementation:
+	# BSD awk — which is what macOS ships as /usr/bin/awk — rejects a literal
+	# newline inside a -v assignment outright, with
+	#
+	#     awk: newline in string // >>> GigaHack 2.0.... at source line 1
+	#
+	# and exits 2. The installer then refused to touch plugins.js, correctly,
+	# and every macOS install failed. Reading two files with NR == FNR is
+	# portable across gawk, BSD awk, mawk and busybox awk alike.
+	#
+	# awk is used at all — rather than sed or shell — because the whole file is
+	# read into one string, so the last ']' is unambiguous even on a minified
+	# single-line plugins.js.
+	awk '
+		NR == FNR { entries = entries $0 "\n"; next }
 		{ buf = buf $0 "\n" }
 		END {
 			# Find the last "]" in the file.
@@ -220,13 +235,14 @@ insert_block() {
 				}
 				break
 			}
-			# The newline before `tail` is load-bearing: the END marker is a
-			# line comment, and $(...) strips trailing newlines, so without it
-			# the closing "];" lands on the commented line and the whole array
-			# disappears. The file still looks right in a diff.
-			printf "%s%s%s\n%s", head, sep, entries, tail
+			# `entries` already ends in a newline, having been read line by
+			# line. That newline is load-bearing: the END marker is a line
+			# comment, so without it the closing "];" lands on the commented
+			# line and the whole array disappears while the file still looks
+			# right in a diff.
+			printf "%s%s%s%s", head, sep, entries, tail
 		}
-	'
+	' "$1" "$2"
 }
 
 #-----------------------------------------------------------------------------
@@ -335,11 +351,14 @@ do_install() {
 	step "$([ "$dry" = 1 ] && echo would copy || echo copied) $n modules into js/plugins/"
 
 	# 3. Rewrite plugins.js.
-	entries="$(build_entries)"
 	tmp="$pj.gigahack-tmp$$"
-	if ! strip_block "$pj" | insert_block "$entries" > "$tmp" 2>"$tmp.err"; then
+	ent="$pj.gigahack-ent$$"
+	strip="$pj.gigahack-strip$$"
+	build_entries > "$ent"
+	strip_block "$pj" > "$strip"
+	if ! insert_block "$ent" "$strip" > "$tmp" 2>"$tmp.err"; then
 		err="$(cat "$tmp.err" 2>/dev/null || true)"
-		rm -f "$tmp" "$tmp.err"
+		rm -f "$tmp" "$tmp.err" "$ent" "$strip"
 		case "$err" in
 			*GIGAHACK_NO_ARRAY*)
 				bad "js/plugins.js has no ']' — it is not the array this expects. Left untouched." ;;
@@ -350,7 +369,7 @@ do_install() {
 		bad "Add the 26 GigaHack entries by hand, or restore plugins.js$BACKUP_SUFFIX and report this."
 		failed=$((failed + 1)); return 1
 	fi
-	rm -f "$tmp.err"
+	rm -f "$tmp.err" "$ent" "$strip"
 
 	# 4. Sanity-check the result BEFORE replacing anything. A plugins.js that
 	#    does not parse is a red screen on next launch.

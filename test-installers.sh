@@ -320,6 +320,79 @@ check "$([ "$(count_gh "$BED/My Game 1.2 mac/js/plugins.js")" = 0 ] && echo 1 ||
 
 echo
 #-----------------------------------------------------------------------------
+# Every check above passed on GNU awk and every one of them failed on macOS,
+# because the installer passed a 28-line block through `awk -v` — which BSD
+# awk, the awk macOS ships, rejects outright with "newline in string ... at
+# source line 1". A suite that exercises one awk implementation is a suite that
+# tests one machine.
+#
+# So: re-run a full install / verify / uninstall cycle under every awk this
+# machine actually has. On a Mac that is BSD awk, which is the one that
+# matters; on a Linux box it is usually gawk plus whatever else is installed.
+# Nothing is skipped silently — each implementation found is named.
+echo "-- portability across awk implementations"
+
+# Static first, because it holds even where only one awk exists: multi-line
+# data must never reach `awk -v`.
+if grep -nE "awk +-v +[A-Za-z_]+=\"\\\$" "$INSTALLER" >/dev/null 2>&1; then
+	OFFENDERS="$(grep -nE 'awk +-v +[A-Za-z_]+=' "$INSTALLER" | head -5)"
+	fail "the installer passes a shell variable through awk -v" "$OFFENDERS
+        BSD awk rejects a literal newline in a -v assignment. Read the data as a
+        file with NR == FNR instead."
+else
+	pass "the installer never passes a shell variable through awk -v"
+fi
+
+SHIM="$BED/awkshim"
+AWKS=""
+for cand in awk gawk mawk original-awk busybox; do
+	command -v "$cand" >/dev/null 2>&1 || continue
+	# busybox is only interesting if it actually provides awk.
+	if [ "$cand" = busybox ]; then
+		busybox awk 'BEGIN{exit 0}' >/dev/null 2>&1 || continue
+	fi
+	AWKS="$AWKS $cand"
+done
+
+for a in $AWKS; do
+	[ "$a" = awk ] && continue            # already covered by everything above
+	mkdir -p "$SHIM"
+	if [ "$a" = busybox ]; then
+		printf '#!/bin/sh\nexec busybox awk "$@"\n' > "$SHIM/awk"
+	else
+		printf '#!/bin/sh\nexec %s "$@"\n' "$(command -v "$a")" > "$SHIM/awk"
+	fi
+	chmod +x "$SHIM/awk"
+
+	build_bed
+	if PATH="$SHIM:$PATH" "$INSTALLER" "$BED/pretty-mz" >/dev/null 2>&1; then
+		ok=1
+	else
+		ok=0
+	fi
+	check "$ok" "$a: the installer completes"
+	if [ "$ok" = 1 ]; then
+		check "$([ "$(count_gh "$BED/pretty-mz/js/plugins.js")" = 26 ] && echo 1 || echo 0)" "$a: all 26 modules are listed"
+		check "$(last_is_gh "$BED/pretty-mz/js/plugins.js")" "$a: GigaHack is last"
+		holes=$(parse "$BED/pretty-mz/js/plugins.js" | node -e '
+			var d=""; process.stdin.on("data",function(c){d+=c}).on("end",function(){
+				console.log(JSON.parse(d).filter(function(p){ return !p || !p.name }).length);
+			});')
+		check "$([ "$holes" = 0 ] && echo 1 || echo 0)" "$a: no holes in the array"
+		PATH="$SHIM:$PATH" "$INSTALLER" --uninstall "$BED/pretty-mz" >/dev/null 2>&1
+		check "$([ "$(count_gh "$BED/pretty-mz/js/plugins.js")" = 0 ] && echo 1 || echo 0)" "$a: uninstall is clean"
+	fi
+	rm -rf "$SHIM"
+done
+
+if [ -z "$(echo $AWKS | sed 's/awk//g' | tr -d ' ')" ]; then
+	printf '  NOTE  only one awk on this machine (%s) — the cross-implementation\n' "$(awk --version 2>&1 | head -1 | cut -c1-40)"
+	printf '        checks could not run. Install original-awk (the BSD awk macOS\n'
+	printf '        ships) to cover the case that broke every macOS install.\n'
+fi
+
+echo
+#-----------------------------------------------------------------------------
 echo "-- discovery finds games without being told where they are"
 build_bed
 out=$(cd "$BED" && "$INSTALLER" --dry-run 2>&1)

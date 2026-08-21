@@ -63,6 +63,16 @@ forces 644 and verification opens every file rather than stat-ing it.
 and the dedup KEY differs: MZ uses the basename, MV the full entry. Both are
 checked.
 
+**macOS ships BSD awk, and it is not GNU awk.** The installer passed its
+28-line entries block through `awk -v`, which gawk accepts and BSD awk rejects
+outright — `newline in string ... at source line 1`, exit 2. All 101 installer
+checks passed in a Linux container and every single one failed on the
+maintainer's Mac. Data goes into awk as a FILE, read with `NR == FNR`, never
+through `-v`. The suite now re-runs a full install cycle under every awk on the
+machine and statically forbids `awk -v` in the installer; `apt-get install
+original-awk` gets you the BSD awk to test against. macOS also ships bash 3.2,
+so no `mapfile`, no `declare -A`, no `${var,,}`.
+
 **Paths have spaces in them.** `for t in $TARGETS` word-splits on the default
 IFS, so "A New Dawn 5.3.2 mac" became three targets, each confidently reported
 as "not a game folder" while the real one was never tried. Found on the first
@@ -79,6 +89,20 @@ Knightess. `isCustom` tests library membership, never `id >= base` — a
 threshold test misreports the game's own rows on any larger game.
 
 ## 4. Running everything
+
+The browser suite needs Playwright and its Chromium, which a fresh clone does
+not have:
+
+```sh
+cd gigahack-test && npm install && npx playwright install chromium
+```
+
+`build-release.sh` checks for both before it runs the suite and prints that
+command when they are missing. It did not, at first — a missing dev dependency
+came out as the single word `FAILED` with nothing after it, which is the exact
+class of defect this project exists to prevent, committed by its own build
+script. `./build-release.sh --fast` and `./publish.sh --fast` skip the browser
+suite knowingly; the lint, manifest, parse and installer checks still run.
 
 ```sh
 node gigahack-test/lint.js               # 27 files, four rules

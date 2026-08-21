@@ -19,6 +19,7 @@ VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' gig
 [ -n "$VERSION" ] || { echo "could not read the version from gigahack/manifest.json"; exit 1; }
 
 DIST="$HERE/dist"
+DIST_LOG="$HERE/dist/logs"
 FAST=0
 [ "${1:-}" = "--fast" ] && FAST=1
 
@@ -63,32 +64,91 @@ echo "  $n files parse"
 #-----------------------------------------------------------------------------
 if [ "$FAST" -eq 0 ]; then
 	say "4. Browser suite, all three engines"
+
+	# Preflight. The suite drives a real Chromium through Playwright, and on a
+	# fresh clone neither is present. Without this check the first thing the
+	# maintainer sees is the word FAILED and nothing else — which is exactly
+	# the silent failure this project exists to avoid, committed by its own
+	# build script.
+	MISSING=""
+	( cd gigahack-test && node -e "require.resolve('playwright')" ) >/dev/null 2>&1 || MISSING="module"
+	if [ -z "$MISSING" ]; then
+		# The module can be installed while its browser binary is not; that
+		# fails later and differently, so check it separately.
+		( cd gigahack-test && node -e "
+			var p = require('playwright');
+			var exe = p.chromium.executablePath();
+			require('fs').accessSync(exe);
+		" ) >/dev/null 2>&1 || MISSING="browser"
+	fi
+	if [ -n "$MISSING" ]; then
+		echo
+		if [ "$MISSING" = "module" ]; then
+			echo "  The test suite's dependencies are not installed."
+			echo
+			echo "      cd gigahack-test && npm install && npx playwright install chromium"
+		else
+			echo "  Playwright is installed but its Chromium binary is not."
+			echo
+			echo "      cd gigahack-test && npx playwright install chromium"
+		fi
+		echo
+		echo "  That download is a few hundred megabytes and only needs doing once."
+		echo
+		echo "  To build and publish without running the browser suite:"
+		echo
+		echo "      ./build-release.sh --fast"
+		echo
+		echo "  The lint, the manifest check, the parse check and the 101 installer"
+		echo "  checks all still run under --fast. Only the 1131 browser checks are"
+		echo "  skipped, so know what you are choosing before you choose it."
+		die "the browser suite cannot run"
+	fi
+
 	# The exit code is the contract; the summary line is for the reader.
 	# Parsing the output for a count instead would pass a suite that printed
 	# a summary and then failed on the way out.
 	for e in mz mv mv-modded; do
 		printf '  %-10s ' "$e"
-		if ( cd gigahack-test && node run.js --engine="$e" ) > "/tmp/gigahack-suite-$e.txt" 2>&1; then
-			grep -E 'checks passed' "/tmp/gigahack-suite-$e.txt" | tail -1
+		LOG="$DIST_LOG/suite-$e.txt"
+		mkdir -p "$DIST_LOG"
+		if ( cd gigahack-test && node run.js --engine="$e" ) > "$LOG" 2>&1; then
+			grep -E 'checks passed' "$LOG" | tail -1
 		else
 			echo "FAILED"
-			grep -E '^  FAIL' "/tmp/gigahack-suite-$e.txt" | head -10 | sed 's/^/    /'
-			die "the browser suite failed on $e — full output in /tmp/gigahack-suite-$e.txt"
+			echo
+			# Show the failing checks when there are any, and the raw tail when
+			# there are not — a crash produces no FAIL lines at all, and the
+			# earlier version of this printed nothing in that case.
+			if grep -qE '^  FAIL' "$LOG"; then
+				grep -E '^  FAIL' "$LOG" | head -10 | sed 's/^/    /'
+			else
+				tail -25 "$LOG" | sed 's/^/    /'
+			fi
+			echo
+			die "the browser suite failed on $e — full output in $LOG"
 		fi
 	done
 else
 	say "4. Browser suite — SKIPPED (--fast)"
+	echo "  The lint, manifest, parse and installer checks still run."
+	echo "  Not run: 1131 browser checks across three engines."
 fi
 
 #-----------------------------------------------------------------------------
 say "5. Installer suite"
-./test-installers.sh > /tmp/gigahack-installer-out.txt 2>&1 || {
-	tail -20 /tmp/gigahack-installer-out.txt; die "the installer suite failed"; }
-tail -1 /tmp/gigahack-installer-out.txt | sed 's/^/  /'
+mkdir -p "$DIST_LOG"
+./test-installers.sh > "$DIST_LOG/installers.txt" 2>&1 || {
+	grep -E '^  FAIL' "$DIST_LOG/installers.txt" | head -10 | sed 's/^/    /'
+	tail -5 "$DIST_LOG/installers.txt" | sed 's/^/    /'
+	die "the installer suite failed — full output in $DIST_LOG/installers.txt"; }
+tail -1 "$DIST_LOG/installers.txt" | sed 's/^/  /'
 
 #-----------------------------------------------------------------------------
 say "6. Building archives"
-rm -rf "$DIST"
+# Keep the logs written by steps 4 and 5 — clearing DIST wholesale here used to
+# delete the very file the failure message had just pointed at.
+find "$DIST" -mindepth 1 -maxdepth 1 ! -name logs -exec rm -rf {} + 2>/dev/null || true
 mkdir -p "$DIST/staging"
 STAGE="$DIST/staging/GigaHack-$VERSION"
 mkdir -p "$STAGE"
@@ -160,9 +220,9 @@ mkgame() {
 mkgame "$BED/mzgame" MZ
 mkgame "$BED/mvgame" MV
 
-"$PKG/gigahack-install.sh" "$BED/mzgame" "$BED/mvgame" > /tmp/gigahack-archive-install.txt 2>&1 || {
-	cat /tmp/gigahack-archive-install.txt; die "installing from the archive failed"; }
-grep -c "verified" /tmp/gigahack-archive-install.txt | sed 's/^/  verified installs: /'
+"$PKG/gigahack-install.sh" "$BED/mzgame" "$BED/mvgame" > "$DIST_LOG/archive-install.txt" 2>&1 || {
+	cat "$DIST_LOG/archive-install.txt"; die "installing from the archive failed"; }
+grep -c "verified" "$DIST_LOG/archive-install.txt" | sed 's/^/  verified installs: /'
 
 for g in mzgame mvgame; do
 	node -e '
