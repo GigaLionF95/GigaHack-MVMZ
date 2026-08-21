@@ -115,13 +115,15 @@ git add -A
 if git diff --cached --quiet; then
     echo "Nothing to commit — the tree already matches HEAD."
 else
-    git commit -m "GigaHack $VER
+    git commit -m "GigaHack MV/MZ $VER
 
-A mod menu overlay for Star Knightess Aura 1.3.3: six tabs, 40 panels,
-23 plugins, and three platform installers.
+A mod menu for any RPG Maker MV or MZ game. 26 modules, six tabs, an engine
+capability table, a per-game profile system, a boot index, and a plugin
+compatibility layer that names what is degrading a control and why.
 
-626 automated checks against the real overlay, 27 installer checks
-against synthetic game trees."
+1131 checks across stock MZ, stock MV and MV with a modelled third-party
+plugin stack, plus 122 installer checks and a build lint. Verified live
+against two real games."
 fi
 
 # A commit made by an earlier run under the wrong identity is still local — the
