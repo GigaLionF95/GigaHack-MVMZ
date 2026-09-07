@@ -51,7 +51,7 @@ twenty-six; `--uninstall` removes all of them.
 
 ## What is new in 2.1.0
 
-**Nine new modules, twenty-two new panels.** Four of them publish services the
+**Nine new modules, twenty-two new panels**, bringing the menu to 67. Four of them publish services the
 rest build on — `$.watch`, `$.journal`, `$.interp`, `$.rng` and `$.snap`.
 
 *Answering questions the engine cannot.* **Watchpoints** name the map and the

@@ -10,7 +10,7 @@ would otherwise relearn the hard way, and what is left.
 ## 1. What it is
 
 A mod menu for any RPG Maker MV or MZ game. 35 modules, ~51,100 lines, six
-tabs, 62 panels. Descended from GigaHack 1.0, which worked on exactly one MZ
+tabs, 67 panels. Descended from GigaHack 1.0, which worked on exactly one MZ
 game and is a separate, frozen repo (`GigaLionF95/GigaHack-SKA`).
 
 Delivered by appending one entry per module to the game's own `js/plugins.js`.

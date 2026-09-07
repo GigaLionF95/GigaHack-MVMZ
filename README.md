@@ -10,7 +10,7 @@ differences are asked for as capabilities rather than read off a version
 string, and everything a game can be that the mod cannot handle is reported by
 name rather than left to fail quietly.
 
-35 plugin files, about 51,100 lines, six tabs, 62 panels. MIT licensed; see
+35 plugin files, about 51,100 lines, six tabs, 67 panels. MIT licensed; see
 [`NOTICE.md`](NOTICE.md). RPG Maker is a product of Gotcha Gotcha Games and
 KADOKAWA — this is an unofficial, unaffiliated tool.
 
