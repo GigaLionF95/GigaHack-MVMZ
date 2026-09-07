@@ -136,6 +136,20 @@ sitting in one of them. `build-release.sh` now neutralises ownership (bsdtar and
 GNU tar spell it differently, both are handled) AND fails the build if any
 header still carries a name. Zip stores no owner and needs nothing.
 
+The guard itself is the second lesson. Written first as
+`tar tvzf | awk '{print $2}'`, it read the LINK COUNT — which is 0 on every
+entry of every archive — so it passed on the very archive that had 126 copies
+of the name in it. Fields 3 and 4 are the owner and group. A check that cannot
+fail is worse than no check, so mutation-verify a guard against something known
+to be bad before believing it: this one is now checked both ways, against a
+dirty archive and a clean one.
+
+The 2.0.0 assets were repaired in place rather than rebuilt: their PUBLISHED
+bytes were re-tarred with ownership zeroed and everything else — names, modes,
+mtimes, order, content — carried across, then proved unchanged by extracting
+both and diffing the trees. Rebuilding from the tag would have changed the
+archive for a dozen reasons unrelated to the leak.
+
 **THE STUBS ARE MODELS, NOT COPIES, AND THAT IS A LICENCE QUESTION AS WELL AS A
 STYLE ONE.** The engines' JavaScript belongs to their publisher and is licensed
 for the games you make with the editor, not for redistribution in a public MIT

@@ -231,11 +231,15 @@ anon_tar "$DIST/GigaHack-MVMZ-$VERSION-source.tar.gz" \
 # name nobody meant to publish.
 for a in "$DIST/GigaHack-MVMZ-$VERSION.tar.gz" "$DIST/GigaHack-MVMZ-$VERSION-source.tar.gz"; do
 	[ -f "$a" ] || continue
-	OWNERS="$(tar tvzf "$a" | awk '{print $2}' | sort -u | tr '\n' ' ')"
-	case "$OWNERS" in
-		*[!0\ ]*) die "archive $a carries owner names in its headers: $OWNERS
-This publishes the build account to everyone who downloads it. See anon_tar above." ;;
-	esac
+	# Fields 3 and 4, not 2: `tar tvzf` prints permissions, LINK COUNT, then the
+	# owner and group. Reading field 2 sees the link count, which is 0 on every
+	# entry of every archive — a guard that cannot fail, which is worse than no
+	# guard at all. Mutation-checked against an archive known to carry a name.
+	OWNERS="$(tar tvzf "$a" | awk '{print $3"/"$4}' | sort -u | tr '\n' ' ')"
+	if [ "$(printf '%s' "$OWNERS" | tr -d ' ')" != "0/0" ]; then
+		die "archive $a carries owner names in its headers: $OWNERS
+This publishes the build account to everyone who downloads it. See anon_tar above."
+	fi
 done
 
 ls -la "$DIST"/*.tar.gz "$DIST"/*.zip 2>/dev/null | sed 's/^/  /'
