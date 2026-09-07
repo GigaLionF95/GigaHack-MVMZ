@@ -2,7 +2,7 @@
    GigaHack test harness — stubs/x-input-mz.js
    INPUT AND CONFIG: the DIVERGENT MZ surface. MZ 1.9.0 only.
 
-   Copied from /root/work/mz/js/rmmz_core.js, rmmz_managers.js, rmmz_scenes.js.
+   Modelled on MZ rmmz_core.js, rmmz_managers.js, rmmz_scenes.js.
    Loaded IMMEDIATELY AFTER engine-mz.js, which is after core.js and x-input.js.
    Everything shared is in x-input.js; only what MZ does DIFFERENTLY is here.
 
@@ -52,15 +52,19 @@ Input.initialize = function () {
    rather than against a one-line placeholder. */
 Input.clear = function () {
   window.__inputCleared = (window.__inputCleared || 0) + 1;
+  // what is held now, what was held last frame, and the pad snapshot
   this._currentState = {};
   this._previousState = {};
   this._gamepadStates = [];
+  // the single-slot latch behind isTriggered / isRepeated / Input.date
   this._latestButton = null;
   this._pressedTime = 0;
+  this._date = 0;
+  // the resolved direction, and the axis _updateDirection is favouring
   this._dir4 = 0;
   this._dir8 = 0;
   this._preferredAxis = '';
-  this._date = 0;
+  // the tenth field, and the only one MV's clear does not reset
   this._virtualButton = null;
 };
 
@@ -86,24 +90,36 @@ Input._virtualButton = null;
 Input.update = function () {
   window.__inputUpdates = (window.__inputUpdates || 0) + 1;
   this._pollGamepads();
-  if (this._currentState[this._latestButton]) {
+
+  var held = this._currentState;
+  var seen = this._previousState;
+
+  // The latch survives the frame only while its own key is still down.
+  if (held[this._latestButton]) {
     this._pressedTime++;
   } else {
     this._latestButton = null;
   }
-  for (var name in this._currentState) {
-    if (this._currentState[name] && !this._previousState[name]) {
+
+  for (var name in held) {
+    var down = held[name];
+    if (down && !seen[name]) {
       this._latestButton = name;
       this._pressedTime = 0;
       this._date = Date.now();
     }
-    this._previousState[name] = this._currentState[name];
+    // Only keys still IN _currentState are refreshed, hence the leak.
+    seen[name] = down;
   }
+
+  // AFTER the loop, so a parked virtual name outranks any real key triggered
+  // in the same frame — and _currentState is never touched, nor is _date.
   if (this._virtualButton) {
     this._latestButton = this._virtualButton;
     this._pressedTime = 0;
     this._virtualButton = null;
   }
+
   this._updateDirection();
 };
 
@@ -153,24 +169,28 @@ Input._makeNumpadDirection = function (x, y) {
    _currentState — there is no state on this engine in which the engine sees a
    key and does not record it. */
 Input._onKeyDown = function (event) {
-  if (this._shouldPreventDefault(event.keyCode)) {
+  var keyCode = event.keyCode;
+  if (this._shouldPreventDefault(keyCode)) {
     event.preventDefault();
   }
-  if (event.keyCode === 144) {
+  if (keyCode === 144) {
     // Numlock
     this.clear();
   }
-  var buttonName = this.keyMapper[event.keyCode];
+  var buttonName = this.keyMapper[keyCode];
   if (buttonName) {
     this._currentState[buttonName] = true;
   }
 };
 
-/* rmmz_core.js:5900 — EIGHT cases. MV's (rpg_core.js:3257) has SEVEN: it is
-   missing `case 9`, Tab. That one case is the delta, and it is the reason a
-   Tab keydown reaching document moves browser focus on MV and does not on MZ.
-   An overlay with focusable fields that relies on Tab has to stop the event
-   before document on MZ; on MV it happens to work either way. */
+/* rmmz_core.js:5900 — EIGHT key codes, all falling through to one `return
+   true`. MV's (rpg_core.js:3257) has SEVEN: it is missing `case 9`, Tab. That
+   one code is the delta, and it is the reason a Tab keydown reaching document
+   moves browser focus on MV and does not on MZ. An overlay with focusable
+   fields that relies on Tab has to stop the event before document on MZ; on MV
+   it happens to work either way. (The engine writes the negative answer as a
+   `return false` after the switch; a `default` arm says the same thing and
+   keeps the whole decision inside one construct.) */
 Input._shouldPreventDefault = function (keyCode) {
   switch (keyCode) {
   case 8:     // backspace
@@ -182,8 +202,9 @@ Input._shouldPreventDefault = function (keyCode) {
   case 39:    // right arrow
   case 40:    // down arrow
     return true;
+  default:
+    return false;
   }
-  return false;
 };
 
 /* rmmz_core.js:5915 — FOUR lines. MV's (rpg_core.js:3277) has a trailing
@@ -261,15 +282,15 @@ ConfigManager.save = function () {
 /* :495. SEVEN keys — MV's makeData (rpg_managers.js:529) writes SIX. touchUI
    is the extra one. An MZ config round-tripped through an MV build loses it. */
 ConfigManager.makeData = function () {
-  var config = {};
-  config.alwaysDash = this.alwaysDash;
-  config.commandRemember = this.commandRemember;
-  config.touchUI = this.touchUI;
-  config.bgmVolume = this.bgmVolume;
-  config.bgsVolume = this.bgsVolume;
-  config.meVolume = this.meVolume;
-  config.seVolume = this.seVolume;
-  return config;
+  return {
+    alwaysDash: this.alwaysDash,
+    commandRemember: this.commandRemember,
+    touchUI: this.touchUI,
+    bgmVolume: this.bgmVolume,
+    bgsVolume: this.bgsVolume,
+    meVolume: this.meVolume,
+    seVolume: this.seVolume
+  };
 };
 
 /* :507. Every readFlag call passes a DEFAULT. MV's applyData
@@ -280,10 +301,13 @@ ConfigManager.applyData = function (config) {
   this.alwaysDash = this.readFlag(config, 'alwaysDash', false);
   this.commandRemember = this.readFlag(config, 'commandRemember', false);
   this.touchUI = this.readFlag(config, 'touchUI', true);
-  this.bgmVolume = this.readVolume(config, 'bgmVolume');
-  this.bgsVolume = this.readVolume(config, 'bgsVolume');
-  this.meVolume = this.readVolume(config, 'meVolume');
-  this.seVolume = this.readVolume(config, 'seVolume');
+  // The four volume names are also the four ConfigManager accessors, and each
+  // write lands on AudioManager — so the order below is the order the mixer
+  // sees, and it is the engine's. Identical to MV's; only the flags differ.
+  var channels = ['bgmVolume', 'bgsVolume', 'meVolume', 'seVolume'];
+  for (var i = 0; i < channels.length; i++) {
+    this[channels[i]] = this.readVolume(config, channels[i]);
+  }
 };
 
 /* :517. THREE parameters and an `in` test. MV's is the one-liner

@@ -1208,7 +1208,11 @@ const SHOTS = path.resolve(__dirname, 'shots-' + ENGINE);
     move('the map count', () => { $dataMapInfos.push({ id: 9999, name: 'extra', parentId: 0 }); }, () => { $dataMapInfos.pop(); });
     move('the variable count', () => { $dataSystem.variables.push('one more'); }, () => { $dataSystem.variables.pop(); });
     move('the loaded plugin list', () => { $plugins.push({ name: 'VisuMZ_1_BattleCore', status: true, parameters: {} }); }, () => { $plugins.pop(); });
-    move('the mod version', () => { G.version = '9.9.9'; }, () => { G.version = '2.0.0'; });
+    // Restored from what was captured, not from a literal: a version written
+    // into a test's undo path is a check that goes red on the next release and
+    // says nothing about the thing it was testing.
+    const realVersion = G.version;
+    move('the mod version', () => { G.version = '9.9.9'; }, () => { G.version = realVersion; });
     move('the engine', () => { G.caps.engine = 'XX'; }, () => { G.caps.engine = window.__realEngine; });
     move('System.json on disk', () => { window.__vfs.files['/fake/game/data/System.json'] += ' '; },
       () => { window.__vfs.files['/fake/game/data/System.json'] = window.__vfs.files['/fake/game/data/System.json'].slice(0, -1); });

@@ -161,7 +161,7 @@ cp gigahack/manifest.json "$STAGE/"
 cp -R gigahack/profiles "$STAGE/profiles"
 cp install/gigahack-install.sh install/gigahack-install.command \
    install/gigahack-install.ps1 install/gigahack-install.bat "$STAGE/"
-cp README.md LICENSE "$STAGE/"
+cp README.md LICENSE NOTICE.md "$STAGE/"
 mkdir -p "$STAGE/docs"
 cp docs/FUNCTIONS.md "$STAGE/docs/" 2>/dev/null || true
 cp gigahack-test/verify-live.js "$STAGE/" 2>/dev/null || true
@@ -188,17 +188,55 @@ node -e '
 	if (bad.length) { console.error("unreadable or empty in the staged payload: " + bad.join(", ")); process.exit(1); }
 ' "$STAGE" || die "staged payload verification failed"
 
-( cd "$DIST/staging" && tar czf "$DIST/GigaHack-MVMZ-$VERSION.tar.gz" "GigaHack-$VERSION" )
+# A tar header carries the BUILD ACCOUNT'S name, and `tar tvzf` prints it in
+# the first line without extracting anything. Scrubbing the working tree does
+# nothing about it, because the leak is in the metadata rather than in any
+# file — so an archive built on a personal machine publishes that account name
+# to everyone who downloads it. These flags neutralise ownership; bsdtar and
+# GNU tar spell it differently, so both are offered and the first that works
+# is used. The zip format stores no owner by default and needs nothing.
+TAR_ANON=""
+if tar --uid 0 --gid 0 --uname '' --gname '' -cf /dev/null -T /dev/null 2>/dev/null; then
+	TAR_ANON="--uid 0 --gid 0 --uname  --gname "          # bsdtar (macOS)
+	TAR_ANON_SET=1
+elif tar --owner=0 --group=0 --numeric-owner -cf /dev/null -T /dev/null 2>/dev/null; then
+	TAR_ANON="--owner=0 --group=0 --numeric-owner"        # GNU tar
+	TAR_ANON_SET=1
+else
+	echo "  WARNING: this tar takes neither bsdtar's --uname nor GNU tar's --owner." >&2
+	echo "  The archives will carry the build account's name in every header." >&2
+fi
+
+anon_tar() {   # anon_tar <output> <args...>
+	local out="$1"; shift
+	if tar --uid 0 --gid 0 --uname '' --gname '' -czf "$out" "$@" 2>/dev/null; then return 0; fi
+	if tar --owner=0 --group=0 --numeric-owner -czf "$out" "$@" 2>/dev/null; then return 0; fi
+	tar -czf "$out" "$@"
+}
+
+( cd "$DIST/staging" && anon_tar "$DIST/GigaHack-MVMZ-$VERSION.tar.gz" "GigaHack-$VERSION" )
 if command -v zip >/dev/null 2>&1; then
 	( cd "$DIST/staging" && zip -qr "$DIST/GigaHack-MVMZ-$VERSION.zip" "GigaHack-$VERSION" )
 fi
 
 # The source archive: everything a contributor needs, nothing a player does.
-tar czf "$DIST/GigaHack-MVMZ-$VERSION-source.tar.gz" \
+anon_tar "$DIST/GigaHack-MVMZ-$VERSION-source.tar.gz" \
 	--exclude='.git' --exclude='dist' --exclude='node_modules' \
 	--exclude='shots-*' --exclude='.DS_Store' \
-	gigahack gigahack-test install docs README.md LICENSE \
-	build-release.sh test-installers.sh publish.sh 2>/dev/null || true
+	gigahack gigahack-test install docs README.md LICENSE NOTICE.md \
+	build-release.sh test-installers.sh publish.sh || true
+
+# The leak is invisible in a diff and invisible in the file list, so it is
+# checked rather than trusted: the build fails here rather than publishing a
+# name nobody meant to publish.
+for a in "$DIST/GigaHack-MVMZ-$VERSION.tar.gz" "$DIST/GigaHack-MVMZ-$VERSION-source.tar.gz"; do
+	[ -f "$a" ] || continue
+	OWNERS="$(tar tvzf "$a" | awk '{print $2}' | sort -u | tr '\n' ' ')"
+	case "$OWNERS" in
+		*[!0\ ]*) die "archive $a carries owner names in its headers: $OWNERS
+This publishes the build account to everyone who downloads it. See anon_tar above." ;;
+	esac
+done
 
 ls -la "$DIST"/*.tar.gz "$DIST"/*.zip 2>/dev/null | sed 's/^/  /'
 

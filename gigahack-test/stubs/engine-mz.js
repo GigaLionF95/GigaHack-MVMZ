@@ -1,6 +1,6 @@
 /* =============================================================================
    GigaHack test harness — stubs/engine-mz.js
-   The DIVERGENT MZ surface. Copied from /root/work/mz/js/rmmz_*.js (MZ 1.9.0).
+   The DIVERGENT MZ surface. Modelled on MZ rmmz_*.js (MZ 1.9.0).
 
    STOCK ENGINE ONLY. The 1.x harness was faithful to one MZ game's build:
    Scene_File.isSavefileEnabled came from that game's ironman plugin,

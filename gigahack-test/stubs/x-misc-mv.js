@@ -1,6 +1,6 @@
 /* =============================================================================
    GigaHack test harness — stubs/x-misc-mv.js
-   The MV 1.6.1 half of the small shared surface. Copied from js/rpg_*.js.
+   The MV 1.6.1 half of the small shared surface. Modelled on js/rpg_*.js.
 
    Loaded IMMEDIATELY AFTER engine-mv.js, so Utils.RPGMAKER_NAME is 'MV',
    PluginManager exists with MV's full-entry dedup, and Array.prototype.contains

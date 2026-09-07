@@ -1,7 +1,7 @@
 /* =============================================================================
    GigaHack test harness — stubs/x-equip-mz.js
    EQUIPMENT, PARTY INVENTORY and the SHOP — the DIVERGENT MZ surface.
-   Copied from /root/work/mz/js/rmmz_*.js (RPG Maker MZ 1.9.0).
+   Modelled on MZ rmmz_*.js (RPG Maker MZ 1.9.0).
 
    STOCK ENGINE ONLY. Loaded IMMEDIATELY AFTER engine-mz.js, so it may reach
    core.js, x-equip.js and engine-mz.js. It may NOT use Array.prototype
@@ -95,18 +95,20 @@ Game_Actor.prototype.traitObjects = function () {
    ---------------------------------------------------------------------- */
 /* hasItem — rmmz_objects.js:5627. MZ DROPPED MV's opening
        if (includeEquip === undefined) { includeEquip = false; }
-   and starts straight at the numItems test. Same answer either way; the
-   deletion is the only textual difference between the two bodies, and it is
-   modelled so a diff of these two files shows exactly what a diff of the two
-   engines shows. */
+   and starts straight at the numItems test. There is no defaulting here at
+   all: an omitted second argument is simply falsy at the point it is read.
+   Same answer either way, so this is a textual split rather than a
+   behavioural one — but it is the shape a reader diffing the two engines
+   expects to find, so the guard's ABSENCE is the thing being modelled.
+
+   Both exits are a strict boolean. `numItems(item) > 0 || includeEquip &&
+   ...` would hand back `undefined` for the common one-argument call, which
+   is NOT what the engine answers — hence the coercion on the second line. */
 Game_Party.prototype.hasItem = function (item, includeEquip) {
   if (this.numItems(item) > 0) {
     return true;
-  } else if (includeEquip && this.isAnyMemberEquipped(item)) {
-    return true;
-  } else {
-    return false;
   }
+  return !!includeEquip && this.isAnyMemberEquipped(item);
 };
 
 /* isAnyMemberEquipped — rmmz_objects.js:5637. .includes, and members() again
@@ -292,16 +294,15 @@ Scene_Title.prototype.terminate = function () {
    _gameTitleSprite.bitmap mid-method changes nothing here and everything on
    MV, where each line re-reads the sprite. */
 Scene_Title.prototype.drawGameTitle = function () {
-  var x = 20;
-  var y = Graphics.height / 4;
-  var maxWidth = Graphics.width - x * 2;
-  var text = $dataSystem.gameTitle;
+  /* Resolved ONCE, before any of the five uses — that is the hoist. */
   var bitmap = this._gameTitleSprite.bitmap;
+  var x = 20;
   bitmap.fontFace = $gameSystem.mainFontFace();
   bitmap.outlineColor = 'black';
   bitmap.outlineWidth = 8;
   bitmap.fontSize = 72;
-  bitmap.drawText(text, x, y, maxWidth, 48, 'center');
+  bitmap.drawText($dataSystem.gameTitle, x, Graphics.height / 4,
+    Graphics.width - x * 2, 48, 'center');
 };
 
 /* createCommandWindow / commandWindowRect — :578 / :589. Three $dataSystem
@@ -320,13 +321,22 @@ Scene_Title.prototype.createCommandWindow = function () {
   this.addWindow(this._commandWindow);
 };
 Scene_Title.prototype.commandWindowRect = function () {
-  var offsetX = $dataSystem.titleCommandWindow.offsetX;
-  var offsetY = $dataSystem.titleCommandWindow.offsetY;
+  var nudge = $dataSystem.titleCommandWindow;
+  var dx = nudge.offsetX;
+  var dy = nudge.offsetY;
+  /* Three rows, `true` meaning "selectable" — that is what pads the height
+     out past three plain lines. */
   var ww = this.mainCommandWidth();
   var wh = this.calcWindowHeight(3, true);
-  var wx = (Graphics.boxWidth - ww) / 2 + offsetX;
-  var wy = Graphics.boxHeight - wh - 96 + offsetY;
-  return new Rectangle(wx, wy, ww, wh);
+  /* Centred across boxWidth, floated 96px clear of the bottom of boxHeight,
+     and only THEN nudged: both offsets are absolute pixel shifts applied to
+     a finished position, not terms inside the centring arithmetic. */
+  return new Rectangle(
+    (Graphics.boxWidth - ww) / 2 + dx,
+    Graphics.boxHeight - wh - 96 + dy,
+    ww,
+    wh
+  );
 };
 
 /* -------------------------------------------------------------------------
@@ -368,6 +378,19 @@ function __shopWinMZ(name, rect) {
     currentSymbol: function () { return this._symbol || null; },
     setItem: function (it) { this._item = it; }
   };
+}
+
+/* The shop lays its panes into two bands. The command strip runs along
+   mainAreaTop(); everything under it lives inside the rectangle the dummy
+   window claimed, and three of the rect methods below (:2613, :2628, :2648)
+   differ only in how they split that band horizontally — :2613 and :2648 are
+   literally the same four numbers in the engine. The band is named once here
+   so each site states only its own share of the width. Every number these
+   methods report is the stock number; they are what a layout-editing mod
+   reads back. */
+function __dummyPaneMZ(scene, wx, ww) {
+  var band = scene._dummyWindow;
+  return new Rectangle(wx, band.y, ww, band.height);
 }
 
 Scene_Shop.prototype.__menuBaseCreate = function () {     /* rmmz_scenes.js:1191 */
@@ -450,11 +473,10 @@ Scene_Shop.prototype.createGoldWindow = function () {     /* :2557 */
   this.addWindow(this._goldWindow);
 };
 Scene_Shop.prototype.goldWindowRect = function () {       /* :2563 */
+  /* Flush to the right edge of the command strip, one selectable row tall. */
   var ww = this.mainCommandWidth();
-  var wh = this.calcWindowHeight(1, true);
-  var wx = Graphics.boxWidth - ww;
-  var wy = this.mainAreaTop();
-  return new Rectangle(wx, wy, ww, wh);
+  return new Rectangle(Graphics.boxWidth - ww, this.mainAreaTop(), ww,
+    this.calcWindowHeight(1, true));
 };
 
 /* :2571 — purchaseOnly is set with setPurchaseOnly AFTER construction, where
@@ -473,11 +495,10 @@ Scene_Shop.prototype.createCommandWindow = function () {
   this.addWindow(this._commandWindow);
 };
 Scene_Shop.prototype.commandWindowRect = function () {    /* :2582 */
-  var wx = 0;
-  var wy = this.mainAreaTop();
-  var ww = this._goldWindow.x;
-  var wh = this.calcWindowHeight(1, true);
-  return new Rectangle(wx, wy, ww, wh);
+  /* Everything LEFT of the gold window — the width is read off that window's
+     x, so create() must build the gold window first and does. */
+  return new Rectangle(0, this.mainAreaTop(), this._goldWindow.x,
+    this.calcWindowHeight(1, true));
 };
 
 Scene_Shop.prototype.createDummyWindow = function () {    /* :2590 */
@@ -486,11 +507,11 @@ Scene_Shop.prototype.createDummyWindow = function () {    /* :2590 */
   this.addWindow(this._dummyWindow);
 };
 Scene_Shop.prototype.dummyWindowRect = function () {      /* :2596 */
-  var wx = 0;
-  var wy = this._commandWindow.y + this._commandWindow.height;
-  var ww = Graphics.boxWidth;
-  var wh = this.mainAreaHeight() - this._commandWindow.height;
-  return new Rectangle(wx, wy, ww, wh);
+  /* The full width of the main area, from the bottom of the command strip
+     down — i.e. the whole band the panes below then carve up. */
+  var command = this._commandWindow;
+  return new Rectangle(0, command.y + command.height, Graphics.boxWidth,
+    this.mainAreaHeight() - command.height);
 };
 
 Scene_Shop.prototype.createNumberWindow = function () {   /* :2604 */
@@ -502,11 +523,7 @@ Scene_Shop.prototype.createNumberWindow = function () {   /* :2604 */
   this.addWindow(this._numberWindow);
 };
 Scene_Shop.prototype.numberWindowRect = function () {     /* :2613 */
-  var wx = 0;
-  var wy = this._dummyWindow.y;
-  var ww = Graphics.boxWidth - this.statusWidth();
-  var wh = this._dummyWindow.height;
-  return new Rectangle(wx, wy, ww, wh);
+  return __dummyPaneMZ(this, 0, Graphics.boxWidth - this.statusWidth());
 };
 
 Scene_Shop.prototype.createStatusWindow = function () {   /* :2621 */
@@ -516,11 +533,9 @@ Scene_Shop.prototype.createStatusWindow = function () {   /* :2621 */
   this.addWindow(this._statusWindow);
 };
 Scene_Shop.prototype.statusWindowRect = function () {     /* :2628 */
+  /* The complement of the number/buy pane: the right-hand slice of the band. */
   var ww = this.statusWidth();
-  var wh = this._dummyWindow.height;
-  var wx = Graphics.boxWidth - ww;
-  var wy = this._dummyWindow.y;
-  return new Rectangle(wx, wy, ww, wh);
+  return __dummyPaneMZ(this, Graphics.boxWidth - ww, ww);
 };
 /* statusWidth — :2701. A flat 352. MV derives the same split from the number
    window's WIDTH instead, so on MV the two panes are coupled and here they
@@ -545,12 +560,10 @@ Scene_Shop.prototype.createBuyWindow = function () {
   this._buyWindow.setHandler('cancel', this.onBuyCancel.bind(this));
   this.addWindow(this._buyWindow);
 };
-Scene_Shop.prototype.buyWindowRect = function () {        /* :2648 */
-  var wx = 0;
-  var wy = this._dummyWindow.y;
-  var ww = Graphics.boxWidth - this.statusWidth();
-  var wh = this._dummyWindow.height;
-  return new Rectangle(wx, wy, ww, wh);
+/* :2648 — the same rectangle as :2613, which is why the buy list and the
+   number entry can trade places without either moving. */
+Scene_Shop.prototype.buyWindowRect = function () {
+  return __dummyPaneMZ(this, 0, Graphics.boxWidth - this.statusWidth());
 };
 
 Scene_Shop.prototype.createCategoryWindow = function () { /* :2656 */
@@ -564,11 +577,11 @@ Scene_Shop.prototype.createCategoryWindow = function () { /* :2656 */
   this.addWindow(this._categoryWindow);
 };
 Scene_Shop.prototype.categoryWindowRect = function () {   /* :2667 */
-  var wx = 0;
-  var wy = this._dummyWindow.y;
-  var ww = Graphics.boxWidth;
-  var wh = this.calcWindowHeight(1, true);
-  return new Rectangle(wx, wy, ww, wh);
+  /* Starts at the top of the dummy band like the panes above, but is one
+     selectable row tall rather than the band's full height — so it is not a
+     __dummyPaneMZ; the sell list underneath takes what it leaves. */
+  return new Rectangle(0, this._dummyWindow.y, Graphics.boxWidth,
+    this.calcWindowHeight(1, true));
 };
 
 /* createSellWindow — :2675. MZ ends with a resize MV does not have: when the
@@ -590,11 +603,11 @@ Scene_Shop.prototype.createSellWindow = function () {
   }
 };
 Scene_Shop.prototype.sellWindowRect = function () {       /* :2690 */
-  var wx = 0;
-  var wy = this._categoryWindow.y + this._categoryWindow.height;
-  var ww = Graphics.boxWidth;
-  var wh = this.mainAreaHeight() - this._commandWindow.height - this._categoryWindow.height;
-  return new Rectangle(wx, wy, ww, wh);
+  /* Under the category strip, holding whatever the command and category
+     strips leave of the main area. */
+  var category = this._categoryWindow;
+  return new Rectangle(0, category.y + category.height, Graphics.boxWidth,
+    this.mainAreaHeight() - this._commandWindow.height - category.height);
 };
 
 /* The handlers create() binds. Bodies trimmed to recorders for the reason

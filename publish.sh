@@ -12,8 +12,8 @@
 set -euo pipefail
 
 REPO="GigaLionF95/GigaHack-MVMZ"
-TAG="v2.0.0"
-TITLE="GigaHack MV/MZ 2.0.0"
+TAG="v2.1.0"
+TITLE="GigaHack MV/MZ 2.1.0"
 
 # Arguments are passed straight through to build-release.sh. The only one that
 # matters is --fast, which skips the browser suite when Playwright and its
@@ -117,13 +117,12 @@ if git diff --cached --quiet; then
 else
     git commit -m "GigaHack MV/MZ $VER
 
-A mod menu for any RPG Maker MV or MZ game. 26 modules, six tabs, an engine
-capability table, a per-game profile system, a boot index, and a plugin
+A mod menu for any RPG Maker MV or MZ game. 35 modules, six tabs, 62 panels, an
+engine capability table, a per-game profile system, a boot index, and a plugin
 compatibility layer that names what is degrading a control and why.
 
-1131 checks across stock MZ, stock MV and MV with a modelled third-party
-plugin stack, plus 122 installer checks and a build lint. Verified live
-against two real games."
+2961 checks across stock MZ, stock MV and MV with a modelled third-party plugin
+stack, plus 113 installer checks and a build lint over 36 files."
 fi
 
 # A commit made by an earlier run under the wrong identity is still local — the

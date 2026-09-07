@@ -2,9 +2,10 @@
    GigaHack test harness — stubs/x-input.js
    INPUT AND CONFIG: everything RPG Maker MV 1.6.1 and MZ 1.9.0 agree on.
 
-   Copied from the shipped engine sources, awkward parts included:
-     MV = /root/work/mv/js/rpg_core.js, rpg_managers.js, rpg_scenes.js
-     MZ = /root/work/mz/js/rmmz_core.js, rmmz_managers.js, rmmz_scenes.js
+   Modelled on the shipped engine sources, awkward BEHAVIOUR included — the
+   citations name where each fact was read, the expression here is our own:
+     MV = MV rpg_core.js, rpg_managers.js, rpg_scenes.js
+     MZ = MZ rmmz_core.js, rmmz_managers.js, rmmz_scenes.js
    A single file:line reference means the two are the same there; a pair means
    both were read and both say this.
 
@@ -156,31 +157,34 @@ Object.defineProperty(Input, 'date', {
    and _makeNumpadDirection are written DIFFERENTLY by the two engines (same
    results, different shapes) and live in the per-engine files.
 
-   _preferredAxis is the subtle one: it is only ever set when exactly one axis
-   is live, and it names the axis to DROP next time both are. So a diagonal is
-   resolved by whichever axis was pressed first, and the state survives across
-   frames — which is why an overlay that swallows one arrow but not the other
-   leaves the player walking in the axis it did not swallow.
+   _preferredAxis is the subtle one. It is written ONLY while exactly one axis
+   is live, and it names the axis that will SURVIVE the next diagonal — and it
+   is set to the axis that is NOT currently down. So holding Right and then
+   adding Down gives you Down: the arrow that joined last wins, and the
+   decision outlives the diagonal because the both-live branch never touches
+   _preferredAxis. That persistence is why an overlay that swallows one arrow
+   but not the other leaves the player walking in the axis it did not swallow.
    ---------------------------------------------------------------------- */
 Input._updateDirection = function () {
-  var x = this._signX();
-  var y = this._signY();
+  var sx = this._signX();
+  var sy = this._signY();
 
-  this._dir8 = this._makeNumpadDirection(x, y);
+  /* dir8 is read off the RAW pair, before anything is discarded, which is why
+     dir8 can say "down-right" in the very frame dir4 says "down". */
+  this._dir8 = this._makeNumpadDirection(sx, sy);
 
-  if (x !== 0 && y !== 0) {
-    if (this._preferredAxis === 'x') {
-      y = 0;
-    } else {
-      x = 0;
-    }
-  } else if (x !== 0) {
-    this._preferredAxis = 'y';
-  } else if (y !== 0) {
-    this._preferredAxis = 'x';
+  if (sx !== 0 && sy !== 0) {
+    /* Diagonal: zero the loser and leave _preferredAxis alone. Only the
+       literal 'x' keeps x; the seed value '' therefore keeps y, so a diagonal
+       arriving with no history at all resolves vertically. */
+    if (this._preferredAxis === 'x') { sy = 0; } else { sx = 0; }
+  } else if (sx !== 0 || sy !== 0) {
+    /* One arrow: elect the OTHER axis for next time. */
+    this._preferredAxis = sy === 0 ? 'y' : 'x';
   }
+  /* Neither arrow down: _preferredAxis keeps whatever it held. */
 
-  this._dir4 = this._makeNumpadDirection(x, y);
+  this._dir4 = this._makeNumpadDirection(sx, sy);
 };
 
 /* -------------------------------------------------------------------------
@@ -224,59 +228,69 @@ Input._onLostFocus = function () {
    harness is a browser build with no controller attached.
    ---------------------------------------------------------------------- */
 Input._pollGamepads = function () {
-  if (navigator.getGamepads) {
-    var gamepads = navigator.getGamepads();
-    if (gamepads) {
-      for (var i = 0; i < gamepads.length; i++) {
-        var gamepad = gamepads[i];
-        if (gamepad && gamepad.connected) {
-          this._updateGamepadState(gamepad);
-        }
-      }
-    }
+  /* Both guards are real: an engine-era browser may not expose getGamepads at
+     all, and a browser that does may still hand back null rather than a list.
+     Neither case is an error and neither clears anything already held. */
+  if (!navigator.getGamepads) return;
+  var pads = navigator.getGamepads();
+  if (!pads) return;
+  for (var i = 0; i < pads.length; i++) {
+    /* The list is sparse — disconnected slots come back null — and a pad that
+       is present but not `connected` is skipped without being cleared. */
+    var pad = pads[i];
+    if (pad && pad.connected) this._updateGamepadState(pad);
   }
 };
 
-/* MV rpg_core.js:3322 / MZ rmmz_core.js:5939 — byte-identical apart from
-   var/const. Note the EDGE filter at the bottom: _currentState is only written
-   where newState[j] !== lastState[j]. A pad that is holding 'ok' does NOT keep
-   re-asserting it every frame, so a mod that clears _currentState behind the
-   engine's back silently loses a held gamepad button until it is released and
-   pressed again. Also note that the analog stick is folded into buttons 12-15
-   BEFORE the mapper runs, which is why a stick and a D-pad are indistinguishable
-   downstream. */
+/* MV rpg_core.js:3322 / MZ rmmz_core.js:5939 — the two engines agree here down
+   to the whitespace, so one body serves both. Three things it does that a
+   naive snapshot would not, each called out where it happens below: the D-pad
+   slots are seeded before the buttons are read, the analog stick is folded
+   into those same slots before the mapper runs, and only CHANGED slots reach
+   _currentState. */
 Input._updateGamepadState = function (gamepad) {
-  var lastState = this._gamepadStates[gamepad.index] || [];
-  var newState = [];
+  var UP = 12, DOWN = 13, LEFT = 14, RIGHT = 15;
+  var THRESHOLD = 0.5;
   var buttons = gamepad.buttons;
   var axes = gamepad.axes;
-  var threshold = 0.5;
-  newState[12] = false;
-  newState[13] = false;
-  newState[14] = false;
-  newState[15] = false;
-  for (var i = 0; i < buttons.length; i++) {
-    newState[i] = buttons[i].pressed;
+  var previous = this._gamepadStates[gamepad.index] || [];
+  var current = [];
+  var i;
+
+  /* Seed the four D-pad slots first, then let the real buttons overwrite
+     them. Two consequences worth knowing:
+       - the array is at least 16 long even for a three-button pad, and the
+         gap between buttons.length and 12 stays a HOLE (undefined), which the
+         edge filter below then never reports as a change;
+       - a pad that really does have 16 buttons has its own 12-15 win, because
+         the button loop runs after this. */
+  current[UP] = current[DOWN] = current[LEFT] = current[RIGHT] = false;
+  for (i = 0; i < buttons.length; i++) {
+    current[i] = buttons[i].pressed;
   }
-  if (axes[1] < -threshold) {
-    newState[12] = true;    // up
-  } else if (axes[1] > threshold) {
-    newState[13] = true;    // down
+
+  /* The analog stick is folded INTO the D-pad slots, before the mapper runs,
+     which is why nothing downstream can tell a stick from a D-pad. Note the
+     fold only ever turns a slot ON: a centred stick does not turn one off, so
+     a genuine D-pad press on button 12-15 survives a neutral axis. */
+  function fold(axis, negative, positive) {
+    if (axis < -THRESHOLD) current[negative] = true;
+    else if (axis > THRESHOLD) current[positive] = true;
   }
-  if (axes[0] < -threshold) {
-    newState[14] = true;    // left
-  } else if (axes[0] > threshold) {
-    newState[15] = true;    // right
+  fold(axes[1], UP, DOWN);
+  fold(axes[0], LEFT, RIGHT);
+
+  /* EDGE FILTER. Only slots whose value CHANGED since the last poll are
+     written through to _currentState. A held button therefore asserts itself
+     exactly once, so anything that wipes _currentState behind the engine's
+     back loses that press until the pad releases and presses again. */
+  for (i = 0; i < current.length; i++) {
+    if (current[i] === previous[i]) continue;
+    var name = this.gamepadMapper[i];
+    if (name) this._currentState[name] = current[i];
   }
-  for (var j = 0; j < newState.length; j++) {
-    if (newState[j] !== lastState[j]) {
-      var buttonName = this.gamepadMapper[j];
-      if (buttonName) {
-        this._currentState[buttonName] = newState[j];
-      }
-    }
-  }
-  this._gamepadStates[gamepad.index] = newState;
+
+  this._gamepadStates[gamepad.index] = current;
 };
 
 /* =============================================================================

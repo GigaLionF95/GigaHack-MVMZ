@@ -1,7 +1,9 @@
 /* =============================================================================
    GigaHack test harness — stubs/x-interp-mz.js
    The MZ 1.9.0 half of the INTERPRETER AND EVENTS surface.
-   Copied from rmmz_objects.js / rmmz_managers.js / rmmz_core.js (MZ 1.9.0).
+   Modelled on rmmz_objects.js / rmmz_managers.js / rmmz_core.js (MZ 1.9.0):
+   every definition below cites the source file and line its behaviour was
+   read from, and is then written to say WHY the engine answers as it does.
 
    Loaded immediately after engine-mz.js, which is where
    Game_Message.setSpeakerName lives — command101 below reads params[4] and
@@ -126,6 +128,46 @@ Game_Temp.prototype.clearCommonEventReservation = function () {
 };
 
 /* -------------------------------------------------------------------------
+   STUB-LOCAL SHAPES — NOT ENGINE SURFACE.
+
+   Nothing under StubInterpMZ is named anywhere in RPG Maker, and nothing a mod
+   can reach names it either. It exists so the definitions below can state each
+   repeated idea once instead of spelling it out per command; gathering it on
+   one object rather than as loose globals means a reader scanning this file
+   for engine names never trips over a name the engine does not have.
+   ---------------------------------------------------------------------- */
+var StubInterpMZ = {};
+
+/* The engine dispatches its command parameters with `switch`, which matches on
+   ===. A bare table lookup would ALSO match the string "0", because a property
+   name is a string; routing every lookup through this keeps a table exactly as
+   strict as the switch it stands in for. A non-number selects no arm, and the
+   caller's own default answer stands — which is the engine's `result = false`
+   surviving a switch that matched nothing. */
+StubInterpMZ.arm = function (table, code) {
+  return typeof code === 'number' ? table[code] : undefined;
+};
+
+/* Step the interpreter onto the row it is currently peeking at and hand back
+   that row's parameters. The 401 text rows, the 102/103/104 hand-off and the
+   605 shop rows are each exactly this and nothing else: `_index++`, then read
+   the row it now points at. Saying it once is also the clearest statement of
+   why a Show Text leaves the interpreter sitting ON the last row it consumed
+   rather than past it — executeCommand's own `_index++` supplies the last
+   step, and that is why command101 may return true. */
+StubInterpMZ.step = function (interpreter) {
+  interpreter._index++;
+  return interpreter.currentCommand().parameters;
+};
+
+/* A trailing parameter the editor may or may not have written: the value if
+   the array is long enough to hold it, this default otherwise. Length, not
+   `undefined` — an explicitly stored undefined counts as present. */
+StubInterpMZ.optional = function (params, index, fallback) {
+  return params.length > index ? params[index] : fallback;
+};
+
+/* -------------------------------------------------------------------------
    Game_Interpreter — the MZ half.
    ---------------------------------------------------------------------- */
 /* rmmz_objects.js:9488. NO `this._params = []`. MV's initialize has that line
@@ -173,24 +215,30 @@ Game_Interpreter.prototype.setup = function (list, eventId) {
   this.loadImages();
 };
 
-/* rmmz_objects.js:9524 — VERBATIM, including the engine's own note, because
-   the note IS the delta. MZ preloads only the first 200 commands and only two
-   codes; MV's requestImages walks the whole list, fifteen codes, and RECURSES
-   into referenced common events. So a face used past command 200, or in a
-   common event, is not preloaded on MZ and is on MV. */
+/* The only two command codes MZ preloads for, and which parameter of each
+   holds the filename. A code that is not a key here is walked past. */
+StubInterpMZ.preloaders = {
+  101: function (parameters) { return ImageManager.loadFace(parameters[0]); },    // Show Text
+  231: function (parameters) { return ImageManager.loadPicture(parameters[1]); }  // Show Picture
+};
+
+/* rmmz_objects.js:9524. Two codes, and only over the FIRST 200 commands of the
+   list — MZ's own note beside this method says as much: the elaborate preload
+   some MV builds carried was cut back on the grounds that faces and pictures
+   are the two that matter. That cut is the delta. MV's requestImages walks the
+   whole list, knows fifteen codes, and RECURSES into referenced common events,
+   so a face used past command 200, or used inside a common event, is preloaded
+   on MV and is not preloaded here.
+
+   `slice(0, 200)` and not a bounded loop: the copy is what makes the 200 a
+   property of the list being read rather than of the walk, so a list that
+   grows while this runs is still only read 200 deep. */
 Game_Interpreter.prototype.loadImages = function () {
-  // [Note] The certain versions of MV had a more complicated preload scheme.
-  //   However it is usually sufficient to preload face and picture images.
-  var list = this._list.slice(0, 200);
-  for (var i = 0; i < list.length; i++) {
-    var command = list[i];
-    switch (command.code) {
-      case 101: // Show Text
-        ImageManager.loadFace(command.parameters[0]);
-        break;
-      case 231: // Show Picture
-        ImageManager.loadPicture(command.parameters[1]);
-        break;
+  var head = this._list.slice(0, 200);
+  for (var i = 0; i < head.length; i++) {
+    var preload = StubInterpMZ.arm(StubInterpMZ.preloaders, head[i].code);
+    if (preload) {
+      preload(head[i].parameters);
     }
   }
   window.__loadImageCalls = (window.__loadImageCalls || 0) + 1;
@@ -264,82 +312,97 @@ Game_Interpreter.prototype.updateWaitMode = function () {
   return waiting;
 };
 
-/* rmmz_objects.js:9660. VERBATIM — and one line shorter than MV's, which is
-   the whole story. There is NO `this._params = command.parameters` here.
-   command.parameters is passed to the handler as its argument, so:
+/* rmmz_objects.js:9660. One line shorter than MV's, and the missing line is
+   the whole story: there is NO `this._params = command.parameters` here.
+   command.parameters is handed to the handler as its argument instead, so:
      · interpreter._params does not exist on MZ;
      · a mod that aliases a command and reads this._params inside the alias
        reads undefined on MZ and works on MV;
      · a mod that aliases and calls the original must FORWARD the argument.
-   The rest matches MV: name built from the code, no giant switch, _index++
-   only on a truthy return, terminate() when the list runs out. */
+   The rest matches MV: the handler's name is built from the code rather than
+   found in a giant switch, an unknown code is walked past rather than being an
+   error, _index++ happens only on a truthy return — a falsy one means "run me
+   again next frame" — and running off the end of the list terminates. */
 Game_Interpreter.prototype.executeCommand = function () {
   var command = this.currentCommand();
-  if (command) {
-    this._indent = command.indent;
-    var methodName = 'command' + command.code;
-    if (typeof this[methodName] === 'function') {
-      if (!this[methodName](command.parameters)) {
-        return false;
-      }
-    }
-    this._index++;
-  } else {
+  if (!command) {
     this.terminate();
+    return true;
   }
+  this._indent = command.indent;
+  var methodName = 'command' + command.code;
+  if (typeof this[methodName] === 'function' && !this[methodName](command.parameters)) {
+    return false;
+  }
+  this._index++;
   return true;
 };
 
-/* rmmz_objects.js:10316. Case 0 writes `value` plainly; MV writes
-   `oldValue = value` — an assignment inside the argument list whose result is
-   never read (rpg_objects.js:9543). Cosmetic, and kept apart because a
-   verbatim copy is the only way the harness can prove it is cosmetic. The
-   try/catch around the whole switch is identical, and it is what turns a
-   divide by a non-number into a silent 0. */
+/* The six operation codes, as the binary operator each one names. Set ignores
+   the old value; that is the ONLY thing that distinguishes it. */
+StubInterpMZ.variableOps = [
+  function (oldValue, value) { return value; },             // 0 Set
+  function (oldValue, value) { return oldValue + value; },  // 1 Add
+  function (oldValue, value) { return oldValue - value; },  // 2 Sub
+  function (oldValue, value) { return oldValue * value; },  // 3 Mul
+  function (oldValue, value) { return oldValue / value; },  // 4 Div
+  function (oldValue, value) { return oldValue % value; }   // 5 Mod
+];
+
+/* rmmz_objects.js:10316. Every arm of the engine's switch is the same three
+   moves — read the old value, combine it with the incoming one, write the
+   answer back — so the table above holds the only part that varies and the
+   read and the write are written once. Three exactnesses survive the rewrite
+   and are the reason the shape is worth stating:
+     · the read happens BEFORE the operation is chosen, and happens even for
+       Set, which never looks at what it read. Anything counting reads through
+       $gameVariables sees the count the engine produces.
+     · an operationType with no arm writes NOTHING AT ALL. The engine's switch
+       falls off the end; there is no default that stores a 0.
+     · the try/catch wraps the read, the combine and the write together, so an
+       operand the engine cannot combine — a Symbol, an object whose valueOf
+       throws — lands on a flat write of 0 rather than propagating.
+   MZ's Set arm passes `value` plainly where MV's passes `oldValue = value`, an
+   assignment inside the argument list whose result is never read
+   (rpg_objects.js:9543). Cosmetic there; the table is what makes that claim
+   checkable, because both engines' Set writes the incoming value and nothing
+   else. */
 Game_Interpreter.prototype.operateVariable = function (variableId, operationType, value) {
   try {
     var oldValue = $gameVariables.value(variableId);
-    switch (operationType) {
-      case 0: // Set
-        $gameVariables.setValue(variableId, value);
-        break;
-      case 1: // Add
-        $gameVariables.setValue(variableId, oldValue + value);
-        break;
-      case 2: // Sub
-        $gameVariables.setValue(variableId, oldValue - value);
-        break;
-      case 3: // Mul
-        $gameVariables.setValue(variableId, oldValue * value);
-        break;
-      case 4: // Div
-        $gameVariables.setValue(variableId, oldValue / value);
-        break;
-      case 5: // Mod
-        $gameVariables.setValue(variableId, oldValue % value);
-        break;
+    var combine = StubInterpMZ.arm(StubInterpMZ.variableOps, operationType);
+    if (combine) {
+      $gameVariables.setValue(variableId, combine(oldValue, value));
     }
   } catch (e) {
     $gameVariables.setValue(variableId, 0);
   }
 };
 
-/* rmmz_objects.js:9838. cancelType is clamped in the DECLARATION's ternary;
-   MV declares it raw and clamps with an if afterwards (rpg_objects.js:9097).
-   The callback is an arrow in the source; ES5 forces the .bind spelling MV
-   uses, and the captured `this` is the same either way. */
+/* rmmz_objects.js:9838. Two parameters are mandatory and three are optional,
+   each with its own default — the engine writes that test out three times, one
+   index and one fallback apart; StubInterpMZ.optional says it once.
+
+   cancelType is clamped in the DECLARATION's ternary here; MV declares it raw
+   and clamps with an if afterwards (rpg_objects.js:9097). Same answer, and -2
+   is the engine's "there is no cancel branch" sentinel: an index the choice
+   list is too short to hold becomes -2 rather than pointing past the end.
+
+   Note the call order — setChoices, then BACKGROUND, then position — which is
+   not the order the three optional parameters sit in. The callback is an arrow
+   in the source; a closure over the interpreter is the ES5 way to capture the
+   same `this`, and either spelling reads _branch and _indent when the player
+   answers, not when the list is built. */
 Game_Interpreter.prototype.setupChoices = function (params) {
   var choices = params[0].clone();
   var cancelType = params[1] < choices.length ? params[1] : -2;
-  var defaultType = params.length > 2 ? params[2] : 0;
-  var positionType = params.length > 3 ? params[3] : 2;
-  var background = params.length > 4 ? params[4] : 0;
-  $gameMessage.setChoices(choices, defaultType, cancelType);
-  $gameMessage.setChoiceBackground(background);
-  $gameMessage.setChoicePositionType(positionType);
+  var interpreter = this;
+  $gameMessage.setChoices(choices, StubInterpMZ.optional(params, 2, 0), cancelType);
+  $gameMessage.setChoiceBackground(StubInterpMZ.optional(params, 4, 0));
+  $gameMessage.setChoicePositionType(StubInterpMZ.optional(params, 3, 2));
   $gameMessage.setChoiceCallback(function (n) {
-    this._branch[this._indent] = n;
-  }.bind(this));
+    interpreter._branch[interpreter._indent] = n;
+  });
 };
 
 /* --- The commands. Every one takes params. ---------------------------- */
@@ -356,33 +419,34 @@ Game_Interpreter.prototype.setupChoices = function (params) {
        hand. Net effect is the same landing index — but a mod that aliases
        command101 and returns its own boolean moves the index on MZ and does
        not on MV.
-   The 401 text-collection loop and the 102/103/104 lookahead are identical. */
+   The 401 text-collection loop and the 102/103/104 lookahead behave exactly
+   as MV's do; only the shape they are written in differs. */
 Game_Interpreter.prototype.command101 = function (params) {
   if ($gameMessage.isBusy()) {
     return false;
   }
+  /* The message header, in the engine's order. params[4] is the MZ-ONLY one. */
   $gameMessage.setFaceImage(params[0], params[1]);
   $gameMessage.setBackground(params[2]);
   $gameMessage.setPositionType(params[3]);
   $gameMessage.setSpeakerName(params[4]);
+  /* Every 401 row that follows is one more line of this same message, and the
+     interpreter walks onto each one to read it. */
   while (this.nextEventCode() === 401) {
-    // Text data
-    this._index++;
-    $gameMessage.add(this.currentCommand().parameters[0]);
+    var textRow = StubInterpMZ.step(this);
+    $gameMessage.add(textRow[0]);
   }
-  switch (this.nextEventCode()) {
-    case 102: // Show Choices
-      this._index++;
-      this.setupChoices(this.currentCommand().parameters);
-      break;
-    case 103: // Input Number
-      this._index++;
-      this.setupNumInput(this.currentCommand().parameters);
-      break;
-    case 104: // Select Item
-      this._index++;
-      this.setupItemChoice(this.currentCommand().parameters);
-      break;
+  /* An input command sitting directly after the text belongs TO the text: it
+     is set up now, from here, and never executed as a command of its own — so
+     its own command10x method is never the thing that ran. nextEventCode is
+     asked once, exactly as the engine's single switch asks it once. */
+  var follower = this.nextEventCode();
+  if (follower === 102) {          // Show Choices
+    this.setupChoices(StubInterpMZ.step(this));
+  } else if (follower === 103) {   // Input Number
+    this.setupNumInput(StubInterpMZ.step(this));
+  } else if (follower === 104) {   // Select Item
+    this.setupItemChoice(StubInterpMZ.step(this));
   }
   this.setWaitMode('message');
   return true;
@@ -395,170 +459,184 @@ Game_Interpreter.prototype.command105 = function (params) {
     return false;
   }
   $gameMessage.setScroll(params[0], params[1]);
+  /* 405 is the scrolling-text row code; the loop is otherwise command101's. */
   while (this.nextEventCode() === 405) {
-    this._index++;
-    $gameMessage.add(this.currentCommand().parameters[0]);
+    var textRow = StubInterpMZ.step(this);
+    $gameMessage.add(textRow[0]);
   }
   this.setWaitMode('message');
   return true;
 };
 
-/* Conditional Branch — rmmz_objects.js:9926. All fourteen operand types.
+/* The six variable comparison operators, indexed by the code the editor
+   stores in params[4]. */
+StubInterpMZ.compare = [
+  function (a, b) { return a === b; },   // 0 Equal to
+  function (a, b) { return a >= b; },    // 1 Greater than or Equal to
+  function (a, b) { return a <= b; },    // 2 Less than or Equal to
+  function (a, b) { return a > b; },     // 3 Greater than
+  function (a, b) { return a < b; },     // 4 Less than
+  function (a, b) { return a !== b; }    // 5 Not Equal to
+];
+
+/* Gold's three operator codes are a RENUMBERED SUBSET of those six — 0 is >=,
+   1 is <=, 2 is <. The editor offers no "greater than" for gold, which is why
+   its codes do not line up with the variable ones, and why a plugin that
+   forwards a variable operator code into a Gold condition means something
+   else by it. */
+StubInterpMZ.goldCompare = [
+  StubInterpMZ.compare[1],
+  StubInterpMZ.compare[2],
+  StubInterpMZ.compare[4]
+];
+
+/* The seven Actor sub-conditions, each handed the actor and params[3]. */
+StubInterpMZ.actorTests = [
+  function (actor, n) { return $gameParty.members().includes(actor); }, // 0 In the Party
+  function (actor, n) { return actor.name() === n; },                   // 1 Name
+  function (actor, n) { return actor.isClass($dataClasses[n]); },       // 2 Class
+  function (actor, n) { return actor.hasSkill(n); },                    // 3 Skill
+  function (actor, n) { return actor.hasWeapon($dataWeapons[n]); },     // 4 Weapon
+  function (actor, n) { return actor.hasArmor($dataArmors[n]); },       // 5 Armor
+  function (actor, n) { return actor.isStateAffected(n); }              // 6 State
+];
+
+/* The three Button sub-conditions. This whole table is MZ-ONLY: MV's Button
+   arm knows Input.isPressed and nothing else, so a triggered- or repeated-
+   flavoured Button branch authored in MZ reads as plain "pressed" there. */
+StubInterpMZ.buttonTests = [
+  function (name) { return Input.isPressed(name); },   // 0 pressed
+  function (name) { return Input.isTriggered(name); }, // 1 triggered
+  function (name) { return Input.isRepeated(name); }   // 2 repeated
+];
+
+/* Conditional Branch — rmmz_objects.js:9926. One arm per operand code, in the
+   editor's own order, each answering the whole condition for its operand.
+
+   Every arm hands back the engine's answer RAW and uncoerced — hasSkill,
+   hasItem and friends are not wrapped in !! — because command111 files that
+   answer in _branch untouched and command411 tests it against false rather
+   than against falsiness. An arm that answers undefined is NOT a false branch.
+
+   An operand code with no arm here, or a sub-code with no entry in the tables
+   above, answers false: that is the engine's `let result = false` surviving a
+   switch that matched nothing. Operand 12 (Script) is deliberately absent —
+   see command111 itself.
 
    Three arms differ from MV's:
-     · case 3 (Timer) computes `$gameTimer.frames() / 60` and compares the
-       FRACTION. MV compares the floored $gameTimer.seconds(), so the same
-       "timer >= 5" branch flips up to 59 frames earlier on MZ.
-     · case 4 (Actor), "In the Party", uses native .includes. MV uses
-       .contains, its own Array.prototype polyfill.
-     · case 11 (Button) grew a params[2] switch for pressed / triggered /
-       repeated. MV has only Input.isPressed.
-   The declarations at the top are hoisted the way MZ writes them (let value1,
-   value2; let actor, enemy, character) — MV declares each inside its own case
-   with var, which in ES5 hoists to the same place anyway. The tail is
-   identical and is the contract: the result is filed under this._indent in the
-   shared _branch map, and a false result skips forward. */
+     · 3 (Timer) divides FRAMES by 60 and compares the fraction. MV compares
+       the floored $gameTimer.seconds(), so the same "timer >= 5" flips up to
+       59 frames earlier here.
+     · 4 (Actor), In the Party, uses native .includes. MV uses .contains, its
+       own Array.prototype polyfill.
+     · 11 (Button) reads params[2]; MV has no such parameter. */
+StubInterpMZ.conditions = [];
+
+StubInterpMZ.conditions[0] = function (interpreter, p) {   // Switch
+  /* p[2] is 0 for ON and 1 for OFF, so the test is an equality against the
+     wanted state rather than a negation. */
+  return $gameSwitches.value(p[1]) === (p[2] === 0);
+};
+
+StubInterpMZ.conditions[1] = function (interpreter, p) {   // Variable
+  var left = $gameVariables.value(p[1]);
+  var right = p[2] === 0 ? p[3] : $gameVariables.value(p[3]);
+  var op = StubInterpMZ.arm(StubInterpMZ.compare, p[4]);
+  return op ? op(left, right) : false;
+};
+
+StubInterpMZ.conditions[2] = function (interpreter, p) {   // Self Switch
+  /* The interpreter's OWN map and event, captured at setup. A common event
+     run from a reservation has no event id and answers false without ever
+     touching $gameSelfSwitches. Written as the negation of the engine's
+     `> 0` rather than as `<= 0`, so a NaN event id fails both the same way. */
+  if (!(interpreter._eventId > 0)) {
+    return false;
+  }
+  var key = [interpreter._mapId, interpreter._eventId, p[1]];
+  return $gameSelfSwitches.value(key) === (p[2] === 0);
+};
+
+StubInterpMZ.conditions[3] = function (interpreter, p) {   // Timer
+  if (!$gameTimer.isWorking()) {
+    return false;
+  }
+  var seconds = $gameTimer.frames() / 60;
+  return p[2] === 0 ? seconds >= p[1] : seconds <= p[1];
+};
+
+StubInterpMZ.conditions[4] = function (interpreter, p) {   // Actor
+  var actor = $gameActors.actor(p[1]);
+  var test = StubInterpMZ.arm(StubInterpMZ.actorTests, p[2]);
+  return actor && test ? test(actor, p[3]) : false;
+};
+
+StubInterpMZ.conditions[5] = function (interpreter, p) {   // Enemy
+  /* Indexed into the troop by POSITION, not by enemy id — a troop slot that
+     was never filled answers false. */
+  var enemy = $gameTroop.members()[p[1]];
+  if (!enemy) {
+    return false;
+  }
+  if (p[2] === 0) {                       // Appeared
+    return enemy.isAlive();
+  }
+  if (p[2] === 1) {                       // State
+    return enemy.isStateAffected(p[3]);
+  }
+  return false;
+};
+
+StubInterpMZ.conditions[6] = function (interpreter, p) {   // Character
+  var character = interpreter.character(p[1]);
+  return character ? character.direction() === p[2] : false;
+};
+
+StubInterpMZ.conditions[7] = function (interpreter, p) {   // Gold
+  var op = StubInterpMZ.arm(StubInterpMZ.goldCompare, p[2]);
+  /* gold() is not even read for an operator code the editor cannot write. */
+  return op ? op($gameParty.gold(), p[1]) : false;
+};
+
+StubInterpMZ.conditions[8] = function (interpreter, p) {   // Item
+  /* ONE argument. includeEquip is left undefined, so an item held only in an
+     equip slot does not satisfy an Item condition — unlike the Weapon and
+     Armor arms below, which forward p[2] as that flag. */
+  return $gameParty.hasItem($dataItems[p[1]]);
+};
+
+StubInterpMZ.conditions[9] = function (interpreter, p) {   // Weapon
+  return $gameParty.hasItem($dataWeapons[p[1]], p[2]);
+};
+
+StubInterpMZ.conditions[10] = function (interpreter, p) {  // Armor
+  return $gameParty.hasItem($dataArmors[p[1]], p[2]);
+};
+
+StubInterpMZ.conditions[11] = function (interpreter, p) {  // Button
+  var test = StubInterpMZ.arm(StubInterpMZ.buttonTests, p[2] || 0);
+  return test ? test(p[1]) : false;
+};
+
+StubInterpMZ.conditions[13] = function (interpreter, p) {  // Vehicle
+  return $gamePlayer.vehicle() === $gameMap.vehicle(p[1]);
+};
+
+/* The dispatch, and the tail that is the actual contract: the answer is filed
+   under the CURRENT indent in the shared _branch map, read straight back out
+   of that map the way the engine reads it, and a false answer — false itself,
+   not merely a falsy one — skips forward to the matching Else. */
 Game_Interpreter.prototype.command111 = function (params) {
-  var result = false;
-  var value1, value2;
-  var actor, enemy, character;
-  switch (params[0]) {
-    case 0: // Switch
-      result = $gameSwitches.value(params[1]) === (params[2] === 0);
-      break;
-    case 1: // Variable
-      value1 = $gameVariables.value(params[1]);
-      if (params[2] === 0) {
-        value2 = params[3];
-      } else {
-        value2 = $gameVariables.value(params[3]);
-      }
-      switch (params[4]) {
-        case 0: // Equal to
-          result = value1 === value2;
-          break;
-        case 1: // Greater than or Equal to
-          result = value1 >= value2;
-          break;
-        case 2: // Less than or Equal to
-          result = value1 <= value2;
-          break;
-        case 3: // Greater than
-          result = value1 > value2;
-          break;
-        case 4: // Less than
-          result = value1 < value2;
-          break;
-        case 5: // Not Equal to
-          result = value1 !== value2;
-          break;
-      }
-      break;
-    case 2: // Self Switch
-      if (this._eventId > 0) {
-        var key = [this._mapId, this._eventId, params[1]];
-        result = $gameSelfSwitches.value(key) === (params[2] === 0);
-      }
-      break;
-    case 3: // Timer
-      if ($gameTimer.isWorking()) {
-        var sec = $gameTimer.frames() / 60;
-        if (params[2] === 0) {
-          result = sec >= params[1];
-        } else {
-          result = sec <= params[1];
-        }
-      }
-      break;
-    case 4: // Actor
-      actor = $gameActors.actor(params[1]);
-      if (actor) {
-        var n = params[3];
-        switch (params[2]) {
-          case 0: // In the Party
-            result = $gameParty.members().includes(actor);
-            break;
-          case 1: // Name
-            result = actor.name() === n;
-            break;
-          case 2: // Class
-            result = actor.isClass($dataClasses[n]);
-            break;
-          case 3: // Skill
-            result = actor.hasSkill(n);
-            break;
-          case 4: // Weapon
-            result = actor.hasWeapon($dataWeapons[n]);
-            break;
-          case 5: // Armor
-            result = actor.hasArmor($dataArmors[n]);
-            break;
-          case 6: // State
-            result = actor.isStateAffected(n);
-            break;
-        }
-      }
-      break;
-    case 5: // Enemy
-      enemy = $gameTroop.members()[params[1]];
-      if (enemy) {
-        switch (params[2]) {
-          case 0: // Appeared
-            result = enemy.isAlive();
-            break;
-          case 1: // State
-            result = enemy.isStateAffected(params[3]);
-            break;
-        }
-      }
-      break;
-    case 6: // Character
-      character = this.character(params[1]);
-      if (character) {
-        result = character.direction() === params[2];
-      }
-      break;
-    case 7: // Gold
-      switch (params[2]) {
-        case 0: // Greater than or equal to
-          result = $gameParty.gold() >= params[1];
-          break;
-        case 1: // Less than or equal to
-          result = $gameParty.gold() <= params[1];
-          break;
-        case 2: // Less than
-          result = $gameParty.gold() < params[1];
-          break;
-      }
-      break;
-    case 8: // Item
-      result = $gameParty.hasItem($dataItems[params[1]]);
-      break;
-    case 9: // Weapon
-      result = $gameParty.hasItem($dataWeapons[params[1]], params[2]);
-      break;
-    case 10: // Armor
-      result = $gameParty.hasItem($dataArmors[params[1]], params[2]);
-      break;
-    case 11: // Button
-      switch (params[2] || 0) {
-        case 0:
-          result = Input.isPressed(params[1]);
-          break;
-        case 1:
-          result = Input.isTriggered(params[1]);
-          break;
-        case 2:
-          result = Input.isRepeated(params[1]);
-          break;
-      }
-      break;
-    case 12: // Script
-      result = !!eval(params[1]);
-      break;
-    case 13: // Vehicle
-      result = $gamePlayer.vehicle() === $gameMap.vehicle(params[1]);
-      break;
+  var result;
+  if (params[0] === 12) {
+    /* Script. Held here rather than in a table arm because this is a DIRECT
+       eval: the script sees this method's scope and sees the interpreter as
+       `this`. Moving it into an arm would hand it a different scope and a
+       different `this`, which is a behaviour and not a formatting choice. */
+    result = !!eval(params[1]);
+  } else {
+    var arm = StubInterpMZ.arm(StubInterpMZ.conditions, params[0]);
+    result = arm ? arm(this, params) : false;
   }
   this._branch[this._indent] = result;
   if (this._branch[this._indent] === false) {
@@ -616,38 +694,43 @@ Game_Interpreter.prototype.command121 = function (params) {
    characters, party and system counters across four other areas. Operand 3
    throws rather than quietly returning 0. */
 Game_Interpreter.prototype.command122 = function (params) {
+  /* Read out of params BEFORE the operand is evaluated, exactly as the engine
+     does: a Script operand that reaches in and edits its own parameter array
+     cannot move the range it is already writing to. */
   var startId = params[0];
   var endId = params[1];
   var operationType = params[2];
   var operand = params[3];
   var value = 0;
-  var randomMax = 1;
-  switch (operand) {
-    case 0: // Constant
-      value = params[4];
-      break;
-    case 1: // Variable
-      value = $gameVariables.value(params[4]);
-      break;
-    case 2: // Random
-      value = params[4];
-      randomMax = params[5] - params[4] + 1;
-      randomMax = Math.max(randomMax, 1);
-      break;
-    case 3: // Game Data
-      value = this.gameDataOperand(params[4], params[5], params[6]);
-      break;
-    case 4: // Script
-      value = eval(params[4]);
-      break;
+  /* The width of the roll added to every write below. Only Random widens it;
+     for the other four operands it stays 1, and Math.randomInt(1) is always 0.
+     That is the whole trick by which MZ puts ONE loop under all five operands
+     where MV needs a private loop and an early return for Random alone. */
+  var spread = 1;
+  if (operand === 0) {          // Constant
+    value = params[4];
+  } else if (operand === 1) {   // Variable
+    value = $gameVariables.value(params[4]);
+  } else if (operand === 2) {   // Random
+    value = params[4];
+    /* Inclusive on both ends, and floored at 1 so a reversed range still
+       rolls a legal width rather than asking randomInt for a negative one. */
+    spread = Math.max(params[5] - params[4] + 1, 1);
+  } else if (operand === 3) {   // Game Data
+    value = this.gameDataOperand(params[4], params[5], params[6]);
+  } else if (operand === 4) {   // Script
+    /* Direct eval, so the script sees this interpreter as `this`. It is also
+       why the typeof guard below has to exist: a script may hand back a
+       string or an object, and only a number may take the roll. MV, whose
+       shared loop never sees a Script result, needs no such guard. */
+    value = eval(params[4]);
   }
-  for (var i = startId; i <= endId; i++) {
-    if (typeof value === 'number') {
-      var realValue = value + Math.randomInt(randomMax);
-      this.operateVariable(i, operationType, realValue);
-    } else {
-      this.operateVariable(i, operationType, value);
-    }
+  for (var id = startId; id <= endId; id++) {
+    /* One FRESH roll per variable in the range, not one roll for the range —
+       "set variables 1..3 to a random 1..6" gives three independent dice. A
+       non-number is written straight through, roll and all skipped. */
+    var written = typeof value === 'number' ? value + Math.randomInt(spread) : value;
+    this.operateVariable(id, operationType, written);
   }
   return true;
 };
@@ -673,19 +756,19 @@ Game_Interpreter.prototype.command201 = function (params) {
   if ($gameParty.inBattle() || $gameMessage.isBusy()) {
     return false;
   }
-  var mapId, x, y;
-  if (params[0] === 0) {
-    // Direct designation
-    mapId = params[1];
-    x = params[2];
-    y = params[3];
-  } else {
-    // Designation with variables
-    mapId = $gameVariables.value(params[1]);
-    x = $gameVariables.value(params[2]);
-    y = $gameVariables.value(params[3]);
+  /* params[0] says how the three destination numbers are spelled: 0 means
+     they are the values themselves, anything else means they are VARIABLE IDS
+     to read through. The engine writes the same three-way choice out twice,
+     once per branch; one reader says it once, and reads the variables in
+     params order — map, x, y — which is the order the engine reads them in
+     too, and the order anything watching $gameVariables will see. */
+  var throughVariables = params[0] !== 0;
+  function destination(index) {
+    return throughVariables ? $gameVariables.value(params[index]) : params[index];
   }
-  $gamePlayer.reserveTransfer(mapId, x, y, params[4], params[5]);
+  /* Five arguments, and the last two — fade type and the direction to face on
+     arrival — are passed straight through on both engines. */
+  $gamePlayer.reserveTransfer(destination(1), destination(2), destination(3), params[4], params[5]);
   this.setWaitMode('transfer');
   return true;
 };
@@ -708,8 +791,7 @@ Game_Interpreter.prototype.command302 = function (params) {
   if (!$gameParty.inBattle()) {
     var goods = [params];
     while (this.nextEventCode() === 605) {
-      this._index++;
-      goods.push(this.currentCommand().parameters);
+      goods.push(StubInterpMZ.step(this));
     }
     SceneManager.push(Scene_Shop);
     SceneManager.prepareNextScene(goods, params[4]);
@@ -740,36 +822,49 @@ Game_Event.prototype.isTriggerIn = function (triggers) {
    not $gameMap.mapId(). */
 Game_Event.prototype.meetsConditions = function (page) {
   var c = page.conditions;
-  if (c.switch1Valid) {
-    if (!$gameSwitches.value(c.switch1Id)) {
-      return false;
+  var event = this;
+  /* Six rows, each answering "this row does not BLOCK the page". A row whose
+     *Valid flag is off never blocks and never reads the id beside it, so a
+     page carrying a stale actorId is harmless while actorValid is false. The
+     rows are walked in the engine's order and the first one that blocks ends
+     the method — nothing after it is asked. */
+  var rows = [
+    function () {
+      return !c.switch1Valid || !!$gameSwitches.value(c.switch1Id);
+    },
+    function () {
+      return !c.switch2Valid || !!$gameSwitches.value(c.switch2Id);
+    },
+    function () {
+      /* Written as the negation of the engine's `<` rather than as `>=`, so a
+         variable holding NaN passes here exactly as it does there: the page
+         asks for AT LEAST the value, and only a value it can prove is smaller
+         blocks it. */
+      return !c.variableValid || !($gameVariables.value(c.variableId) < c.variableValue);
+    },
+    function () {
+      /* Compared against true itself, not against truthiness — the engine's
+         own accessor is what coerces, and a raw store of 1 or "A" that the
+         accessor reports as on is on here too. The key is built from the
+         event's OWN _mapId, not $gameMap.mapId(): an event whose data came
+         from another map addresses that map's self switches. */
+      if (!c.selfSwitchValid) {
+        return true;
+      }
+      var key = [event._mapId, event._eventId, c.selfSwitchCh];
+      return $gameSelfSwitches.value(key) === true;
+    },
+    function () {
+      return !c.itemValid || !!$gameParty.hasItem($dataItems[c.itemId]);
+    },
+    function () {
+      /* .includes here; MV's identical line reads .contains, its own
+         Array.prototype polyfill, which MZ does not ship at all. */
+      return !c.actorValid || $gameParty.members().includes($gameActors.actor(c.actorId));
     }
-  }
-  if (c.switch2Valid) {
-    if (!$gameSwitches.value(c.switch2Id)) {
-      return false;
-    }
-  }
-  if (c.variableValid) {
-    if ($gameVariables.value(c.variableId) < c.variableValue) {
-      return false;
-    }
-  }
-  if (c.selfSwitchValid) {
-    var key = [this._mapId, this._eventId, c.selfSwitchCh];
-    if ($gameSelfSwitches.value(key) !== true) {
-      return false;
-    }
-  }
-  if (c.itemValid) {
-    var item = $dataItems[c.itemId];
-    if (!$gameParty.hasItem(item)) {
-      return false;
-    }
-  }
-  if (c.actorValid) {
-    var actor = $gameActors.actor(c.actorId);
-    if (!$gameParty.members().includes(actor)) {
+  ];
+  for (var i = 0; i < rows.length; i++) {
+    if (!rows[i]()) {
       return false;
     }
   }
@@ -787,7 +882,7 @@ Game_Event.prototype.meetsConditions = function (page) {
    assigns the result of .map.
 
    CAUTION: `new Game_Event(this._mapId, event.id)` is the ENGINE's constructor
-   signature; core.js's Game_Event takes (id, name, x, y). Copied anyway
+   signature; core.js's Game_Event takes (id, name, x, y). Modelled anyway,
    because the id-vs-index difference is the point. A fixture that wants
    populated events should build them the way fixtures.js already does and set
    _mapId, not call this. */

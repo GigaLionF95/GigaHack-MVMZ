@@ -126,8 +126,31 @@ after, and read the converted string off the window that was just filled —
 `_textState.text`, or `_text` on MV's scrolling-text window. Two checks pin it
 and reverting the order fails seven.
 
-**COPY THE STUBS FROM A REAL ENGINE, NOT FROM MEMORY.** Both engines' sources
-ship inside any game folder you have, and they are the only trustworthy source:
+**A TAR HEADER PUBLISHES THE BUILD ACCOUNT'S NAME, AND NO FILE SCAN FINDS IT.**
+`tar` stamps the owner into every member header, and `tar tvzf` prints it on the
+first line without extracting anything — so an archive built on a personal
+machine hands that account name to everyone who downloads it. Scrubbing the
+working tree does nothing, because the leak is metadata rather than content: it
+went out with 2.0.0's two `.tar.gz` assets and 126 copies of the name were
+sitting in one of them. `build-release.sh` now neutralises ownership (bsdtar and
+GNU tar spell it differently, both are handled) AND fails the build if any
+header still carries a name. Zip stores no owner and needs nothing.
+
+**THE STUBS ARE MODELS, NOT COPIES, AND THAT IS A LICENCE QUESTION AS WELL AS A
+STYLE ONE.** The engines' JavaScript belongs to their publisher and is licensed
+for the games you make with the editor, not for redistribution in a public MIT
+repository. Reproduce the INTERFACE exactly — names, constants, data tables,
+call order, return values, because those are fact and there is no other correct
+way to state them — and write the IMPLEMENTATION from what you understand of the
+behaviour rather than transcribing it. There is a measuring tool: it folds
+comments, whitespace and var/let/const and reports every contiguous run shared
+with the engine, with line numbers. The tree went from a 365-token copy of one
+command dispatcher down to 121 tokens, all of it in two data tables. Keep it
+there, and keep the file:line citations — provenance stays stated; it is the
+copy that goes. See `NOTICE.md` and `gigahack-test/stubs/README.md`.
+
+**READ A REAL ENGINE, NOT YOUR MEMORY.** Both engines' sources ship inside any
+game folder you have, and they are the only trustworthy thing to learn from:
 
 ```
 MV 1.6  <game>/www/js/rpg_core.js rpg_managers.js rpg_objects.js

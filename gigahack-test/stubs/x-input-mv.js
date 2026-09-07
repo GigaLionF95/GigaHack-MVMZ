@@ -2,7 +2,7 @@
    GigaHack test harness — stubs/x-input-mv.js
    INPUT AND CONFIG: the DIVERGENT MV surface. MV 1.6.1 only.
 
-   Copied from /root/work/mv/js/rpg_core.js, rpg_managers.js.
+   Modelled on MV rpg_core.js, rpg_managers.js.
    Loaded IMMEDIATELY AFTER engine-mv.js, which is after core.js and x-input.js.
    Everything shared is in x-input.js; only what MV does DIFFERENTLY is here.
 
@@ -56,21 +56,25 @@ Input._wrapNwjsAlert = function () {
   }
 };
 
-/* rpg_core.js:3055 — nine assignments. MZ's has a TENTH (_virtualButton).
+/* rpg_core.js:3055 — nine fields, grouped below by which reader owns them.
+   MZ resets a TENTH (_virtualButton) and nothing else differs.
    The harness counter is core.js's, carried across so run.js:765's
    "Input.clear() is called on open" check keeps working against the real body
    rather than against a one-line placeholder. */
 Input.clear = function () {
   window.__inputCleared = (window.__inputCleared || 0) + 1;
+  // what is held now, what was held last frame, and the pad snapshot
   this._currentState = {};
   this._previousState = {};
   this._gamepadStates = [];
+  // the single-slot latch behind isTriggered / isRepeated / Input.date
   this._latestButton = null;
   this._pressedTime = 0;
+  this._date = 0;
+  // the resolved direction, and the axis _updateDirection is favouring
   this._dir4 = 0;
   this._dir8 = 0;
   this._preferredAxis = '';
-  this._date = 0;
 };
 
 /* rpg_core.js:3073. MZ's update is this plus a _virtualButton block wedged
@@ -86,19 +90,28 @@ Input.clear = function () {
 Input.update = function () {
   window.__inputUpdates = (window.__inputUpdates || 0) + 1;
   this._pollGamepads();
-  if (this._currentState[this._latestButton]) {
+
+  var held = this._currentState;
+  var seen = this._previousState;
+
+  // The latch survives the frame only while its own key is still down.
+  if (held[this._latestButton]) {
     this._pressedTime++;
   } else {
     this._latestButton = null;
   }
-  for (var name in this._currentState) {
-    if (this._currentState[name] && !this._previousState[name]) {
+
+  for (var name in held) {
+    var down = held[name];
+    if (down && !seen[name]) {
       this._latestButton = name;
       this._pressedTime = 0;
       this._date = Date.now();
     }
-    this._previousState[name] = this._currentState[name];
+    // Only keys still IN _currentState are refreshed, hence the leak.
+    seen[name] = down;
   }
+
   this._updateDirection();
 };
 
@@ -152,13 +165,16 @@ Input._makeNumpadDirection = function (x, y) {
    "did the engine see my key" gets a different answer on a game with a broken
    asset than on a healthy one. */
 Input._onKeyDown = function (event) {
-  if (this._shouldPreventDefault(event.keyCode)) {
+  var keyCode = event.keyCode;
+  if (this._shouldPreventDefault(keyCode)) {
     event.preventDefault();
   }
-  if (event.keyCode === 144) {    // Numlock
+  if (keyCode === 144) {    // Numlock
     this.clear();
   }
-  var buttonName = this.keyMapper[event.keyCode];
+  var buttonName = this.keyMapper[keyCode];
+  // exists() is consulted on EVERY keydown, mapped or not — it is the first
+  // operand, so it runs before buttonName is even looked at.
   if (ResourceHandler.exists() && buttonName === 'ok') {
     ResourceHandler.retry();
   } else if (buttonName) {
@@ -166,9 +182,12 @@ Input._onKeyDown = function (event) {
   }
 };
 
-/* rpg_core.js:3257 — SEVEN cases. MZ's list (rmmz_core.js:5900) has EIGHT: it
-   adds `case 9` for Tab. That single missing case is the whole delta, and it
-   is the reason Tab moves focus normally on an MV game and does not on MZ. */
+/* rpg_core.js:3257 — SEVEN key codes, all falling through to one `return
+   true`. MZ's list (rmmz_core.js:5900) has EIGHT: it adds `case 9` for Tab.
+   That single missing code is the whole delta, and it is the reason Tab moves
+   focus normally on an MV game and does not on MZ. (The engine writes the
+   negative answer as a `return false` after the switch; a `default` arm says
+   the same thing and keeps the whole decision inside one construct.) */
 Input._shouldPreventDefault = function (keyCode) {
   switch (keyCode) {
   case 8:     // backspace
@@ -179,8 +198,9 @@ Input._shouldPreventDefault = function (keyCode) {
   case 39:    // right arrow
   case 40:    // down arrow
     return true;
+  default:
+    return false;
   }
-  return false;
 };
 
 /* rpg_core.js:3277. MV has a trailing `if (event.keyCode === 0) this.clear();`
@@ -220,28 +240,32 @@ ResourceHandler._reloaders = [];
 ResourceHandler._defaultRetryInterval = [500, 1000, 3000];
 
 ResourceHandler.createLoader = function (url, retryMethod, resignMethod, retryInterval) {
-  retryInterval = retryInterval || this._defaultRetryInterval;
+  var ladder = retryInterval || this._defaultRetryInterval;
   var reloaders = this._reloaders;
   var retryCount = 0;
   return function () {
-    if (retryCount < retryInterval.length) {
-      setTimeout(retryMethod, retryInterval[retryCount]);
+    // Rungs 0..n-1: come back later and try again, on a lengthening timer.
+    if (retryCount < ladder.length) {
+      setTimeout(retryMethod, ladder[retryCount]);
       retryCount++;
-    } else {
-      if (resignMethod) {
-        resignMethod();
-      }
-      if (url) {
-        if (reloaders.length === 0) {
-          Graphics.printLoadingError(url);
-          SceneManager.stop();
-        }
-        reloaders.push(function () {
-          retryCount = 0;
-          retryMethod();
-        });
-      }
+      return;
     }
+    // Off the end of the ladder: give up quietly, then park a reloader.
+    if (resignMethod) {
+      resignMethod();
+    }
+    if (!url) {
+      return;
+    }
+    if (reloaders.length === 0) {
+      // Only the FIRST parked url stops the engine and paints the error.
+      Graphics.printLoadingError(url);
+      SceneManager.stop();
+    }
+    reloaders.push(function () {
+      retryCount = 0;
+      retryMethod();
+    });
   };
 };
 
@@ -293,7 +317,7 @@ Graphics.eraseLoadingError = function () {
   window.__loadingErrorsErased = (window.__loadingErrorsErased || 0) + 1;
 };
 
-/* rpg_managers.js:2105 / :2126. VERBATIM. resume() is the interesting half:
+/* rpg_managers.js:2105 / :2126. Behaviour kept exactly. resume() is the interesting half:
    besides clearing _stopped it calls requestUpdate() — which on MV pushes a
    new callback onto the countable __raf queue in core.js — and then resets the
    fixed-timestep accumulator that engine-mv.js's updateMain runs on. Both
@@ -327,16 +351,14 @@ SceneManager.resume = function () {
    where a missing file does not. Kept as shipped. */
 ConfigManager.load = function () {
   var json;
-  var config = {};
   try {
     json = StorageManager.load(-1);
   } catch (e) {
     console.error(e);
   }
-  if (json) {
-    config = JSON.parse(json);
-  }
-  this.applyData(config);
+  // The parse is OUTSIDE the catch on purpose: a missing file lands here as a
+  // falsy json and applies defaults, a corrupt one throws out of load().
+  this.applyData(json ? JSON.parse(json) : {});
 };
 
 /* :525. core.js's counters ride along so that a check can count flushes
@@ -350,14 +372,14 @@ ConfigManager.save = function () {
 /* :529. SIX keys. MZ's makeData writes SEVEN — it adds touchUI. An MV config
    file round-tripped through an MZ build gains a key; the reverse loses one. */
 ConfigManager.makeData = function () {
-  var config = {};
-  config.alwaysDash = this.alwaysDash;
-  config.commandRemember = this.commandRemember;
-  config.bgmVolume = this.bgmVolume;
-  config.bgsVolume = this.bgsVolume;
-  config.meVolume = this.meVolume;
-  config.seVolume = this.seVolume;
-  return config;
+  return {
+    alwaysDash: this.alwaysDash,
+    commandRemember: this.commandRemember,
+    bgmVolume: this.bgmVolume,
+    bgsVolume: this.bgsVolume,
+    meVolume: this.meVolume,
+    seVolume: this.seVolume
+  };
 };
 
 /* :540. readFlag takes TWO arguments here. MZ's takes three, the third being
@@ -366,10 +388,13 @@ ConfigManager.makeData = function () {
 ConfigManager.applyData = function (config) {
   this.alwaysDash = this.readFlag(config, 'alwaysDash');
   this.commandRemember = this.readFlag(config, 'commandRemember');
-  this.bgmVolume = this.readVolume(config, 'bgmVolume');
-  this.bgsVolume = this.readVolume(config, 'bgsVolume');
-  this.meVolume = this.readVolume(config, 'meVolume');
-  this.seVolume = this.readVolume(config, 'seVolume');
+  // The four volume names are also the four ConfigManager accessors, and each
+  // write lands on AudioManager — so the order below is the order the mixer
+  // sees, and it is the engine's.
+  var channels = ['bgmVolume', 'bgsVolume', 'meVolume', 'seVolume'];
+  for (var i = 0; i < channels.length; i++) {
+    this[channels[i]] = this.readVolume(config, channels[i]);
+  }
 };
 
 /* :549. `!!config[name]` — an absent key and a false key are the same thing,

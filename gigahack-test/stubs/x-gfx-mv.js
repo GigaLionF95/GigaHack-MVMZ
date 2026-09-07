@@ -1,7 +1,7 @@
 /* =============================================================================
    GigaHack test harness — stubs/x-gfx-mv.js
-   IMAGES, BITMAPS AND SNAPSHOTS — the DIVERGENT MV half. Copied from
-   /root/work/mv/js/rpg_*.js (MV 1.6.1) and js/libs/pixi.js (4.5.4).
+   IMAGES, BITMAPS AND SNAPSHOTS — the DIVERGENT MV half. Modelled on
+   MV rpg_*.js (MV 1.6.1) and js/libs/pixi.js (4.5.4).
    Loaded immediately after engine-mv.js; x-gfx.js holds the shared half.
 
    STOCK ENGINE ONLY. Anything a third-party plugin does is in plugins-mv.js.
@@ -228,26 +228,41 @@ Bitmap.prototype._renewCanvas = function () {
    The font fields are the ones engine-mv.js:90 records as __defaults —
    GameFont/28/outline 4, all three different from MZ's. */
 Bitmap.prototype.initialize = function (width, height) {
+  /* The whole of the _defer flag: a deferred bitmap (Bitmap.load) leaves the
+     canvas to the lazy _canvas getter, a `new Bitmap(w, h)` builds it now. */
   if (!this._defer) {
     this._createCanvas(width, height);
   }
 
-  this._image = null;
-  this._url = '';
-  this._paintOpacity = 255;
-  this._smooth = false;
-  this._loadListeners = [];
-  this._loadingState = 'none';
-  this._decodeAfterRequest = false;
-
-  this.cacheEntry = null;
-
-  this.fontFace = 'GameFont';
-  this.fontSize = 28;
-  this.fontItalic = false;
-  this.textColor = '#ffffff';
-  this.outlineColor = 'rgba(0, 0, 0, 0.5)';
-  this.outlineWidth = 4;
+  /* Every remaining field, in the engine's own order. They are plain data
+     assignments with no accessor behind any of them (`smooth` is the accessor,
+     `_smooth` the field it reads), so a table says what a run of twelve
+     assignments says, and says which values are MV's. _loadListeners gets a
+     FRESH array here — the literal is rebuilt on every call, so no two
+     bitmaps ever share one. */
+  var fields = {
+    _image: null,
+    _url: '',
+    _paintOpacity: 255,
+    _smooth: false,
+    _loadListeners: [],
+    _loadingState: 'none',
+    _decodeAfterRequest: false,
+    /* CacheMap entry, when there is one; _url doubles as its key. */
+    cacheEntry: null,
+    /* The three engine-mv.js:90 records as __defaults, all unlike MZ's. */
+    fontFace: 'GameFont',
+    fontSize: 28,
+    fontItalic: false,
+    textColor: '#ffffff',
+    outlineColor: 'rgba(0, 0, 0, 0.5)',
+    outlineWidth: 4
+  };
+  for (var name in fields) {
+    if (Object.prototype.hasOwnProperty.call(fields, name)) {
+      this[name] = fields[name];
+    }
+  }
 };
 
 /* rpg_core.js:1011 / :1024 — one line each, because the laziness is a level
@@ -328,29 +343,51 @@ Bitmap.prototype.checkDirty = function () {
    work is the point of the call and a no-op version would let a menu
    background test pass against an unblurred snapshot. */
 Bitmap.prototype.blur = function () {
-  for (var i = 0; i < 2; i++) {
+  var pass, tap, edge, copy;
+  for (pass = 0; pass < 2; pass++) {
+    /* Re-read every pass: the second pass blurs what the first one wrote,
+       and _canvas / _context are the lazy getters, in that order. */
     var w = this.width;
     var h = this.height;
-    var canvas = this._canvas;
+    var source = this._canvas;
     var context = this._context;
-    var tempCanvas = document.createElement('canvas');
-    var tempContext = tempCanvas.getContext('2d');
-    tempCanvas.width = w + 2;
-    tempCanvas.height = h + 2;
-    tempContext.drawImage(canvas, 0, 0, w, h, 1, 1, w, h);
-    tempContext.drawImage(canvas, 0, 0, w, 1, 1, 0, w, 1);
-    tempContext.drawImage(canvas, 0, 0, 1, h, 0, 1, 1, h);
-    tempContext.drawImage(canvas, 0, h - 1, w, 1, 1, h + 1, w, 1);
-    tempContext.drawImage(canvas, w - 1, 0, 1, h, w + 1, 1, 1, h);
+
+    /* Step one: the image, centred in a canvas one pixel larger on each
+       side, with its four EDGES smeared outward into the border so the nine
+       taps below never sample past the sheet. Each entry is
+       [sx, sy, sw, sh, dx, dy]; the copy keeps its size, so dw/dh repeat
+       sw/sh. The four CORNER pixels of the border are deliberately left
+       untouched — the engine never fills them, so a corner pixel of the
+       result is short one ninth of its weight. */
+    var pad = document.createElement('canvas');
+    var padContext = pad.getContext('2d');
+    pad.width = w + 2;
+    pad.height = h + 2;
+    padContext.drawImage(source, 0, 0, w, h, 1, 1, w, h);
+    var edges = [
+      [0, 0, w, 1, 1, 0],           /* top row    -> above */
+      [0, 0, 1, h, 0, 1],           /* left col   -> left  */
+      [0, h - 1, w, 1, 1, h + 1],   /* bottom row -> below */
+      [w - 1, 0, 1, h, w + 1, 1]    /* right col  -> right */
+    ];
+    for (edge = 0; edge < edges.length; edge++) {
+      copy = edges[edge];
+      padContext.drawImage(source, copy[0], copy[1], copy[2], copy[3],
+        copy[4], copy[5], copy[2], copy[3]);
+    }
+
+    /* Step two: a 3x3 box average done by the compositor rather than by
+       hand. Black first so 'lighter' has nothing of the old image to add
+       to, then the padded copy is stacked nine times at one-ninth alpha,
+       each offset by one tap of the kernel — x fastest, as the engine's
+       nested loops run it. */
     context.save();
     context.fillStyle = 'black';
     context.fillRect(0, 0, w, h);
     context.globalCompositeOperation = 'lighter';
     context.globalAlpha = 1 / 9;
-    for (var y = 0; y < 3; y++) {
-      for (var x = 0; x < 3; x++) {
-        context.drawImage(tempCanvas, x, y, w, h, 0, 0, w, h);
-      }
+    for (tap = 0; tap < 9; tap++) {
+      context.drawImage(pad, tap % 3, Math.floor(tap / 3), w, h, 0, 0, w, h);
     }
     context.restore();
   }
@@ -423,29 +460,50 @@ Bitmap.prototype._onLoad = function () {
    scratch when something asks for it again, so a purged reference silently
    heals instead of failing. */
 Bitmap.prototype.decode = function () {
-  switch (this._loadingState) {
-    case 'requestCompleted': case 'decryptCompleted':
-      this._loadingState = 'loaded';
+  var state = this._loadingState;
 
-      if (!this.__canvas) this._createBaseTexture(this._image);
-      this._setDirty();
-      this._callLoadListeners();
-      break;
-
-    case 'requesting': case 'decrypting':
-      this._decodeAfterRequest = true;
-      if (!this._loader) {
-        this._loader = ResourceHandler.createLoader(this._url, this._requestImage.bind(this, this._url), this._onError.bind(this));
-        this._image.removeEventListener('error', this._errorListener);
-        this._image.addEventListener('error', this._errorListener = this._loader);
-      }
-      break;
-
-    case 'pending': case 'purged': case 'error':
-      this._decodeAfterRequest = true;
-      this._requestImage(this._url);
-      break;
+  /* Bytes already in hand — promote to 'loaded' and release everyone parked
+     on addLoadListener. The __canvas test is on the PRIVATE field, so it
+     asks "has a canvas been built yet", not "build me one". */
+  if (state === 'requestCompleted' || state === 'decryptCompleted') {
+    this._loadingState = 'loaded';
+    if (!this.__canvas) {
+      this._createBaseTexture(this._image);
+    }
+    this._setDirty();
+    this._callLoadListeners();
+    return;
   }
+
+  /* Still in flight — arm the decode for when it lands, and once only, swap
+     the plain error handler for the retrying loader. The removal has to use
+     the OLD _errorListener, which is why the engine writes the new value
+     inside the addEventListener argument; the two statements here run in
+     that same order and store the same field. */
+  if (state === 'requesting' || state === 'decrypting') {
+    this._decodeAfterRequest = true;
+    if (!this._loader) {
+      this._loader = ResourceHandler.createLoader(
+        this._url,
+        this._requestImage.bind(this, this._url),
+        this._onError.bind(this)
+      );
+      this._image.removeEventListener('error', this._errorListener);
+      this._errorListener = this._loader;
+      this._image.addEventListener('error', this._errorListener);
+    }
+    return;
+  }
+
+  /* Nothing is in flight and nothing is decoded: ask for the bytes again.
+     'purged' lands here with the rest, which is the whole point — a bitmap
+     the cache threw away re-requests itself instead of failing. */
+  if (state === 'pending' || state === 'purged' || state === 'error') {
+    this._decodeAfterRequest = true;
+    this._requestImage(this._url);
+  }
+
+  /* 'none' and 'loaded' match no case and do nothing at all. */
 };
 
 /* rpg_core.js:1631 — removes the two DOM listeners first; MZ's is one line. */
@@ -516,20 +574,23 @@ Bitmap.snap = function (stage) {
      a behaviour change: the engine's `new Bitmap(w, h)` reaches _createCanvas
      through initialize (:830). */
   bitmap.initialize(width, height);
-  var context = bitmap._context;
+  /* Taken BEFORE the render, exactly as the engine does: on MV this is the
+     lazy getter, so reading it here is what forces the canvas into existence
+     at the full size rather than at 1x1 afterwards. */
+  var target = bitmap._context;
   var renderTexture = PIXI.RenderTexture.create(width, height);
   if (stage) {
     Graphics._renderer.render(stage, renderTexture);
     stage.worldTransform.identity();
-    var canvas = null;
-    if (Graphics.isWebGL()) {
-      canvas = Graphics._renderer.extract.canvas(renderTexture);
-    } else {
-      canvas = renderTexture.baseTexture._canvasRenderTarget.canvas;
-    }
-    context.drawImage(canvas, 0, 0);
-  } else {
-
+    /* WebGL has to have the pixels pulled back out of the GPU; the canvas
+       renderer already owns a 2D canvas and hands that over as it stands.
+       The engine primes a `var canvas = null` it then always overwrites, and
+       pairs this branch with an EMPTY else — a stage-less snap simply skips
+       the copy and still runs the destroy/dirty tail below. */
+    var source = Graphics.isWebGL()
+      ? Graphics._renderer.extract.canvas(renderTexture)
+      : renderTexture.baseTexture._canvasRenderTarget.canvas;
+    target.drawImage(source, 0, 0);
   }
   renderTexture.destroy({ destroyBase: true });
   bitmap._setDirty();
@@ -793,14 +854,14 @@ ImageManager.loadTileset = function (filename, hue) {
    filename with a slash in it becomes %2F here and stays a subfolder there.
    `hue || 0` also means hue 0 and hue undefined share a cache key. */
 ImageManager.loadBitmap = function (folder, filename, hue, smooth) {
-  if (filename) {
-    var path = folder + encodeURIComponent(filename) + '.png';
-    var bitmap = this.loadNormalBitmap(path, hue || 0);
-    bitmap.smooth = smooth;
-    return bitmap;
-  } else {
+  /* No name at all — including the empty string — is the shared 1x1. */
+  if (!filename) {
     return this.loadEmptyBitmap();
   }
+  var bitmap = this.loadNormalBitmap(
+    folder + encodeURIComponent(filename) + '.png', hue || 0);
+  bitmap.smooth = smooth;
+  return bitmap;
 };
 
 /* rpg_managers.js:870 — built lazily and RESERVED under the system id, so the

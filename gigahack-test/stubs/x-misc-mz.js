@@ -1,6 +1,6 @@
 /* =============================================================================
    GigaHack test harness — stubs/x-misc-mz.js
-   The MZ 1.9.0 half of the small shared surface. Copied from js/rmmz_*.js.
+   The MZ 1.9.0 half of the small shared surface. Modelled on js/rmmz_*.js.
 
    Loaded IMMEDIATELY AFTER engine-mz.js, so Utils.RPGMAKER_NAME is 'MZ',
    Utils.extractFileName exists, ColorManager exists, and PluginManager is the

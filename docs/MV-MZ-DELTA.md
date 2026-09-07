@@ -4,9 +4,9 @@ I have everything I need. Here is the report.
 
 # MV 1.6.1 ↔ MZ 1.9.0 API delta — scoped to GigaHack
 
-Engine sources: `/root/work/mv/js/rpg_*.js` (MV 1.6.1, PIXI 4.5.4) and `/root/work/mz/js/rmmz_*.js` (MZ 1.9.0, PIXI 5). Mod: `/root/work/src/gigahack/js/plugins/*.js`.
+Engine sources: `MV rpg_*.js` (MV 1.6.1, PIXI 4.5.4) and `MZ rmmz_*.js` (MZ 1.9.0, PIXI 5). Mod: `gigahack/js/plugins/*.js`.
 
-**Hook inventory:** exactly **43** `$.install(...)` sites across 10 files. `$.install` (`/root/work/src/gigahack/js/plugins/GigaHack_Core.js:112`) resolves `typeof owner[method] === 'function'` through the prototype chain and shadows with an own property, so prototype-inherited targets (`Spriteset_Map.createUpperLayer`) install correctly on both engines, and a missing target degrades to `{installed:false}` rather than throwing. Of the 43, **39 install cleanly on MV**, **4 silently skip**, and **2 of the 39 are semantically fatal on MV** (§C.1).
+**Hook inventory:** exactly **43** `$.install(...)` sites across 10 files. `$.install` (`gigahack/js/plugins/GigaHack_Core.js:112`) resolves `typeof owner[method] === 'function'` through the prototype chain and shadows with an own property, so prototype-inherited targets (`Spriteset_Map.createUpperLayer`) install correctly on both engines, and a missing target degrades to `{installed:false}` rather than throwing. Of the 43, **39 install cleanly on MV**, **4 silently skip**, and **2 of the 39 are semantically fatal on MV** (§C.1).
 
 The mod calls **no** `PluginManager.registerCommand`, no `@command`/`@arg` annotations, and touches Effekseer only in a comment (`GigaHack_Hooks.js:81`). All 23 files carry `@target MZ` (harmless on MV — MV's annotation parser ignores unknown tags).
 
@@ -15,45 +15,45 @@ The mod calls **no** `PluginManager.registerCommand`, no `@command`/`@arg` annot
 ## A. Missing in MV 1.6.1
 
 ### A.1 `ColorManager` — entire static class absent
-`/root/work/mz/js/rmmz_managers.js:1746`. No MV counterpart; MV puts every colour accessor on `Window_Base.prototype`.
+`MZ rmmz_managers.js:1746`. No MV counterpart; MV puts every colour accessor on `Window_Base.prototype`.
 
 - Mod use: `GigaHack_Text.js:728` (`colourAvailable`), `GigaHack_Text.js:764-771` (hook, already carries the fallback reason string `'ColorManager.normalColor not found'`).
 - MZ: `ColorManager.normalColor = function() { return this.textColor(0); }` (`rmmz_managers.js:1760`), `ColorManager.textColor = function(n)` (`:1754`) reading `this._windowskin.getPixel(px, py)`.
-- **MV equivalent:** `Window_Base.prototype.normalColor = function()` (`/root/work/mv/js/rpg_windows.js:179`) and `Window_Base.prototype.textColor = function(n)` (`:173`), which read `this.windowskin.getPixel(px, py)` — per-window, not global. The pixel arithmetic is byte-identical (`96 + (n%8)*12 + 6` / `144 + floor(n/8)*12 + 6`).
+- **MV equivalent:** `Window_Base.prototype.normalColor = function()` (`MV rpg_windows.js:179`) and `Window_Base.prototype.textColor = function(n)` (`:173`), which read `this.windowskin.getPixel(px, py)` — per-window, not global. The pixel arithmetic is byte-identical (`96 + (n%8)*12 + 6` / `144 + floor(n/8)*12 + 6`).
 - **Port note:** the mod's "override normal text colour globally" feature has no single choke point in MV. Hooking `Window_Base.prototype.normalColor` reaches every stock window, but MV windows that call `textColor(0)` directly bypass it, and `Window_Base.prototype.resetTextColor` (`rpg_windows.js:104`) calls `this.normalColor()`, so hooking `normalColor` is still the best single point.
 - Full MZ→MV map for the ColorManager methods the mod could want: `normalColor`→`Window_Base.prototype.normalColor` (:179), `systemColor`→(:183), `crisisColor`→(:187), `deathColor`→(:191), `gaugeBackColor`→(:195), `powerUpColor`→(:219), `powerDownColor`→(:223), `pendingColor`→(:239), `hpColor(actor)`→(:472), `mpColor(actor)`→(:482), `tpColor(actor)`→(:486). MZ's `ColorManager.outlineColor` (`:1877`) has **no MV equivalent** — MV has no `changeOutlineColor`; outline colour lives only on `Bitmap.outlineColor`.
 
 ### A.2 `Game_System.prototype.mainFontSize` / `mainFontFace` — absent
-`/root/work/mz/js/rmmz_objects.js:408` and `:400`.
+`MZ rmmz_objects.js:408` and `:400`.
 
 - Mod use: `GigaHack_Text.js:723-725` (feature probe), `GigaHack_Text.js:740-748` and `:750-762` (the two hooks).
 - **MV equivalents (exact signatures):**
-  - `Window_Base.prototype.standardFontFace = function()` — `/root/work/mv/js/rpg_windows.js:39`, returns `'SimHei, Heiti TC, sans-serif'` / `'Dotum, AppleGothic, sans-serif'` / `'GameFont'`.
+  - `Window_Base.prototype.standardFontFace = function()` — `MV rpg_windows.js:39`, returns `'SimHei, Heiti TC, sans-serif'` / `'Dotum, AppleGothic, sans-serif'` / `'GameFont'`.
   - `Window_Base.prototype.standardFontSize = function()` — `rpg_windows.js:49`, returns `28`.
 - The consumer differs too: MV `Window_Base.prototype.resetFontSettings` (`rpg_windows.js:99`) reads `this.standardFontFace()/standardFontSize()`; MZ's (`rmmz_windows.js:115`) reads `$gameSystem.mainFontFace()/mainFontSize()`. The mod's own comment at `GigaHack_Text.js:733-738` explains it deliberately hooks the Game_System accessor to avoid the per-draw `resetFontSettings` path — on MV that choice is unavailable and `Window_Base.prototype.standardFontFace/standardFontSize` are the only single-point hooks (still one call per `createContents`, not per draw call — `resetFontSettings` runs from `createContents` and from `drawTextEx`).
 - Related MZ-only siblings the port may trip over: `Game_System.prototype.numberFontFace` (`rmmz_objects.js:404`), `windowPadding` (`:412`), `windowOpacity`. MV constants: `Window_Base.prototype.standardPadding = function(){return 18;}` (`rpg_windows.js:53`), `standardBackOpacity = function(){return 192;}` (`:61`), `textPadding = function(){return 6;}` (`:57`).
 
 ### A.3 `Game_System.prototype.setSavefileId` — absent — **unguarded, breaks quick save**
-`/root/work/mz/js/rmmz_objects.js:303` (`setSavefileId(savefileId)`); getter `savefileId()` at `:299`.
+`MZ rmmz_objects.js:303` (`setSavefileId(savefileId)`); getter `savefileId()` at `:299`.
 
 - Mod use: `GigaHack_Save.js:135`, inside the `$.safe` block that also calls `onBeforeSave()` and `DataManager.saveGame(id)`.
-- **There is no MV equivalent.** MV has no per-session savefile id on `Game_System`; the nearest thing is `DataManager._lastAccessedId` (set inside `saveGameWithoutRescue`, `/root/work/mv/js/rpg_managers.js:379`) with reader `DataManager.lastAccessedSavefileId()` (`:359`).
+- **There is no MV equivalent.** MV has no per-session savefile id on `Game_System`; the nearest thing is `DataManager._lastAccessedId` (set inside `saveGameWithoutRescue`, `MV rpg_managers.js:379`) with reader `DataManager.lastAccessedSavefileId()` (`:359`).
 - **Consequence on MV:** the call throws, `$.safe` returns the `null` fallback, and the mod reports `'quick save failed — saveGame threw'` — **`DataManager.saveGame` is never reached and no save is written**. This is the single highest-priority fix in the port.
 
 ### A.4 `Scene_File.prototype.isSavefileEnabled` — absent
-`/root/work/mz/js/rmmz_scenes.js:2276`: `Scene_File.prototype.isSavefileEnabled = function(savefileId) { return this._listWindow.isEnabled(savefileId); };`
+`MZ rmmz_scenes.js:2276`: `Scene_File.prototype.isSavefileEnabled = function(savefileId) { return this._listWindow.isEnabled(savefileId); };`
 
 - Mod use: `GigaHack_Save.js:307-319` (hook, needed for "save anywhere" to lift ironman's slot restriction).
-- MV `Scene_File.prototype` has no such member (full list: `/root/work/mv/js/rpg_scenes.js:1621-1680`). MV's `Window_SavefileList` also has **no** `isEnabled` (full list `/root/work/mv/js/rpg_windows.js:2797-2879`); slot enablement simply does not exist — `Window_Selectable.prototype.isCurrentItemEnabled = function() { return true; }` (`rpg_windows.js:1247`) is never overridden by the savefile list, and `Window_SavefileList.prototype.drawItem` (`rpg_windows.js:2822`) only *dims* invalid entries via `changePaintOpacity(valid)`.
-- MZ side for reference: `Window_SavefileList.prototype.isEnabled = function(savefileId)` at `/root/work/mz/js/rmmz_windows.js:3177`.
+- MV `Scene_File.prototype` has no such member (full list: `MV rpg_scenes.js:1621-1680`). MV's `Window_SavefileList` also has **no** `isEnabled` (full list `MV rpg_windows.js:2797-2879`); slot enablement simply does not exist — `Window_Selectable.prototype.isCurrentItemEnabled = function() { return true; }` (`rpg_windows.js:1247`) is never overridden by the savefile list, and `Window_SavefileList.prototype.drawItem` (`rpg_windows.js:2822`) only *dims* invalid entries via `changePaintOpacity(valid)`.
+- MZ side for reference: `Window_SavefileList.prototype.isEnabled = function(savefileId)` at `MZ rmmz_windows.js:3177`.
 - **Port note:** on MV the hook is a no-op concept. Whatever the target game's ironman plugin overrides in MV (likely `Window_SavefileList.prototype.drawItem` or `Scene_Save.prototype.onSavefileOk`, `rpg_scenes.js:1711`) is what must be hooked instead. `$.install` will record `installed:false` and log a warning, so nothing crashes.
 - Related naming drift: MV `Scene_File.prototype.firstSavefileIndex()` (`rpg_scenes.js:1676`) vs MZ `Scene_File.prototype.firstSavefileId()` (`rmmz_scenes.js:2329`); MV `Window_SavefileList.prototype.setMode(mode)` (1 arg, `rpg_windows.js:2805`) vs MZ `setMode(mode, autosave)` (2 args, `rmmz_windows.js:3139`). MV's `Scene_File.prototype.mode()` (`rpg_scenes.js:1664`), which the mod's hook body calls, **does** exist.
 
 ### A.5 `DataManager.savefileInfo(savefileId)` — renamed
-`/root/work/mz/js/rmmz_managers.js:335`: `return globalInfo[savefileId] ? globalInfo[savefileId] : null;` (reads the cached `this._globalInfo`).
+`MZ rmmz_managers.js:335`: `return globalInfo[savefileId] ? globalInfo[savefileId] : null;` (reads the cached `this._globalInfo`).
 
 - Mod use: `GigaHack_Save.js:56` (`S.info`), which feeds `S.slots()` (`:60-72`), the save panel, and the overwrite-confirm at `:132`.
-- **MV equivalent:** `DataManager.loadSavefileInfo = function(savefileId)` — `/root/work/mv/js/rpg_managers.js:360`:
+- **MV equivalent:** `DataManager.loadSavefileInfo = function(savefileId)` — `MV rpg_managers.js:360`:
   ```
   var globalInfo = this.loadGlobalInfo();
   return (globalInfo && globalInfo[savefileId]) ? globalInfo[savefileId] : null;
@@ -61,81 +61,81 @@ The mod calls **no** `PluginManager.registerCommand`, no `@command`/`@arg` annot
   Note it re-reads and re-parses the whole global file on **every** call — calling it 20× per panel repaint (which `S.slots()` does) is a synchronous LZString decompress ×20. Cache it.
 
 ### A.6 `DataManager._globalInfo` — absent
-`/root/work/mz/js/rmmz_managers.js:44` (`DataManager._globalInfo = null;`), populated asynchronously in `loadGlobalInfo` (`:64-73`).
+`MZ rmmz_managers.js:44` (`DataManager._globalInfo = null;`), populated asynchronously in `loadGlobalInfo` (`:64-73`).
 
 - Mod use: `GigaHack_Save.js:652` (marks an imported slot's title). The surrounding comment (`:641-651`) documents the MZ async hazard.
-- **MV equivalent:** there is no cached field. `DataManager.loadGlobalInfo()` (`/root/work/mv/js/rpg_managers.js:241`) **returns** the array synchronously, and `DataManager.saveGlobalInfo(info)` (`:262`) takes it as an argument (MZ's `saveGlobalInfo()` takes none, `rmmz_managers.js:86`). On MV the import path can and should do a real read-modify-write: `var gi = DataManager.loadGlobalInfo(); gi[id].title += ' (imported)'; DataManager.saveGlobalInfo(gi);` — which is *better* than what the mod can do on MZ.
+- **MV equivalent:** there is no cached field. `DataManager.loadGlobalInfo()` (`MV rpg_managers.js:241`) **returns** the array synchronously, and `DataManager.saveGlobalInfo(info)` (`:262`) takes it as an argument (MZ's `saveGlobalInfo()` takes none, `rmmz_managers.js:86`). On MV the import path can and should do a real read-modify-write: `var gi = DataManager.loadGlobalInfo(); gi[id].title += ' (imported)'; DataManager.saveGlobalInfo(gi);` — which is *better* than what the mod can do on MZ.
 
 ### A.7 `DataManager.makeSavename(savefileId)` — absent
-`/root/work/mz/js/rmmz_managers.js:365`: `return "file%1".format(savefileId);`
+`MZ rmmz_managers.js:365`: `return "file%1".format(savefileId);`
 
 - Mod use: `GigaHack_Hooks.js:214`, inside `$.saves.fileFor`.
-- **MV:** no name/path split exists. MV's `StorageManager.localFilePath(savefileId)` (`/root/work/mv/js/rpg_managers.js:762`) does the id→filename mapping itself, including the special cases: `savefileId < 0` → `'config.rpgsave'`, `=== 0` → `'global.rpgsave'`, else `'file%1.rpgsave'.format(savefileId)`.
+- **MV:** no name/path split exists. MV's `StorageManager.localFilePath(savefileId)` (`MV rpg_managers.js:762`) does the id→filename mapping itself, including the special cases: `savefileId < 0` → `'config.rpgsave'`, `=== 0` → `'global.rpgsave'`, else `'file%1.rpgsave'.format(savefileId)`.
 
 ### A.8 `StorageManager.fileDirectoryPath()` / `StorageManager.filePath(saveName)` — renamed
-`/root/work/mz/js/rmmz_managers.js:762` and `:768`.
+`MZ rmmz_managers.js:762` and `:768`.
 
 - Mod use: `GigaHack_Backup.js:42` and `:52` (backup availability + source dir), `GigaHack_Hooks.js:206`, `:210`, `:214`, `GigaHack_Save.js:476` (diagnostics panel).
 - **MV equivalents (exact):**
-  - `StorageManager.localFileDirectoryPath = function() { var path = require('path'); var base = path.dirname(process.mainModule.filename); return path.join(base, 'save/'); };` — `/root/work/mv/js/rpg_managers.js:755`
+  - `StorageManager.localFileDirectoryPath = function() { var path = require('path'); var base = path.dirname(process.mainModule.filename); return path.join(base, 'save/'); };` — `MV rpg_managers.js:755`
   - `StorageManager.localFilePath = function(savefileId) {...}` — `rpg_managers.js:762` (takes a **numeric id**, not a save name — see A.7).
 - MZ's bodies for comparison: `fileDirectoryPath` is identical modulo `const`; `filePath = function(saveName) { return this.fileDirectoryPath() + saveName + ".rmmzsave"; }`.
 - **Port note:** the reason the mod routes through `StorageManager` at all (a third-party plugin relocating saves to `%LOCALAPPDATA%`) applies equally on MV — keep the indirection, just point it at `localFileDirectoryPath`.
 
 ### A.9 `ImageManager.iconWidth` / `iconHeight` — absent (already defensively handled)
-`/root/work/mz/js/rmmz_managers.js:863` and `:870` (`Object.defineProperty` getters over `ImageManager.getIconSize()`, `:891`).
+`MZ rmmz_managers.js:863` and `:870` (`Object.defineProperty` getters over `ImageManager.getIconSize()`, `:891`).
 
 - Mod use: `GigaHack_Forge.js:1233` (`ImageManager.iconWidth || 32`), `GigaHack_UI.js:784` (`ImageManager.iconWidth || 32`). Both already fall back to 32.
-- **MV equivalent:** the constants `Window_Base._iconWidth = 32;` / `Window_Base._iconHeight = 32;` — `/root/work/mv/js/rpg_windows.js:30-31`. Fixed at 32 in MV; MZ made them data-driven, hence the getters.
+- **MV equivalent:** the constants `Window_Base._iconWidth = 32;` / `Window_Base._iconHeight = 32;` — `MV rpg_windows.js:30-31`. Fixed at 32 in MV; MZ made them data-driven, hence the getters.
 - No action strictly required, but for correctness on MV read `Window_Base._iconWidth`.
 
 ### A.10 `Window.prototype._innerChildren`, `addInnerChild`, `_clientArea`, `_contentsSprite` — absent
-MZ: `_innerChildren` initialised at `/root/work/mz/js/rmmz_core.js:3514`, `_contentsSprite` at `:3521`, `addInnerChild` at `:3946` (`this._innerChildren.push(child); return this._clientArea.addChild(child);`), `_clientArea` created at `:4013`.
+MZ: `_innerChildren` initialised at `MZ rmmz_core.js:3514`, `_contentsSprite` at `:3521`, `addInnerChild` at `:3946` (`this._innerChildren.push(child); return this._clientArea.addChild(child);`), `_clientArea` created at `:4013`.
 
 - Mod use: `GigaHack_Inspect.js:183` and `:189` (`node._contentsSprite`), `GigaHack_Inspect.js:273` (`win._innerChildren` in `partOfWindow`).
-- **MV equivalents:** `Window.prototype._createAllParts` (`/root/work/mv/js/rpg_core.js:6623-6642`) builds a flat structure:
+- **MV equivalents:** `Window.prototype._createAllParts` (`MV rpg_core.js:6623-6642`) builds a flat structure:
   - `_windowSpriteContainer` (a `PIXI.Container`) holding `_windowBackSprite`, `_windowFrameSprite`
   - direct children of the window: `_windowCursorSprite`, `_windowContentsSprite`, `_downArrowSprite`, `_upArrowSprite`, `_windowPauseSignSprite`
-  - `Window.prototype.addChildToBack(child)` at `/root/work/mv/js/rpg_core.js:6602` (also present in MZ at `rmmz_core.js:3935`) — used by MV's `Window_Base` for `_dimmerSprite` (`rpg_windows.js:641`) and `Window_Message`'s back sprite (`rpg_windows.js:4781`).
+  - `Window.prototype.addChildToBack(child)` at `MV rpg_core.js:6602` (also present in MZ at `rmmz_core.js:3935`) — used by MV's `Window_Base` for `_dimmerSprite` (`rpg_windows.js:641`) and `Window_Message`'s back sprite (`rpg_windows.js:4781`).
   - **There is no MV `_innerChildren` concept at all.** Every child of an MV window is window furniture, so `partOfWindow()` can simply `return true` on MV.
   - `bitmapOf()` must read `node._windowContentsSprite` on MV (`rpg_core.js:6284`) instead of `node._contentsSprite`.
 - The Inspect hit-test rationale in the mod's comment (`GigaHack_Inspect.js:248-256` — "`_container > _backSprite > TilingSprite` and `_clientArea > _cursorSprite > 9 sprites` sit a level below `_contentsSprite`") is MZ-specific; MV's structure is one level shallower, so the smallest-area-wins ranking still works but the depth reasoning changes.
 
 ### A.11 `Sprite_Gauge`, `Sprite_Name` — classes absent
-`/root/work/mz/js/rmmz_sprites.js:2099` and `:2468`. MV has neither (`grep '^function Sprite_Gauge('` on `/root/work/mv/js/rpg_sprites.js` → nothing).
+`MZ rmmz_sprites.js:2099` and `:2468`. MV has neither (`grep '^function Sprite_Gauge('` on `MV rpg_sprites.js` → nothing).
 
 - Mod use: comments only (`GigaHack_Inspect.js:177`, `:264`, `:517`). No code path breaks.
-- **MV equivalent:** HP/MP/TP/EXP are drawn straight into the window's `contents` bitmap by `Window_Base.prototype.drawGauge(x, y, width, rate, color1, color2)` (`/root/work/mv/js/rpg_windows.js:465`) and `drawActorHp(actor, x, y, width)` (`:551`). See §C.6.
+- **MV equivalent:** HP/MP/TP/EXP are drawn straight into the window's `contents` bitmap by `Window_Base.prototype.drawGauge(x, y, width, rate, color1, color2)` (`MV rpg_windows.js:465`) and `drawActorHp(actor, x, y, width)` (`:551`). See §C.6.
 - **Net effect on MV:** the Inspect text recorder gets *simpler* — every number in a window lands in that window's own `contents` bitmap, so the bitmap-based lookup at `GigaHack_Inspect.js:182-185` collapses to `node._windowContentsSprite.bitmap`.
 
 ### A.12 `Graphics._fpsCounter` — absent
-`/root/work/mz/js/rmmz_core.js:488`, created at `:911` (`new Graphics.FPSCounter()`), class at `:1064`, `this.fps` field at `:1074`.
+`MZ rmmz_core.js:488`, created at `:911` (`new Graphics.FPSCounter()`), class at `:1064`, `this.fps` field at `:1074`.
 
 - Mod use: `GigaHack_Shell.js:303-305` (already `null`-guarded — the FPS readout degrades to `'—'`).
-- **MV equivalent:** `Graphics._fpsMeter` — `/root/work/mv/js/rpg_core.js:1752`, created at `:2623` as `new FPSMeter({graph:1, decimals:0, theme:'transparent', toggleOn:null})`. **Unverified:** `js/libs/fpsmeter.js` is not in the extracted tree, so I cannot confirm from source that the FPSMeter instance exposes a `.fps` property. Treat `Graphics._fpsMeter.fps` as a guess and keep the existing null-guard.
+- **MV equivalent:** `Graphics._fpsMeter` — `MV rpg_core.js:1752`, created at `:2623` as `new FPSMeter({graph:1, decimals:0, theme:'transparent', toggleOn:null})`. **Unverified:** `js/libs/fpsmeter.js` is not in the extracted tree, so I cannot confirm from source that the FPSMeter instance exposes a `.fps` property. Treat `Graphics._fpsMeter.fps` as a guess and keep the existing null-guard.
 - Also MZ-only: `Graphics._switchFPSCounter` (`rmmz_core.js:979`) vs MV `Graphics._switchFPSMeter` (`rpg_core.js:2871`). The F2/F3/F4 key handling in `Graphics._onKeyDown` is otherwise identical (MV `rpg_core.js:2831-2848`, MZ `rmmz_core.js:960-977`).
 
 ### A.13 `Graphics.app`, `Graphics.effekseer`, `Graphics.setTickHandler`, `Graphics.startGameLoop` — absent
-MZ: `Object.defineProperty(Graphics, "app")` at `/root/work/mz/js/rmmz_core.js:536`; `"effekseer"` at `:550`; `setTickHandler` at `:562`; `startGameLoop` at `:569`; `_createEffekseerContext` at `:1044`; ticker wiring at `:1033` (`this._app.ticker.add(this._onTick, this)`).
+MZ: `Object.defineProperty(Graphics, "app")` at `MZ rmmz_core.js:536`; `"effekseer"` at `:550`; `setTickHandler` at `:562`; `startGameLoop` at `:569`; `_createEffekseerContext` at `:1044`; ticker wiring at `:1033` (`this._app.ticker.add(this._onTick, this)`).
 
 - Mod use: none directly (only the comment at `GigaHack_Hooks.js:81`). Listed because the whole game-loop shape depends on it — see §C.1.
-- **MV equivalent:** `Graphics._renderer` (a raw `PIXI.WebGLRenderer`/`CanvasRenderer`, `/root/work/mv/js/rpg_core.js:2579`), no `PIXI.Application`, no ticker; the loop is `SceneManager.requestUpdate()` → `requestAnimationFrame` (`/root/work/mv/js/rpg_managers.js:1894-1898`). No Effekseer at all in MV.
+- **MV equivalent:** `Graphics._renderer` (a raw `PIXI.WebGLRenderer`/`CanvasRenderer`, `MV rpg_core.js:2579`), no `PIXI.Application`, no ticker; the loop is `SceneManager.requestUpdate()` → `requestAnimationFrame` (`MV rpg_managers.js:1894-1898`). No Effekseer at all in MV.
 
 ### A.14 `$gameMap._tileEvents` — renamed (public → private)
-`/root/work/mz/js/rmmz_objects.js:6506`: `this._tileEvents = this.events().filter(event => event.isTile());`
+`MZ rmmz_objects.js:6506`: `this._tileEvents = this.events().filter(event => event.isTile());`
 
 - Mod use: `GigaHack_Events.js:479` (`tileEventKey()` — will throw/return `'0'` harmlessly since it null-checks), and `GigaHack_Map.js:188` (`probe._tileEvents = []` on a synthetic `Object.create(Game_Map.prototype)` used for the safe-landing search).
-- **MV equivalent:** `Game_Map.prototype.refreshTileEvents = function() { this.tileEvents = this.events().filter(...) }` — `/root/work/mv/js/rpg_objects.js:5820-5824`. It is the **public** `this.tileEvents`, consumed by `Game_Map.prototype.tileEventsXy` (`:5838`).
+- **MV equivalent:** `Game_Map.prototype.refreshTileEvents = function() { this.tileEvents = this.events().filter(...) }` — `MV rpg_objects.js:5820-5824`. It is the **public** `this.tileEvents`, consumed by `Game_Map.prototype.tileEventsXy` (`:5838`).
 - `GigaHack_Map.js:188` is the one that matters: the probe object must set `probe.tileEvents = []` on MV or `isPassable` → `checkPassage` → `tileEventsXy` will dereference `undefined.filter`.
 
 ### A.15 `$gameParty.hiddenBattleMembers()` — absent (guarded)
-`/root/work/mz/js/rmmz_objects.js` (`Game_Party.prototype.hiddenBattleMembers`). Mod use: `GigaHack_Battle.js:377`, already written as `$gameParty.hiddenBattleMembers ? ... : 0`. Returns `0` on MV, which is the safe answer. No MV equivalent; MV's escape/hidden-member accounting differs.
+`MZ rmmz_objects.js` (`Game_Party.prototype.hiddenBattleMembers`). Mod use: `GigaHack_Battle.js:377`, already written as `$gameParty.hiddenBattleMembers ? ... : 0`. Returns `0` on MV, which is the safe answer. No MV equivalent; MV's escape/hidden-member accounting differs.
 
 ### A.16 `$gameSystem.isMessageSkipEnabled()` — absent (guarded)
-`/root/work/mz/js/rmmz_objects.js`. Mod use: `GigaHack_Text.js:85-86`, fully guarded, falls back to `false`. No MV equivalent.
+`MZ rmmz_objects.js`. Mod use: `GigaHack_Text.js:85-86`, fully guarded, falls back to `false`. No MV equivalent.
 
 ### A.17 `$gameMessage.setSpeakerName(name)` / `speakerName()` — absent (guarded)
-MZ `/root/work/mz/js/rmmz_objects.js:576` and `:508`. Mod use: `GigaHack_Text.js:707` (`if (opts.speaker && $gameMessage.setSpeakerName)`). MV has no name-box concept; `setFaceImage` / `setBackground` / `setPositionType` / `add` all exist in MV with identical signatures (`rpg_objects.js:425`, `:430`, `:434`, `:421`).
+MZ `MZ rmmz_objects.js:576` and `:508`. Mod use: `GigaHack_Text.js:707` (`if (opts.speaker && $gameMessage.setSpeakerName)`). MV has no name-box concept; `setFaceImage` / `setBackground` / `setPositionType` / `add` all exist in MV with identical signatures (`rpg_objects.js:425`, `:430`, `:434`, `:421`).
 
 ### A.18 MZ-only classes/managers the mod does **not** use, listed to close the question
 `EffectManager` (`rmmz_managers.js:1027`), `FontManager` (`:787`), `Scene_Message` (`rmmz_scenes.js:627`), `Window_StatusBase` (`rmmz_windows.js:1677`), `Sprite_Clickable` (`rmmz_sprites.js:10`), `Sprite_Battleback` (`:1767`), `PluginManager.registerCommand`/`callCommand` (`rmmz_managers.js:3159`/`:3164`), `Utils.extractFileName`/`encodeURI`/`escapeHtml`/`canUseWebGL`/`canUseIndexedDB` (`rmmz_core.js:380`/`:370`/`:390`/`:294`/`:326`), `Scene_Base.isAutosaveEnabled`/`executeAutosave` (`rmmz_scenes.js:226`/`:235`), `Game_System.isAutosaveEnabled` (`rmmz_objects.js:223`), `SceneManager.updateEffekseer`/`updateFrameCount`/`isGameActive`/`reloadGame`/`showDevTools`/`catchNormalError`/`catchLoadError`/`catchUnknownError`. **None are referenced by the mod** — no porting work needed.
@@ -148,17 +148,17 @@ MZ `/root/work/mz/js/rmmz_objects.js:576` and `:508`. Mod use: `GigaHack_Text.js
 
 Only a handful, and the mod already knows about one of them.
 
-1. **`Game_Followers.prototype.forEach(callback, thisObject)`** — `/root/work/mv/js/rpg_objects.js:8102`, plus `reverseEach(callback, thisObject)` at `:8106`. MZ replaced them with `data()` (`/root/work/mz/js/rmmz_objects.js:8815`) and `reverseData()` (`:8819`). The mod's comment at `GigaHack_Player.js:202-205` documents having been bitten by exactly this. On MV, `$gamePlayer.followers().forEach(...)` **works** — an MV port could restore the per-follower opacity path if wanted, though the mod's reasoning (followers re-inherit from the player every frame) holds on both engines.
+1. **`Game_Followers.prototype.forEach(callback, thisObject)`** — `MV rpg_objects.js:8102`, plus `reverseEach(callback, thisObject)` at `:8106`. MZ replaced them with `data()` (`MZ rmmz_objects.js:8815`) and `reverseData()` (`:8819`). The mod's comment at `GigaHack_Player.js:202-205` documents having been bitten by exactly this. On MV, `$gamePlayer.followers().forEach(...)` **works** — an MV port could restore the per-follower opacity path if wanted, though the mod's reasoning (followers re-inherit from the player every frame) holds on both engines.
 
-2. **`Window_Base.prototype.drawGauge(x, y, width, rate, color1, color2)`** — `/root/work/mv/js/rpg_windows.js:465`. Removed entirely in MZ (`grep 'drawGauge' /root/work/mz/js/rmmz_*.js` matches only `Sprite_Gauge.prototype.drawGauge`, `rmmz_sprites.js:2387`). Not used by the mod — GigaHack draws its own HP bars with `PIXI.Graphics` (`GigaHack_Battle.js:532-544`) — but it is the MV-native way to render a gauge into a window's contents if the port ever wants one.
+2. **`Window_Base.prototype.drawGauge(x, y, width, rate, color1, color2)`** — `MV rpg_windows.js:465`. Removed entirely in MZ (`grep 'drawGauge' MZ rmmz_*.js` matches only `Sprite_Gauge.prototype.drawGauge`, `rmmz_sprites.js:2387`). Not used by the mod — GigaHack draws its own HP bars with `PIXI.Graphics` (`GigaHack_Battle.js:532-544`) — but it is the MV-native way to render a gauge into a window's contents if the port ever wants one.
 
-3. **`StorageManager.backup` / `backupExists` / `cleanBackup` / `restoreBackup`** — `/root/work/mv/js/rpg_managers.js:603`, `:624`, `:632`, `:646`. MZ has no engine-level save backup. On MV, `DataManager.saveGame` (`rpg_managers.js:337`) calls `StorageManager.backup(savefileId)` before every write and `restoreBackup` on failure. This is directly relevant to the mod's backup module — see §D.4.
+3. **`StorageManager.backup` / `backupExists` / `cleanBackup` / `restoreBackup`** — `MV rpg_managers.js:603`, `:624`, `:632`, `:646`. MZ has no engine-level save backup. On MV, `DataManager.saveGame` (`rpg_managers.js:337`) calls `StorageManager.backup(savefileId)` before every write and `restoreBackup` on failure. This is directly relevant to the mod's backup module — see §D.4.
 
-4. **`ImageManager` reservation system** — `reserveSystem/reserveBitmap/reserveNormalBitmap/releaseReservation/setDefaultReservationId` (`/root/work/mv/js/rpg_managers.js:960`, `:976`, `:987`, `:994`, `:998`), backed by `CacheMap.prototype.update` (`/root/work/mv/js/rpg_core.js:455`) and `Scene_Base.prototype.attachReservation/detachReservation`. MZ deleted all of it. **Hazard:** an MV bitmap the mod holds a reference to (e.g. the `IconSet` bitmap at `GigaHack_UI.js:780`) can be purged out from under it if nothing holds a reservation. On MV the icon-sheet extraction should either be done once at boot or take a reservation.
+4. **`ImageManager` reservation system** — `reserveSystem/reserveBitmap/reserveNormalBitmap/releaseReservation/setDefaultReservationId` (`MV rpg_managers.js:960`, `:976`, `:987`, `:994`, `:998`), backed by `CacheMap.prototype.update` (`MV rpg_core.js:455`) and `Scene_Base.prototype.attachReservation/detachReservation`. MZ deleted all of it. **Hazard:** an MV bitmap the mod holds a reference to (e.g. the `IconSet` bitmap at `GigaHack_UI.js:780`) can be purged out from under it if nothing holds a reservation. On MV the icon-sheet extraction should either be done once at boot or take a reservation.
 
-5. **`ResourceHandler`** — MV-only; referenced from `Input._onKeyDown` (see §C.4). MZ replaced it with the `["LoadError", url, retry]` throw + `SceneManager.catchLoadError` path (`/root/work/mz/js/rmmz_managers.js:2083`).
+5. **`ResourceHandler`** — MV-only; referenced from `Input._onKeyDown` (see §C.4). MZ replaced it with the `["LoadError", url, retry]` throw + `SceneManager.catchLoadError` path (`MZ rmmz_managers.js:2083`).
 
-6. **`Graphics._upperCanvas`** (`id="UpperCanvas"`, z-index 3, `/root/work/mv/js/rpg_core.js:2526-2543`), `Graphics._modeBox` (z-index 9, `:2632`), `Graphics.isWebGL()` (`:1898`), `Graphics.setLoadingImage` (`:1946`) — all MV-only. See §E.
+6. **`Graphics._upperCanvas`** (`id="UpperCanvas"`, z-index 3, `MV rpg_core.js:2526-2543`), `Graphics._modeBox` (z-index 9, `:2632`), `Graphics.isWebGL()` (`:1898`), `Graphics.setLoadingImage` (`:1946`) — all MV-only. See §E.
 
 ---
 
@@ -168,7 +168,7 @@ Only a handful, and the mod already knows about one of them.
 
 The mod hooks this **twice**: `GigaHack_Hooks.js:69-90` (pause) and `GigaHack_Player.js:280-311` (game speed).
 
-**MZ** — `/root/work/mz/js/rmmz_managers.js:2102-2108`:
+**MZ** — `MZ rmmz_managers.js:2102-2108`:
 ```
 2102  SceneManager.updateMain = function() {
 2103      this.updateFrameCount();
@@ -180,7 +180,7 @@ The mod hooks this **twice**: `GigaHack_Hooks.js:69-90` (pause) and `GigaHack_Pl
 ```
 Rendering is **not** here. It lives in `Graphics._onTick` (`rmmz_core.js:808-817`), which calls `this._tickHandler(deltaTime)` → `SceneManager.update(deltaTime)` (`rmmz_managers.js:1982`) → `updateMain()` × `determineRepeatNumber(deltaTime)` (`:1993`), and then `this._app.render()` independently. The loop is PIXI's ticker (`rmmz_core.js:1033`).
 
-**MV** — `/root/work/mv/js/rpg_managers.js:1975-1994`:
+**MV** — `MV rpg_managers.js:1975-1994`:
 ```
 1975  SceneManager.updateMain = function() {
 1976      if (Utils.isMobileSafari()) {
@@ -213,13 +213,13 @@ Two structural differences with catastrophic consequences:
   - The sub-1× branch (`GigaHack_Player.js:295-307`) `return`s without calling the original at all → same permanent-freeze as the pause hook.
   - `P.step()` (`GigaHack_Player.js:331`) drives frames through the same hook and inherits the same failure.
 
-**Port shape for MV:** the hook must be split. Pause and speed belong on `SceneManager.updateScene` (`/root/work/mv/js/rpg_managers.js:2021`) + `SceneManager.changeScene` (`:2000`) + `SceneManager.updateInputData` (`:1970`), leaving `renderScene`/`requestUpdate` untouched; or wrap `updateMain` but always run `this.renderScene(); this.requestUpdate();` on every path including the paused one. Note the mod's own note at `GigaHack_Hooks.js:76-78` — that `Scene_Boot.isReady` is polled from `changeScene` inside `updateMain` — applies to MV too.
+**Port shape for MV:** the hook must be split. Pause and speed belong on `SceneManager.updateScene` (`MV rpg_managers.js:2021`) + `SceneManager.changeScene` (`:2000`) + `SceneManager.updateInputData` (`:1970`), leaving `renderScene`/`requestUpdate` untouched; or wrap `updateMain` but always run `this.renderScene(); this.requestUpdate();` on every path including the paused one. Note the mod's own note at `GigaHack_Hooks.js:76-78` — that `Scene_Boot.isReady` is polled from `changeScene` inside `updateMain` — applies to MV too.
 
-Also different: MZ increments the play clock in `SceneManager.updateFrameCount` (`rmmz_managers.js:2110`, `Graphics.frameCount++`); **MV increments it inside `Graphics.render`** (`/root/work/mv/js/rpg_core.js:1888`). So on MV, "pause" also stops the playtime clock as a side effect of stopping rendering — arguably desirable, but it is a different mechanism from the one the mod's comments assume.
+Also different: MZ increments the play clock in `SceneManager.updateFrameCount` (`rmmz_managers.js:2110`, `Graphics.frameCount++`); **MV increments it inside `Graphics.render`** (`MV rpg_core.js:1888`). So on MV, "pause" also stops the playtime clock as a side effect of stopping rendering — arguably desirable, but it is a different mechanism from the one the mod's comments assume.
 
 ### C.2 `SceneManager.initialize` / `run` — different order, different membership
 
-**MV** — `/root/work/mv/js/rpg_managers.js:1810-1818`:
+**MV** — `MV rpg_managers.js:1810-1818`:
 ```
 1810  SceneManager.initialize = function() {
 1811      this.initGraphics();
@@ -231,7 +231,7 @@ Also different: MZ increments the play clock in `SceneManager.updateFrameCount` 
 1817      this.setupErrorHandlers();
 1818  };
 ```
-**MZ** — `/root/work/mz/js/rmmz_managers.js:1926-1934`:
+**MZ** — `MZ rmmz_managers.js:1926-1934`:
 ```
 1926  SceneManager.initialize = function() {
 1927      this.checkBrowser();
@@ -256,13 +256,13 @@ Identical: `_scene`, `_nextScene`, `_stack`, `_exiting`, `_previousClass`, `_bac
 
 ### C.3 `SceneManager.catchException`
 
-**MV** `/root/work/mv/js/rpg_managers.js:1951-1960`: two branches (`Error` → `Graphics.printError(e.name, e.message)`; else → `printError('UnknownError', e)`), then `AudioManager.stopAll(); this.stop();`.
-**MZ** `/root/work/mz/js/rmmz_managers.js:2066-2075`: three branches dispatching to `catchNormalError` (`:2077`, passes `e` as a third arg to `printError`), `catchLoadError` (`:2083`, handles the `["LoadError", url, retry]` array shape and offers a retry button), `catchUnknownError` (`:2097`); `stop()` at the end.
+**MV** `MV rpg_managers.js:1951-1960`: two branches (`Error` → `Graphics.printError(e.name, e.message)`; else → `printError('UnknownError', e)`), then `AudioManager.stopAll(); this.stop();`.
+**MZ** `MZ rmmz_managers.js:2066-2075`: three branches dispatching to `catchNormalError` (`:2077`, passes `e` as a third arg to `printError`), `catchLoadError` (`:2083`, handles the `["LoadError", url, retry]` array shape and offers a retry button), `catchUnknownError` (`:2097`); `stop()` at the end.
 Also: `Graphics.printError(name, message)` in MV (`rpg_core.js:2029`) vs `printError(name, message, error)` in MZ. The mod does not hook or call either; listed because the prompt asked and because a port that wants to surface engine errors in the overlay must handle both shapes.
 
 ### C.4 `Input._onKeyDown` and `Input._shouldPreventDefault`
 
-**MV** `/root/work/mv/js/rpg_core.js:3236-3248`:
+**MV** `MV rpg_core.js:3236-3248`:
 ```
 3236  Input._onKeyDown = function(event) {
 3237      if (this._shouldPreventDefault(event.keyCode)) { event.preventDefault(); }
@@ -275,7 +275,7 @@ Also: `Graphics.printError(name, message)` in MV (`rpg_core.js:2029`) vs `printE
 3244      }
 3245  };
 ```
-**MZ** `/root/work/mz/js/rmmz_core.js:5886-5898`: same, **minus** the `ResourceHandler` branch — plain `if (buttonName) { this._currentState[buttonName] = true; }`.
+**MZ** `MZ rmmz_core.js:5886-5898`: same, **minus** the `ResourceHandler` branch — plain `if (buttonName) { this._currentState[buttonName] = true; }`.
 
 `_shouldPreventDefault`: **MV** (`rpg_core.js:3255-3268`) prevents 8, 33, 34, 37, 38, 39, 40. **MZ** (`rmmz_core.js:5901-5913`) prevents the same **plus keyCode 9 (Tab)**. Relevant to the overlay: on MV, Tab is not `preventDefault`ed by the engine, so browser focus traversal will fire inside the mod's DOM widgets unless the mod stops it itself.
 
@@ -285,8 +285,8 @@ Also: `Graphics.printError(name, message)` in MV (`rpg_core.js:2029`) vs `printE
 
 ### C.5 `TouchInput` — internal state rewritten, public surface compatible
 
-**MV** `/root/work/mv/js/rpg_core.js:3487-3507` (`clear`): flat `_triggered/_cancelled/_moved/_released/_wheelX/_wheelY` plus a parallel `_events` object; `update` (`:3515`) copies `_events` → the flat fields.
-**MZ** `/root/work/mz/js/rmmz_core.js:6057-6070` (`clear`): `_newState`/`_currentState` objects from `_createNewState()`, plus `_clicked`, `_triggerX`, `_triggerY`; `update` (`:6075`) swaps them and computes `_clicked = released && !_moved`.
+**MV** `MV rpg_core.js:3487-3507` (`clear`): flat `_triggered/_cancelled/_moved/_released/_wheelX/_wheelY` plus a parallel `_events` object; `update` (`:3515`) copies `_events` → the flat fields.
+**MZ** `MZ rmmz_core.js:6057-6070` (`clear`): `_newState`/`_currentState` objects from `_createNewState()`, plus `_clicked`, `_triggerX`, `_triggerY`; `update` (`:6075`) swaps them and computes `_clicked = released && !_moved`.
 
 Public accessors the mod uses are the same shape: `TouchInput.x` (MV `:3649` / MZ `:6207`, both `return this._x`), `TouchInput.y` (MV `:3663` / MZ `:6221`), `TouchInput.isTriggered()`, `TouchInput.clear()`. `wheelX`/`wheelY` differ internally (MV `this._wheelX`, MZ `this._currentState.wheelX`) but read the same. Mod uses at `GigaHack_Events.js:768-770` and `GigaHack_Shell.js:439` are safe.
 
@@ -296,7 +296,7 @@ Event binding: both bind on `document`. MV additionally binds `pointerdown` (`rp
 
 ### C.6 `Window_Base.prototype.drawGauge` — MV-only (see §B.2)
 
-**MV** `/root/work/mv/js/rpg_windows.js:465-470`:
+**MV** `MV rpg_windows.js:465-470`:
 ```
 465  Window_Base.prototype.drawGauge = function(x, y, width, rate, color1, color2) {
 466      var fillW = Math.floor(width * rate);
@@ -305,11 +305,11 @@ Event binding: both bind on `document`. MV additionally binds `pointerdown` (`rp
 469      this.contents.gradientFillRect(x, gaugeY, fillW, 6, color1, color2);
 470  };
 ```
-**MZ**: no such method on any window. The nearest is `Sprite_Gauge.prototype.drawGaugeRect = function(x, y, width, height)` (`/root/work/mz/js/rmmz_sprites.js:2395`), on a sprite added via `addInnerChild`. Not used by the mod either way.
+**MZ**: no such method on any window. The nearest is `Sprite_Gauge.prototype.drawGaugeRect = function(x, y, width, height)` (`MZ rmmz_sprites.js:2395`), on a sprite added via `addInnerChild`. Not used by the mod either way.
 
 ### C.7 `Window_Base` metrics and padding — a different model entirely
 
-| | MV (`/root/work/mv/js/rpg_windows.js`) | MZ (`/root/work/mz/js/rmmz_windows.js`) |
+| | MV (`MV rpg_windows.js`) | MZ (`MZ rmmz_windows.js`) |
 |---|---|---|
 | `lineHeight()` | `:35` → `36` | `:46` → `36` (same) |
 | padding | `standardPadding()` `:53` → `18`; `updatePadding()` `:68` → `this.padding = this.standardPadding()` | no `standardPadding`; `updatePadding()` `:72` → `this.padding = $gameSystem.windowPadding()` |
@@ -327,7 +327,7 @@ The mod does not construct or subclass engine windows, so this only matters for 
 
 ### C.8 `Window._updateContents` — bitmap→screen mapping differs, breaks Inspect run mapping
 
-**MZ** `/root/work/mz/js/rmmz_core.js:4226-4231`:
+**MZ** `MZ rmmz_core.js:4226-4231`:
 ```
 4226  Window.prototype._updateContents = function() {
 4227      const bitmap = this._contentsSprite.bitmap;
@@ -338,7 +338,7 @@ The mod does not construct or subclass engine windows, so this only matters for 
 ```
 Scroll is applied on the parent: `Window.prototype._updateClientArea` (`:4183-4193`) does `this._clientArea.x = pad - this.origin.x; this._clientArea.y = pad - this.origin.y;`. So a bitmap coordinate maps to screen **directly** through `_contentsSprite.worldTransform` — which is exactly what `GigaHack_Inspect.js:302-314` (`runToScreen`) assumes.
 
-**MV** `/root/work/mv/js/rpg_core.js:6828-6837`:
+**MV** `MV rpg_core.js:6828-6837`:
 ```
 6828  Window.prototype._updateContents = function() {
 6829      var w = this._width - this._padding * 2;
@@ -353,7 +353,7 @@ with `Window.prototype._refreshContents` (`:6763-6765`) doing `this._windowConte
 
 ### C.9 `Game_BattlerBase.prototype.param` — MZ inserts a floor at zero
 
-**MV** `/root/work/mv/js/rpg_objects.js:2450-2456`:
+**MV** `MV rpg_objects.js:2450-2456`:
 ```
 2450  Game_BattlerBase.prototype.param = function(paramId) {
 2451      var value = this.paramBase(paramId) + this.paramPlus(paramId);
@@ -363,7 +363,7 @@ with `Window.prototype._refreshContents` (`:6763-6765`) doing `this._windowConte
 2455      return Math.round(value.clamp(minValue, maxValue));
 2456  };
 ```
-**MZ** `/root/work/mz/js/rmmz_objects.js:2883-2891`:
+**MZ** `MZ rmmz_objects.js:2883-2891`:
 ```
 2883  Game_BattlerBase.prototype.param = function(paramId) {
 2884      const value =
@@ -375,7 +375,7 @@ with `Window.prototype._refreshContents` (`:6763-6765`) doing `this._windowConte
 2890      return Math.round(value.clamp(minValue, maxValue));
 2891  };
 ```
-with `Game_BattlerBase.prototype.paramBasePlus = function(paramId) { return Math.max(0, this.paramBase(paramId) + this.paramPlus(paramId)); }` — `/root/work/mz/js/rmmz_objects.js:2859-2861`. **`paramBasePlus` does not exist in MV** (`grep -c paramBasePlus /root/work/mv/js/rpg_objects.js` → 0).
+with `Game_BattlerBase.prototype.paramBasePlus = function(paramId) { return Math.max(0, this.paramBase(paramId) + this.paramPlus(paramId)); }` — `MZ rmmz_objects.js:2859-2861`. **`paramBasePlus` does not exist in MV** (`grep -c paramBasePlus MV rpg_objects.js` → 0).
 
 Also different: `paramMax`/`paramMin`.
 - **MV** `rpg_objects.js:2432-2440`: `paramMax` returns `999999` (MHP), `9999` (MMP), `999` (others); `paramMin` (`:2424`) returns `0` for MMP, **`1`** for everything else.
@@ -387,7 +387,7 @@ Also different: `paramMax`/`paramMin`.
 
 ### C.10 `DataManager.saveGame` / `loadGame` — **sync boolean (MV) vs Promise (MZ)**
 
-**MV** `/root/work/mv/js/rpg_managers.js:337-358`:
+**MV** `MV rpg_managers.js:337-358`:
 ```
 337  DataManager.saveGame = function(savefileId) {
 338      try {
@@ -411,7 +411,7 @@ Also different: `paramMax`/`paramMin`.
 358      }
 359  };
 ```
-**MZ** `/root/work/mz/js/rmmz_managers.js:345-363`:
+**MZ** `MZ rmmz_managers.js:345-363`:
 ```
 345  DataManager.saveGame = function(savefileId) {
 346      const contents = this.makeSaveContents();
@@ -451,10 +451,10 @@ MV's `saveGameWithoutRescue(savefileId)` (`:370`) and `loadGameWithoutRescue(sav
 
 ### C.12 `StorageManager.*` — completely rewritten
 
-**MV** (`/root/work/mv/js/rpg_managers.js:571-777`, 24 members) — **synchronous**, id-keyed:
+**MV** (`MV rpg_managers.js:571-777`, 24 members) — **synchronous**, id-keyed:
 `save(savefileId, json)` `:571` · `load(savefileId) → string` `:579` · `exists(savefileId)` `:587` · `remove(savefileId)` `:595` · `backup(savefileId)` `:603` · `backupExists` `:624` · `cleanBackup` `:632` · `restoreBackup` `:646` · `isLocalMode()` `:669` · `saveToLocalFile(savefileId, json)` `:673` · `loadFromLocalFile(savefileId)` `:684` · `loadFromLocalBackupFile` `:694` · `localFileBackupExists` `:704` · `localFileExists` `:709` · `removeLocalFile` `:714` · `saveToWebStorage(savefileId, json)` `:722` · `loadFromWebStorage` `:728` · `loadFromWebStorageBackup` `:734` · `webStorageBackupExists` `:740` · `webStorageExists` `:745` · `removeWebStorage` `:750` · `localFileDirectoryPath()` `:755` · `localFilePath(savefileId)` `:762` · `webStorageKey(savefileId)` `:774`.
 
-**MZ** (`/root/work/mz/js/rmmz_managers.js:542-782`, 32 members) — **Promise-based**, name-keyed:
+**MZ** (`MZ rmmz_managers.js:542-782`, 32 members) — **Promise-based**, name-keyed:
 `_forageKeys`/`_forageKeysUpdated` `:542-543` · `isLocalMode()` `:545` · `saveObject(saveName, object) → Promise` `:549` · `loadObject(saveName) → Promise` `:555` · `objectToJson` `:561` · `jsonToObject` `:572` · `jsonToZip` `:583` · `zipToJson` `:597` · `saveZip` `:612` · `loadZip` `:620` · `exists(saveName)` `:628` · `remove(saveName)` `:636` · `saveToLocalFile(saveName, zip)` `:644` · `loadFromLocalFile` `:668` · `localFileExists` `:680` · `removeLocalFile` `:685` · `saveToForage`/`loadFromForage`/`forageExists`/`removeForage`/`updateForageKeys`/`forageKeysUpdated` `:689-723` · `fsMkdir`/`fsRename`/`fsUnlink`/`fsReadFile`/`fsWriteFile` `:727-760` · `fileDirectoryPath()` `:762` · `filePath(saveName)` `:768` · `forageKey(saveName)` `:773` · `forageTestKey()` `:778`.
 
 Only `isLocalMode()` (`return Utils.isNwjs();` in both), `exists`, `remove`, `saveToLocalFile`, `loadFromLocalFile`, `localFileExists`, `removeLocalFile` share names — and every one of them changed its parameter from a **numeric savefileId** to a **string saveName**, and (for the local-file pair) from sync to Promise. Treat the whole class as new API.
@@ -481,8 +481,8 @@ Mod uses `ConfigManager.save()` (4 call sites via `GigaHack_Text.js` `writeConfi
 ### C.15 `Bitmap.prototype.drawText` / `clearRect` — same arity, different baseline and different dirty mechanism
 
 **`drawText(text, x, y, maxWidth, lineHeight, align)` — same 6 params in both.**
-- **MV** `/root/work/mv/js/rpg_core.js:1331-1357`: wrapped in `if (text !== undefined)`; baseline `var ty = y + lineHeight - (lineHeight - this.fontSize * 0.7) / 2;` (line 1336); ends with `this._setDirty();`.
-- **MZ** `/root/work/mz/js/rmmz_core.js:1661-1685`: no `undefined` guard; baseline `let ty = Math.round(y + lineHeight / 2 + this.fontSize * 0.35);` (line 1668); ends with `this._baseTexture.update();`.
+- **MV** `MV rpg_core.js:1331-1357`: wrapped in `if (text !== undefined)`; baseline `var ty = y + lineHeight - (lineHeight - this.fontSize * 0.7) / 2;` (line 1336); ends with `this._setDirty();`.
+- **MZ** `MZ rmmz_core.js:1661-1685`: no `undefined` guard; baseline `let ty = Math.round(y + lineHeight / 2 + this.fontSize * 0.35);` (line 1668); ends with `this._baseTexture.update();`.
 
 The mod's recorder comment at `GigaHack_Inspect.js:91-92` — *"The baseline is `y + lineHeight/2 + fontSize*0.35`"* — is the MZ formula. MV places glyphs lower relative to the nominal row; the recorded rect (which starts at `y` and is `max(lineHeight, fontSize*1.2)` tall, `GigaHack_Inspect.js:90-93`) still contains the glyphs on MV, so the hit-test degrades gracefully. Worth updating the comment and, ideally, the height heuristic.
 
@@ -502,7 +502,7 @@ The mod's recorder comment at `GigaHack_Inspect.js:91-92` — *"The baseline is 
 
 ### C.16 `Spriteset_Base` layer construction — the mod's overlay lands in a different z-position
 
-**MV** `/root/work/mv/js/rpg_sprites.js:2123-2142`:
+**MV** `MV rpg_sprites.js:2123-2142`:
 ```
 2128      this.createLowerLayer();
 2129      this.createToneChanger();
@@ -514,7 +514,7 @@ The mod's recorder comment at `GigaHack_Inspect.js:91-92` — *"The baseline is 
 2141      this.createScreenSprites();     // adds _flashSprite, _fadeSprite as CHILDREN (:2200-2205)
 2142  };
 ```
-**MZ** `/root/work/mz/js/rmmz_sprites.js:3128-3155`:
+**MZ** `MZ rmmz_sprites.js:3128-3155`:
 ```
 3132      this.createLowerLayer();
 3133      this.createUpperLayer();
@@ -548,16 +548,16 @@ The mod's total PIXI surface is `PIXI.Container` and `PIXI.Graphics` (11 constru
 
 ### C.18 `PluginManager.setup` — filename handling
 
-**MV** `/root/work/mv/js/rpg_managers.js:2806-2814`: `if (plugin.status && !this._scripts.contains(plugin.name)) { this.setParameters(plugin.name, ...); this.loadScript(plugin.name + '.js'); this._scripts.push(plugin.name); }` — `_scripts` holds names **without** `.js`, `loadScript` **appends** `.js`, path prefix is `PluginManager._path = 'js/plugins/'` (`:2801`).
-**MZ** `/root/work/mz/js/rmmz_managers.js:3109-3118`: `const pluginName = Utils.extractFileName(plugin.name); ... this.loadScript(plugin.name);` — `_scripts` holds the **basename** (so `mods/Foo/Bar` registers as `Bar`), `loadScript` builds the URL via `makeUrl` (`:3144`, `"js/plugins/" + Utils.encodeURI(filename) + ".js"`), and there is no `_path`.
+**MV** `MV rpg_managers.js:2806-2814`: `if (plugin.status && !this._scripts.contains(plugin.name)) { this.setParameters(plugin.name, ...); this.loadScript(plugin.name + '.js'); this._scripts.push(plugin.name); }` — `_scripts` holds names **without** `.js`, `loadScript` **appends** `.js`, path prefix is `PluginManager._path = 'js/plugins/'` (`:2801`).
+**MZ** `MZ rmmz_managers.js:3109-3118`: `const pluginName = Utils.extractFileName(plugin.name); ... this.loadScript(plugin.name);` — `_scripts` holds the **basename** (so `mods/Foo/Bar` registers as `Bar`), `loadScript` builds the URL via `makeUrl` (`:3144`, `"js/plugins/" + Utils.encodeURI(filename) + ".js"`), and there is no `_path`.
 
 The mod reads `PluginManager._scripts` at `GigaHack_Hooks.js:290-291` (`indexOf(base)`), `:457-458`, and its whole "one flat namespace, a second claim on a name is silently dropped" analysis (`GigaHack_Hooks.js:519-545`). **That analysis holds on both engines** — MV's `contains` check is the same guard. But MV's `_scripts` entries come from the *full* `plugin.name` (which in MV is always a bare name anyway, since MV's plugin manager has no subfolder support), while MZ's are `Utils.extractFileName`'d. For an MV port, `indexOf(base)` remains correct.
 MZ-only: `PluginManager._commands` (`:3107`), `registerCommand` (`:3159`), `callCommand` (`:3164`), `makeUrl` (`:3144`), `throwLoadError` (`:3155`). MV-only: `PluginManager._path` (`:2801`). `_errorUrls`, `_parameters`, `parameters`, `setParameters`, `onError`, `checkErrors` are equivalent.
 
 ### C.19 `Scene_Boot.prototype.start` — MZ added branches
 
-**MV** `/root/work/mv/js/rpg_scenes.js:391-407`: battle-test / event-test / else (`checkPlayerLocation(); setupNewGame(); goto(Scene_Title); Window_TitleCommand.initCommandPosition();`), then `updateDocumentTitle()`.
-**MZ** `/root/work/mz/js/rmmz_scenes.js:321-339`: battle-test / event-test / **`DataManager.isTitleSkip()`** / else → **`this.startNormalGame()`**, then **`this.resizeScreen()`**, then `updateDocumentTitle()`.
+**MV** `MV rpg_scenes.js:391-407`: battle-test / event-test / else (`checkPlayerLocation(); setupNewGame(); goto(Scene_Title); Window_TitleCommand.initCommandPosition();`), then `updateDocumentTitle()`.
+**MZ** `MZ rmmz_scenes.js:321-339`: battle-test / event-test / **`DataManager.isTitleSkip()`** / else → **`this.startNormalGame()`**, then **`this.resizeScreen()`**, then `updateDocumentTitle()`.
 
 The mod's hook (`GigaHack_Forge.js:941-949`) runs *after* the original in both, so it is safe. `DataManager.isTitleSkip` and `Scene_Boot.prototype.startNormalGame`/`resizeScreen`/`adjustBoxSize`/`adjustWindow`/`screenScale` are MZ-only; `Window_TitleCommand.initCommandPosition` is MV-only.
 
@@ -600,7 +600,7 @@ Also identical and used by the mod: every `$gameMap`/`$gameParty`/`$gamePlayer`/
 ### D.1 Location — identical logic, identical result
 Both derive the directory the same way, from the NW.js entry module:
 
-MV `/root/work/mv/js/rpg_managers.js:755-760`:
+MV `MV rpg_managers.js:755-760`:
 ```
 755  StorageManager.localFileDirectoryPath = function() {
 756      var path = require('path');
@@ -608,7 +608,7 @@ MV `/root/work/mv/js/rpg_managers.js:755-760`:
 759      return path.join(base, 'save/');
 760  };
 ```
-MZ `/root/work/mz/js/rmmz_managers.js:762-766`: same body, `const`, `"save/"`.
+MZ `MZ rmmz_managers.js:762-766`: same body, `const`, `"save/"`.
 
 So `<game root>/save/` on both, and both are equally susceptible to a plugin aliasing the function (which is why the mod resolves it at call time — `GigaHack_Backup.js:12-14`; that reasoning ports unchanged).
 
@@ -629,7 +629,7 @@ Slot range: MV's savefile list runs indices `0..maxSavefiles()-1` mapped to ids 
 
 ### D.3 Encoding
 
-**MV** — `StorageManager.saveToLocalFile` (`/root/work/mv/js/rpg_managers.js:673-683`):
+**MV** — `StorageManager.saveToLocalFile` (`MV rpg_managers.js:673-683`):
 ```
 673  StorageManager.saveToLocalFile = function(savefileId, json) {
 674      var data = LZString.compressToBase64(json);
@@ -645,7 +645,7 @@ and `loadFromLocalFile` (`:684-693`) reads `{encoding:'utf8'}` then `LZString.de
 586          const zip = pako.deflate(json, { to: "string", level: 1 });
 587          if (zip.length >= 50000) { console.warn("Save data is too big."); }
 ```
-(`/root/work/mz/js/rmmz_managers.js:583-596`), written by `saveToLocalFile` (`:644`) and read back via `zipToJson` → `pako.inflate(zip, {to:"string"})` (`:597-611`). **On-disk format: pako/zlib deflate, level 1, serialised as a binary string.** Size warning fires above **50000** *compressed* bytes.
+(`MZ rmmz_managers.js:583-596`), written by `saveToLocalFile` (`:644`) and read back via `zipToJson` → `pako.inflate(zip, {to:"string"})` (`:597-611`). **On-disk format: pako/zlib deflate, level 1, serialised as a binary string.** Size warning fires above **50000** *compressed* bytes.
 
 Non-NW.js fallback: **MV** `localStorage`, keys from `StorageManager.webStorageKey(savefileId)` (`rpg_managers.js:774-782`) — `'RPG Config'` / `'RPG Global'` / `'RPG File%1'`, with `+ "bak"` suffixes for backups. **MZ** localForage/IndexedDB, keys from `StorageManager.forageKey(saveName)` (`rmmz_managers.js:773-776`) — `"rmmzsave." + $dataSystem.advanced.gameId + "." + saveName`, plus a probe key `"rmmzsave.test"` (`:778`).
 
@@ -653,7 +653,7 @@ Non-NW.js fallback: **MV** `localStorage`, keys from `StorageManager.webStorageK
 
 `GigaHack_Backup.js` and `GigaHack_Save.js` treat saves as **opaque bytes** and copy with `fs.copyFileSync` (`GigaHack_Backup.js:5-10`, `GigaHack_Save.js:566-569`). That design is engine-agnostic and is the right call on MV too. Concrete changes:
 
-1. **`SAVE_EXT`** — `GigaHack_Backup.js:33` (`var SAVE_EXT = '.rmmzsave';`) and `GigaHack_Save.js:545` (same literal). Change to `'.rpgsave'` on MV, or derive it: `Utils.RPGMAKER_NAME === 'MV' ? '.rpgsave' : '.rmmzsave'` (`Utils.RPGMAKER_NAME` is `'MV'` at `/root/work/mv/js/rpg_core.js:173` and `'MZ'` at `/root/work/mz/js/rmmz_core.js:187` — the cleanest runtime discriminator available).
+1. **`SAVE_EXT`** — `GigaHack_Backup.js:33` (`var SAVE_EXT = '.rmmzsave';`) and `GigaHack_Save.js:545` (same literal). Change to `'.rpgsave'` on MV, or derive it: `Utils.RPGMAKER_NAME === 'MV' ? '.rpgsave' : '.rmmzsave'` (`Utils.RPGMAKER_NAME` is `'MV'` at `MV rpg_core.js:173` and `'MZ'` at `MZ rmmz_core.js:187` — the cleanest runtime discriminator available).
 2. **`StorageManager.fileDirectoryPath()` → `localFileDirectoryPath()`** — `GigaHack_Backup.js:42`, `:52`, `GigaHack_Hooks.js:210`, `GigaHack_Save.js:476`.
 3. **`StorageManager.filePath(DataManager.makeSavename(id))` → `StorageManager.localFilePath(id)`** — `GigaHack_Hooks.js:214`. The MV form takes the numeric id directly.
 4. **`.bak` sidecars.** `B.saveFiles()` filters on `name.slice(-SAVE_EXT.length) === SAVE_EXT` (`GigaHack_Backup.js:66`). On MV, `file1.rpgsave.bak` does **not** match, so backups exclude the sidecars — which is probably fine, but `B.restore()` (`:201-219`) copies only the files listed in the snapshot's manifest, leaving stale `.bak` files next to restored saves. Since MV's `DataManager.saveGame` (`rpg_managers.js:337-349`) calls `StorageManager.restoreBackup(savefileId)` on any write failure, a stale `.bak` could resurrect a pre-restore save. **Recommendation for MV: after `B.restore()`, delete the matching `.bak` files** (`StorageManager.cleanBackup(savefileId)`, `rpg_managers.js:632-641`, or a direct `fs.unlinkSync`).
@@ -671,8 +671,8 @@ The mod's host is `<div id="gigahack-host">` created at `GigaHack_Shell.js:682` 
 
 ### E.1 Canvas element id — **case differs; the mod's fallback lookup breaks on MV**
 
-- **MV** `/root/work/mv/js/rpg_core.js:2474-2479`: `this._canvas.id = 'GameCanvas';`
-- **MZ** `/root/work/mz/js/rmmz_core.js:882-886`: `this._canvas.id = "gameCanvas";`
+- **MV** `MV rpg_core.js:2474-2479`: `this._canvas.id = 'GameCanvas';`
+- **MZ** `MZ rmmz_core.js:882-886`: `this._canvas.id = "gameCanvas";`
 
 `GigaHack_Inspect.js:551-552` does:
 ```
@@ -706,7 +706,7 @@ The mod's host is `<div id="gigahack-host">` created at `GigaHack_Shell.js:682` 
 
 ### E.3 **`Graphics._modifyExistingElements` — MV-only inline-z-index clobber**
 
-`/root/work/mv/js/rpg_core.js:2433-2439`, called from `Graphics.initialize` at `:1767`:
+`MV rpg_core.js:2433-2439`, called from `Graphics.initialize` at `:1767`:
 ```
 2433  Graphics._modifyExistingElements = function() {
 2434      var elements = document.getElementsByTagName('*');
@@ -722,12 +722,12 @@ MZ has **no** such function (grep: zero matches in `rmmz_core.js`).
 **Does this hit the mod?** It reads `element.style.zIndex` — the **inline** style only. The mod's host gets its z-index from a `<style>` rule, so `element.style.zIndex` is `""` and `"" > 0` is `false`. **The overlay survives.** But:
 
 - The **fallback path** at `GigaHack_Shell.js:734-738` sets `host.setAttribute('style', '...z-index:2147483000;...')` **inline**. If that path ever fires before `Graphics.initialize()`, MV will zero it and the overlay disappears behind the canvas.
-- Timing depends on how the mod is loaded. Under the game's own mod loader (during `DataManager.loadDatabase` inside `Scene_Boot.create`, per `GigaHack_Boot.js:5-9`), `Graphics.initialize()` has already run — no exposure. Under a **vanilla MV `js/plugins.js` install**, plugin scripts execute at parse time and `document.body` already exists, so `GigaHack_Boot.js:71-72` mounts the overlay **before** `window.onload → SceneManager.run(Scene_Boot) → initGraphics → Graphics.initialize()` (`/root/work/mv/js/main.js:5-9`). That is the exposed case.
+- Timing depends on how the mod is loaded. Under the game's own mod loader (during `DataManager.loadDatabase` inside `Scene_Boot.create`, per `GigaHack_Boot.js:5-9`), `Graphics.initialize()` has already run — no exposure. Under a **vanilla MV `js/plugins.js` install**, plugin scripts execute at parse time and `document.body` already exists, so `GigaHack_Boot.js:71-72` mounts the overlay **before** `window.onload → SceneManager.run(Scene_Boot) → initGraphics → Graphics.initialize()` (`MV main.js:5-9`). That is the exposed case.
 - **Recommendation:** never set an inline z-index on the host; keep it in the stylesheet, and if the fallback must set inline styles, omit `z-index` from the inline string.
 
 ### E.4 **`Graphics._disableTextSelection` — MV-only, disables selection document-wide**
 
-`/root/work/mv/js/rpg_core.js:2718-2724`, called from `Graphics.initialize` at `:1770`:
+`MV rpg_core.js:2718-2724`, called from `Graphics.initialize` at `:1770`:
 ```
 2718  Graphics._disableTextSelection = function() {
 2719      var body = document.body;
@@ -743,7 +743,7 @@ MZ has **no** such function (grep: zero matches in `rmmz_core.js`).
 
 ### E.5 Context menu
 
-`Graphics._disableContextMenu` exists in **both** and is functionally identical — MV `/root/work/mv/js/rpg_core.js:2731-2737`, MZ `/root/work/mz/js/rmmz_core.js:927-933`. Both iterate `document.body.getElementsByTagName('*')` **once** at `Graphics.initialize` time and assign `oncontextmenu`. Elements created **later** (the whole overlay) are untouched on both engines, so the mod's own `contextmenu` handling (`GigaHack_Shell.js:644`) works identically. On MV, if the overlay mounts before `Graphics.initialize` (§E.3), its then-existing children **will** get `oncontextmenu = () => false` stamped on them — a real MV-only difference, though the mod stops `contextmenu` at the host anyway.
+`Graphics._disableContextMenu` exists in **both** and is functionally identical — MV `MV rpg_core.js:2731-2737`, MZ `MZ rmmz_core.js:927-933`. Both iterate `document.body.getElementsByTagName('*')` **once** at `Graphics.initialize` time and assign `oncontextmenu`. Elements created **later** (the whole overlay) are untouched on both engines, so the mod's own `contextmenu` handling (`GigaHack_Shell.js:644`) works identically. On MV, if the overlay mounts before `Graphics.initialize` (§E.3), its then-existing children **will** get `oncontextmenu = () => false` stamped on them — a real MV-only difference, though the mod stops `contextmenu` at the host anyway.
 
 ### E.6 Input event plumbing — same on both
 

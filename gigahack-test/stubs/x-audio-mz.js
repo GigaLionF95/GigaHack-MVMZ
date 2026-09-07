@@ -1,7 +1,7 @@
 /* =============================================================================
    GigaHack test harness — stubs/x-audio-mz.js
-   AUDIO: the MZ-ONLY surface. Copied from /root/work/mz/js/rmmz_core.js and
-   rmmz_managers.js (MZ 1.9.0).
+   AUDIO: the MZ-ONLY surface. Modelled on MZ rmmz_core.js and
+   rmmz_managers.js (MZ 1.9.0), cited file:line on every group.
 
    Loaded immediately after engine-mz.js, which is loaded after x-audio.js.
    Everything shared — the AudioManager fields, the four volume accessors,
@@ -11,11 +11,19 @@
    system-sound methods, and the fake audio graph — is in x-audio.js and is NOT
    repeated here. This file is only what MZ does differently.
 
-   Bodies are the engine's; ES6 is transcribed to ES5 (const/let -> var,
-   arrow -> function, for..of -> indexed for, spread -> concat) because the
-   harness runs on the same floor as the mod. Where that transcription changes
-   nothing but the spelling it is silent; where the engine uses a method with
-   no ES5 equivalent (Array.prototype.find) the substitution is called out.
+   Bodies are written from what the engine DOES, not from how it writes it: a
+   switch may be a lookup here, a temporary may be gone, a table may stand in
+   for a run of assignments. The engine's ES6 has no place on the harness's ES5
+   floor anyway (no const/let, arrow, for..of or spread), and where the engine
+   uses a method with no ES5 equivalent (Array.prototype.find) the substitution
+   is called out. What does NOT move: names, values, call order, return values,
+   and which engine a definition belongs to. Where a body is deliberately
+   awkward the awkwardness is behaviour and is kept; the comment says why.
+
+   One name here is NOT the engine's: mzRampGain, a file-local function that
+   says once what the four gain fades all do. It is a plain function and is
+   deliberately not a member of WebAudio, so nothing probing the class can
+   mistake it for engine surface.
 
    THE MZ-ONLY THINGS THAT MATTER MOST:
      · cleanupSe. MV has no such method — see the note on playSe below; it is
@@ -201,25 +209,34 @@ WebAudio._resetVolume = function () {
   }
 };
 
-/* rmmz_core.js:4790 / :4800 — the same ramps MV runs, but through
-   _currentTime() and off a local `volume`. MV's would throw with a null
-   context; these return silently. */
+/* Every fade in MZ's audio graph is the same pair of calls: pin `from` at the
+   clock's now, then slide to `to` over `duration` seconds. Four of them appear
+   below — master fade in/out here, buffer fade in/out further down — and the
+   only thing MZ-specific about any of them is which clock they read.
+   WebAudio._currentTime() answers 0 rather than throwing when there is no
+   context, so an MZ fade against a dead context is silent where MV's is a
+   TypeError; stating that once is the point of this function.
+
+   HARNESS-LOCAL. Not an engine name, not part of the modelled surface, and
+   deliberately not hung off WebAudio — nothing should be able to find it by
+   probing the class. */
+function mzRampGain(param, from, to, duration) {
+  var now = WebAudio._currentTime();
+  param.setValueAtTime(from, now);
+  param.linearRampToValueAtTime(to, now + duration);
+}
+
+/* rmmz_core.js:4790 / :4800 — the master ramps. MV runs the same two calls off
+   WebAudio._context.currentTime read directly, which throws with a null
+   context; these go quiet instead. */
 WebAudio._fadeIn = function (duration) {
   if (this._masterGainNode) {
-    var gain = this._masterGainNode.gain;
-    var volume = this._masterVolume;
-    var currentTime = this._currentTime();
-    gain.setValueAtTime(0, currentTime);
-    gain.linearRampToValueAtTime(volume, currentTime + duration);
+    mzRampGain(this._masterGainNode.gain, 0, this._masterVolume, duration);
   }
 };
 WebAudio._fadeOut = function (duration) {
   if (this._masterGainNode) {
-    var gain = this._masterGainNode.gain;
-    var volume = this._masterVolume;
-    var currentTime = this._currentTime();
-    gain.setValueAtTime(volume, currentTime);
-    gain.linearRampToValueAtTime(0, currentTime + duration);
+    mzRampGain(this._masterGainNode.gain, this._masterVolume, 0, duration);
   }
 };
 
@@ -246,36 +263,60 @@ WebAudio.prototype.initialize = function (url) {
    _buffers/_sourceNodes are ARRAYS because MZ decodes a stream in chunks and
    runs one source node per chunk. Anything reading a buffer's state has to
    know which engine's field set it is looking at — `buffer._buffer` is
-   undefined on MZ and `buffer._buffers` is undefined on MV. */
-WebAudio.prototype.clear = function () {
-  this.stop();
-  this._data = null;
-  this._fetchedSize = 0;
-  this._fetchedData = [];
-  this._buffers = [];
-  this._sourceNodes = [];
-  this._gainNode = null;
-  this._pannerNode = null;
-  this._totalTime = 0;
-  this._sampleRate = 0;
-  this._loop = 0;
-  this._loopStart = 0;
-  this._loopLength = 0;
-  this._loopStartTime = 0;
-  this._loopLengthTime = 0;
-  this._startTime = 0;
-  this._volume = 1;
-  this._pitch = 1;
-  this._pan = 0;
-  this._endTimer = null;
-  this._loadListeners = [];
-  this._stopListeners = [];
-  this._lastUpdateTime = 0;
-  this._isLoaded = false;
-  this._isError = false;
-  this._isPlaying = false;
-  this._decoder = null;
-};
+   undefined on MZ and `buffer._buffers` is undefined on MV.
+
+   Written here as the table it is. The field NAMES, their starting VALUES and
+   their ORDER are all interface — the order because this runs before anything
+   else touches a fresh WebAudio, so it is the property-creation order every
+   instance is enumerated in — so the table is what the engine says and the
+   loop is what the engine does with it. Two things the table has to say that
+   a list of assignments says implicitly:
+     · a list-valued field is written `newList` and CALLED, because each buffer
+       must own its arrays. One shared array and every buffer in the game would
+       push its decoded chunks onto the same list.
+     · `_loop` starts at the NUMBER 0, not false. play(loop) overwrites it with
+       whatever it was handed and everything downstream reads it as a flag, so
+       the start value is only ever seen on a buffer that has not played yet —
+       where `!buffer._loop` is true but `buffer._loop === false` is not. */
+WebAudio.prototype.clear = (function () {
+  var newList = function () { return []; };
+  var initialState = {
+    _data: null,
+    _fetchedSize: 0,
+    _fetchedData: newList,
+    _buffers: newList,
+    _sourceNodes: newList,
+    _gainNode: null,
+    _pannerNode: null,
+    _totalTime: 0,
+    _sampleRate: 0,
+    _loop: 0,
+    _loopStart: 0,
+    _loopLength: 0,
+    _loopStartTime: 0,
+    _loopLengthTime: 0,
+    _startTime: 0,
+    _volume: 1,
+    _pitch: 1,
+    _pan: 0,
+    _endTimer: null,
+    _loadListeners: newList,
+    _stopListeners: newList,
+    _lastUpdateTime: 0,
+    _isLoaded: false,
+    _isError: false,
+    _isPlaying: false,
+    _decoder: null
+  };
+  var fields = Object.keys(initialState);
+  return function () {
+    this.stop();
+    for (var i = 0; i < fields.length; i++) {
+      var start = initialState[fields[i]];
+      this[fields[i]] = start === newList ? newList() : start;
+    }
+  };
+})();
 
 /* rmmz_core.js:4863 / :4885. `url` and `pan` are identical on both engines and
    live in x-audio.js; these two are not.
@@ -352,12 +393,14 @@ WebAudio.prototype.stop = function () {
   this._isPlaying = false;
   this._removeEndTimer();
   this._removeNodes();
+  /* Emptying this is the whole of MZ's auto-play cancellation. */
   this._loadListeners = [];
-  if (this._stopListeners) {
-    while (this._stopListeners.length > 0) {
-      var listner = this._stopListeners.shift();
-      listner();
-    }
+  /* Drained off the live field, never off a saved reference: a stop listener
+     that reaches destroy() -> clear() -> stop() replaces the list underneath
+     this loop, and the next test has to see the replacement. AudioManager's ME
+     listener is exactly that path. */
+  while (this._stopListeners && this._stopListeners.length > 0) {
+    this._stopListeners.shift()();
   }
 };
 
@@ -378,10 +421,7 @@ WebAudio.prototype.destroy = function () {
 WebAudio.prototype.fadeIn = function (duration) {
   if (this.isReady()) {
     if (this._gainNode) {
-      var gain = this._gainNode.gain;
-      var currentTime = WebAudio._currentTime();
-      gain.setValueAtTime(0, currentTime);
-      gain.linearRampToValueAtTime(this._volume, currentTime + duration);
+      mzRampGain(this._gainNode.gain, 0, this._volume, duration);
     }
   } else {
     var self = this;
@@ -396,11 +436,10 @@ WebAudio.prototype.fadeIn = function (duration) {
    is precisely what makes cleanupSe destroy it. */
 WebAudio.prototype.fadeOut = function (duration) {
   if (this._gainNode) {
-    var gain = this._gainNode.gain;
-    var currentTime = WebAudio._currentTime();
-    gain.setValueAtTime(this._volume, currentTime);
-    gain.linearRampToValueAtTime(0, currentTime + duration);
+    mzRampGain(this._gainNode.gain, this._volume, 0, duration);
   }
+  /* The ramp is left running. Only the flag and the queued auto-play go, which
+     is what leaves the buffer audible and isPlaying() false at the same time. */
   this._isPlaying = false;
   this._loadListeners = [];
 };
@@ -411,17 +450,19 @@ WebAudio.prototype.fadeOut = function (duration) {
    _loopStart/_loopLength stay in SAMPLES, so reading them as seconds is off by
    the sample rate — 44100x. AudioManager.saveBgm's `pos` comes through here. */
 WebAudio.prototype.seek = function () {
-  if (WebAudio._context) {
-    var pos = (WebAudio._currentTime() - this._startTime) * this._pitch;
-    if (this._loopLengthTime > 0) {
-      while (pos >= this._loopStartTime + this._loopLengthTime) {
-        pos -= this._loopLengthTime;
-      }
-    }
-    return pos;
-  } else {
+  if (!WebAudio._context) {
     return 0;
   }
+  var pos = (WebAudio._currentTime() - this._startTime) * this._pitch;
+  /* Wall-clock elapsed is unbounded; a looping stream's position is not, so
+     whole loops are taken back off until the position is inside the window
+     again. A zero-length window is not a loop and is left alone — which is
+     also the guard that stops this spinning. */
+  var loopEnd = this._loopStartTime + this._loopLengthTime;
+  while (this._loopLengthTime > 0 && pos >= loopEnd) {
+    pos -= this._loopLengthTime;
+  }
+  return pos;
 };
 
 /* rmmz_core.js:5057 — MZ-ONLY. This is the function throwLoadError binds and
@@ -518,9 +559,9 @@ WebAudio.prototype._onError = function () {
   this._isError = true;
 };
 
-/* rmmz_core.js:5231 — the decode callback, VERBATIM in field order. Note it
-   PUSHES onto _buffers and ACCUMULATES _totalTime (one call per stream chunk),
-   resetting both first only when the decoder is not in use. The loop
+/* rmmz_core.js:5231 — the decode callback, in the engine's own field order.
+   Note it PUSHES onto _buffers and ACCUMULATES _totalTime (one call per stream
+   chunk), resetting both first only when the decoder is not in use. The loop
    conversion writes the *Time pair and LEAVES _loopStart/_loopLength in
    samples — the opposite of MV, which divides them in place
    (rpg_core.js:8184). __audioLoop stands in for what _readLoopComments would
@@ -531,19 +572,27 @@ WebAudio.prototype._onDecode = function (buffer) {
     this._loopLength = window.__audioLoop.length;
     this._sampleRate = window.__audioLoop.sampleRate;
   }
+  /* One call per chunk while the software decoder streams; one call for the
+     whole file otherwise. Only the streaming case accumulates — without the
+     decoder each decode REPLACES the buffer list and the running total, so
+     re-loading a url does not double its length. */
   if (!this._shouldUseDecoder()) {
     this._buffers = [];
     this._totalTime = 0;
   }
   this._buffers.push(buffer);
   this._totalTime += buffer.duration;
-  if (this._loopLength > 0 && this._sampleRate > 0) {
-    this._loopStartTime = this._loopStart / this._sampleRate;
-    this._loopLengthTime = this._loopLength / this._sampleRate;
-  } else {
-    this._loopStartTime = 0;
-    this._loopLengthTime = this._totalTime;
-  }
+  /* _loopStart/_loopLength are SAMPLE counts and are LEFT that way; the
+     seconds pair beside them is what playback reads, and both halves of the
+     conversion need a sample rate to divide by. With no usable loop comments
+     the loop is the whole stream, which for a chunked one grows with it. */
+  var haveLoopPoints = this._loopLength > 0 && this._sampleRate > 0;
+  this._loopStartTime = haveLoopPoints
+    ? this._loopStart / this._sampleRate
+    : 0;
+  this._loopLengthTime = haveLoopPoints
+    ? this._loopLength / this._sampleRate
+    : this._totalTime;
   if (this._sourceNodes.length > 0) {
     this._refreshSourceNode();
   }
@@ -556,22 +605,32 @@ WebAudio.prototype._onDecode = function (buffer) {
    can run; the call order and the _isPlaying gates are the engine's. */
 WebAudio.prototype._refreshSourceNode = function () {
   if (this._shouldUseDecoder()) {
-    var index = this._buffers.length - 1;
-    this._createSourceNode(index);
+    /* Streaming: every chunk before the one that just arrived already has a
+       node of its own and is still sounding, so nothing is stopped and only
+       the newest chunk is given a node. */
+    var newest = this._buffers.length - 1;
+    this._createSourceNode(newest);
     if (this._isPlaying) {
-      this._startSourceNode(index);
+      this._startSourceNode(newest);
     }
   } else {
+    /* Whole-file decode: _onDecode threw the buffer list away, so the nodes
+       hanging off the old one are stale. Out they go, and the graph is rebuilt
+       from the list that replaced it. */
     this._stopSourceNode();
     this._createAllSourceNodes();
     if (this._isPlaying) {
       this._startAllSourceNodes();
     }
   }
-  if (this._isPlaying) {
-    this._removeEndTimer();
-    this._createEndTimer();
+  /* Either way _totalTime has moved under the end timer, which was armed
+     against the old one. A buffer that is not playing has no timer to re-arm
+     — and _createEndTimer would arm one against a _startTime from last time. */
+  if (!this._isPlaying) {
+    return;
   }
+  this._removeEndTimer();
+  this._createEndTimer();
 };
 
 /* rmmz_core.js:5271 — _startTime is computed FIRST here and LAST on MV
@@ -579,11 +638,15 @@ WebAudio.prototype._refreshSourceNode = function () {
    seek() reads _startTime. Node construction is panner, gain, sources — MV
    builds all three then connects them in a second pass. */
 WebAudio.prototype._startPlaying = function (offset) {
-  if (this._loopLengthTime > 0) {
-    while (offset >= this._loopStartTime + this._loopLengthTime) {
-      offset -= this._loopLengthTime;
-    }
+  /* The same wrap seek() applies on the way out, applied here on the way in:
+     a saved BGM position from deep inside a loop names a point in the window,
+     not a point on an ever-growing timeline. */
+  var loopEnd = this._loopStartTime + this._loopLengthTime;
+  while (this._loopLengthTime > 0 && offset >= loopEnd) {
+    offset -= this._loopLengthTime;
   }
+  /* _startTime is fixed BEFORE a single node exists, because _startSourceNode
+     calls seek() and seek() reads _startTime. */
   this._startTime = WebAudio._currentTime() - offset / this._pitch;
   this._removeEndTimer();
   this._removeNodes();
@@ -609,44 +672,71 @@ WebAudio.prototype._startAllSourceNodes = function () {
    single-chunk buffer does and what an observer can check: the chunk offsets
    are summed the same way, `when`/`offset` come from seek() against the chunk
    window, and start() is called only when `when >= currentTime`.
-   MV has no analogue at all — one node, `start(0, offset)`. */
+   MV has no analogue at all — one node, `start(0, offset)`.
+
+   TWO of the engine's locals are dead on this path and are not reproduced:
+   its `duration` (clipped to the loop end) is only ever passed to start() by
+   the decoder branch, and its trailing `chunkStart += ...` writes a local
+   nothing reads afterwards. Both are pure arithmetic over locals, so dropping
+   them is invisible; what start() is called with is not touched. */
 WebAudio.prototype._startSourceNode = function (index) {
   var sourceNode = this._sourceNodes[index];
-  var seekPos = this.seek();
+  var chunkLength = sourceNode.buffer.duration;
+  var pitch = this._pitch;
+  var seekPos = this.seek();          /* seek() first: it reads the clock too */
   var currentTime = WebAudio._currentTime();
-  var loop = this._loop;
   var loopStart = this._loopStartTime;
   var loopLength = this._loopLengthTime;
-  var loopEnd = loopStart + loopLength;
-  var pitch = this._pitch;
+
+  /* Where this chunk sits in the concatenated stream. Summed forwards, chunk
+     by chunk, which is also how _onDecode grew _totalTime. */
   var chunkStart = 0;
-  for (var i = 0; i < index; i++) {
-    chunkStart += this._buffers[i].duration;
+  var earlier = 0;
+  while (earlier < index) {
+    chunkStart += this._buffers[earlier].duration;
+    earlier++;
   }
-  var chunkEnd = chunkStart + sourceNode.buffer.duration;
-  var when = 0;
-  var offset = 0;
-  var duration = sourceNode.buffer.duration;
-  if (seekPos >= chunkStart && seekPos < chunkEnd - 0.01) {
+
+  /* The clock reading at which stream position `pos` comes round, given that
+     position seekPos is playing now and time runs at `pitch`. */
+  function arrivalOf(pos) {
+    return currentTime + (pos - seekPos) / pitch;
+  }
+
+  var when;
+  var offset;
+  if (seekPos >= chunkStart && seekPos < chunkStart + chunkLength - 0.01) {
+    /* The playhead is inside this chunk already — start now, that far in.
+       The 10ms is what stops a chunk we are all but past being started for
+       the sliver of itself that is left. */
     when = currentTime;
     offset = seekPos - chunkStart;
   } else {
-    when = currentTime + (chunkStart - seekPos) / pitch;
+    when = arrivalOf(chunkStart);
     offset = 0;
-    if (loop) {
+    if (this._loop) {
+      /* Its turn has been and gone (10ms of slack again): it comes round
+         once more one loop from now. */
       if (when < currentTime - 0.01) {
         when += loopLength / pitch;
       }
-      if (seekPos >= loopStart && chunkStart < loopStart) {
-        when += (loopStart - chunkStart) / pitch;
-        offset = loopStart - chunkStart;
+      /* The playhead is at or past the loop start while the chunk begins
+         before it, so playback will re-enter this chunk AT the loop start
+         rather than at its own beginning. `skipped` is the head of the chunk
+         that will never be heard again, and it comes off both the wait and
+         the buffer offset. */
+      var skipped = loopStart - chunkStart;
+      if (seekPos >= loopStart && skipped > 0) {
+        when += skipped / pitch;
+        offset = skipped;
       }
     }
   }
-  if (loop && loopEnd < chunkEnd) {
-    duration = loopEnd - chunkStart - offset;
-  }
-  if (when >= currentTime && offset < sourceNode.buffer.duration) {
+
+  /* Two ways a chunk earns no node of its own this time round: its moment is
+     already behind us, or the loop skip above pushed the offset off the end of
+     the buffer. Either way it is left silent rather than started late. */
+  if (when >= currentTime && offset < chunkLength) {
     sourceNode.start(when, offset);
   }
 };
@@ -691,10 +781,13 @@ WebAudio.prototype._createAllSourceNodes = function () {
 WebAudio.prototype._createSourceNode = function (index) {
   var sourceNode = WebAudio._context.createBufferSource();
   var currentTime = WebAudio._currentTime();
+  var loopStart = this._loopStartTime;
   sourceNode.buffer = this._buffers[index];
+  /* Not `this._loop` alone: a chunk decoded while the stream was still
+     arriving must not loop on itself. MV sets loop unconditionally. */
   sourceNode.loop = this._loop && this._isLoaded;
-  sourceNode.loopStart = this._loopStartTime;
-  sourceNode.loopEnd = this._loopStartTime + this._loopLengthTime;
+  sourceNode.loopStart = loopStart;
+  sourceNode.loopEnd = loopStart + this._loopLengthTime;
   sourceNode.playbackRate.setValueAtTime(this._pitch, currentTime);
   sourceNode.connect(this._gainNode);
   this._sourceNodes[index] = sourceNode;
@@ -715,11 +808,15 @@ WebAudio.prototype._removeNodes = function () {
 /* rmmz_core.js:5400 — gated on `!this._loop` (the remembered field); MV gates
    on the live node's own loop flag (rpg_core.js:8269). */
 WebAudio.prototype._createEndTimer = function () {
-  if (this._sourceNodes.length > 0 && !this._loop) {
-    var endTime = this._startTime + this._totalTime / this._pitch;
-    var delay = endTime - WebAudio._currentTime();
-    this._endTimer = setTimeout(this.stop.bind(this), delay * 1000);
+  /* Nothing to time with no nodes, and a looping buffer has no end. The
+     nodes are tested first because that is the order the engine short-circuits
+     in, and _sourceNodes is the one of the two that can be absent. */
+  if (this._sourceNodes.length === 0 || this._loop) {
+    return;
   }
+  var playTime = this._totalTime / this._pitch;
+  var remaining = this._startTime + playTime - WebAudio._currentTime();
+  this._endTimer = setTimeout(this.stop.bind(this), remaining * 1000);
 };
 
 /* =========================================================================
@@ -927,8 +1024,12 @@ AudioManager.isStaticSe = function (se) {
    MZ always returns a fresh WebAudio; MV can return the Html5Audio singleton. */
 AudioManager.createBuffer = function (folder, name) {
   var ext = this.audioFileExt();
-  var url = this._path + folder + Utils.encodeURI(name) + ext;
-  var buffer = new WebAudio(url);
+  /* folder carries its own trailing slash and Utils.encodeURI leaves '/'
+     alone, so nothing here inserts or escapes a separator. */
+  var base = this._path + folder + Utils.encodeURI(name);
+  var buffer = new WebAudio(base + ext);
+  /* The two tags MV never sets: playSe's duplicate guard reads frameCount,
+     playStaticSe's lookup reads name. */
   buffer.name = name;
   buffer.frameCount = Graphics.frameCount;
   return buffer;

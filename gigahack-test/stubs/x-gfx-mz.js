@@ -1,7 +1,7 @@
 /* =============================================================================
    GigaHack test harness — stubs/x-gfx-mz.js
-   IMAGES, BITMAPS AND SNAPSHOTS — the DIVERGENT MZ half. Copied from
-   /root/work/mz/js/rmmz_*.js (MZ 1.9.0) and js/libs/pixi.js (5.3.12).
+   IMAGES, BITMAPS AND SNAPSHOTS — the DIVERGENT MZ half. Modelled on
+   MZ rmmz_*.js (MZ 1.9.0) and js/libs/pixi.js (5.3.12).
    Loaded immediately after engine-mz.js; x-gfx.js holds the shared half.
 
    STOCK ENGINE ONLY, same rule as engine-mz.js.

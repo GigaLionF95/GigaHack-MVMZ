@@ -6,7 +6,7 @@
 
    Every stub here is copied from the shipped engine source and carries the
    file:line it came from. Line references follow core.js: MV =
-   /root/work/mv/js/rpg_*.js, MZ = /root/work/mz/js/rmmz_*.js. A single
+   MV rpg_*.js, MZ = MZ rmmz_*.js. A single
    reference means the two engines are byte-identical there.
 
    WHAT core.js ALREADY MODELS, AND IS THEREFORE NOT REDEFINED HERE
@@ -441,13 +441,22 @@ Sprite_Character.prototype.updateFrame = function () {
   }
 };
 
-/* MV rpg_sprites.js:276 / MZ rmmz_sprites.js:312. */
+/* MV rpg_sprites.js:276 / MZ rmmz_sprites.js:312. A tileset sheet is two
+   side-by-side blocks of 8 columns by 16 rows, so a tile id decomposes into
+   three fields: bit 7 picks the block, the low 3 bits pick the column inside
+   it, and the id's offset within its 256-tile page picks the row. Both
+   engines write the three extractions as one expression each; splitting them
+   out is the same arithmetic, and the `% 16` on the row is what makes ids
+   from a later page wrap back onto the same 16 rows rather than run off the
+   bottom of the sheet. */
 Sprite_Character.prototype.updateTileFrame = function () {
   var pw = this.patternWidth();
   var ph = this.patternHeight();
-  var sx = (Math.floor(this._tileId / 128) % 2 * 8 + this._tileId % 8) * pw;
-  var sy = Math.floor(this._tileId % 256 / 8) % 16 * ph;
-  this.setFrame(sx, sy, pw, ph);
+  var id = this._tileId;
+  var block = Math.floor(id / 128) % 2;
+  var column = block * 8 + (id % 8);
+  var row = Math.floor((id % 256) / 8) % 16;
+  this.setFrame(column * pw, row * ph, pw, ph);
 };
 
 /* MV rpg_sprites.js:284 / MZ rmmz_sprites.js:321. The bush branch sets the
@@ -461,14 +470,17 @@ Sprite_Character.prototype.updateCharacterFrame = function () {
   var ph = this.patternHeight();
   var sx = (this.characterBlockX() + this.characterPatternX()) * pw;
   var sy = (this.characterBlockY() + this.characterPatternY()) * ph;
-  if (this._bushDepth > 0) {
-    var d = this._bushDepth;
-    this._upperBody.setFrame(sx, sy, pw, ph - d);
-    this._lowerBody.setFrame(sx, sy + ph - d, pw, d);
+  var bush = this._bushDepth;
+  if (bush > 0) {
+    /* Cut at the waterline: the top `ph - bush` rows go to the upper half
+       sprite, the bottom `bush` rows to the lower one, and this sprite is
+       left holding a frame of width ZERO so it paints nothing itself. */
+    this._upperBody.setFrame(sx, sy, pw, ph - bush);
+    this._lowerBody.setFrame(sx, sy + ph - bush, pw, bush);
     this.setFrame(sx, sy, 0, ph);
-  } else {
-    this.setFrame(sx, sy, pw, ph);
+    return;
   }
+  this.setFrame(sx, sy, pw, ph);
 };
 
 /* MV rpg_sprites.js:300 / MZ rmmz_sprites.js:337. */

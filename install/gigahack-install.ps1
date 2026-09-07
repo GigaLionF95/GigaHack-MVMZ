@@ -34,7 +34,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Version      = '2.0.0'
+$Version      = '2.1.0'
 $BeginMark    = "// >>> GigaHack $Version BEGIN - installed automatically; edit at your own risk"
 $AnyBegin     = '// >>> GigaHack'
 $EndMark      = '// <<< GigaHack END'
@@ -101,9 +101,9 @@ if (-not $Payload) {
 
     Write-Host '  The unzipped folder should contain:'
     Write-Host ''
-    Write-Host '      GigaHack-2.0.0\'
+    Write-Host "      GigaHack-$Version\"
     Write-Host '        manifest.json'
-    Write-Host '        js\plugins\GigaHack_Core.js   (and 25 more)'
+    Write-Host '        js\plugins\GigaHack_Core.js   (and the rest)'
     Write-Host '        profiles\'
     Write-Host '        gigahack-install.bat'
     Write-Host '        gigahack-install.ps1'

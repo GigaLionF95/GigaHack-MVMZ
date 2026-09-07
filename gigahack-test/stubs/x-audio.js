@@ -2,8 +2,8 @@
    GigaHack test harness — stubs/x-audio.js
    AUDIO: everything that is IDENTICAL on RPG Maker MV 1.6.1 and MZ 1.9.0.
 
-   Copied from the shipped engine source, file:line on every group.
-   Line references: MV = /root/work/mv/js/rpg_*.js, MZ = /root/work/mz/js/rmmz_*.js.
+   Modelled on the shipped engine source, file:line on every group.
+   Line references: MV = MV rpg_*.js, MZ = MZ rmmz_*.js.
    A single reference means the two engines are byte-identical there.
 
    Loaded immediately after core.js. core.js ships a one-method placeholder

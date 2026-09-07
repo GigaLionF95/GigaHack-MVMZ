@@ -1,7 +1,7 @@
 /* =============================================================================
    GigaHack test harness — stubs/x-equip-mv.js
    EQUIPMENT, PARTY INVENTORY and the SHOP — the DIVERGENT MV surface.
-   Copied from /root/work/mv/js/rpg_*.js (RPG Maker MV 1.6.1).
+   Modelled on MV rpg_*.js (RPG Maker MV 1.6.1).
 
    STOCK ENGINE ONLY. Loaded IMMEDIATELY AFTER engine-mv.js, so it may reach
    everything core.js, x-equip.js and engine-mv.js define — in particular
@@ -240,14 +240,22 @@ Scene_Title.prototype.terminate = function () {
    .mainFontFace does not exist on MV at all. This is the seam a global font
    override reaches on MZ and cannot reach here. */
 Scene_Title.prototype.drawGameTitle = function () {
-  var x = 20;
-  var y = Graphics.height / 4;
-  var maxWidth = Graphics.width - x * 2;
-  var text = $dataSystem.gameTitle;
-  this._gameTitleSprite.bitmap.outlineColor = 'black';
-  this._gameTitleSprite.bitmap.outlineWidth = 8;
-  this._gameTitleSprite.bitmap.fontSize = 72;
-  this._gameTitleSprite.bitmap.drawText(text, x, y, maxWidth, 48, 'center');
+  /* A 20px gutter on BOTH sides — the same 20 is subtracted twice — and a
+     baseline a quarter of the way down the SCREEN, not down the bitmap. */
+  var gutter = 20;
+  var title = $dataSystem.gameTitle;
+  var face = this._gameTitleSprite.bitmap;
+  face.outlineColor = 'black';
+  face.outlineWidth = 8;
+  face.fontSize = 72;
+  face.drawText(
+    title,
+    gutter,
+    Graphics.height / 4,
+    Graphics.width - gutter * 2,
+    48,
+    'center'
+  );
 };
 
 /* createCommandWindow — :501. MV constructs Window_TitleCommand with NO
@@ -518,26 +526,39 @@ Window_ShopBuy.prototype.refresh = function () {
    arrays are kept in lockstep by position, which is why price() has to search
    _data by identity to index _price. */
 Window_ShopBuy.prototype.makeItemList = function () {
+  var self = this;
+
+  /* The engine spells this as a switch with no default; the three strict
+     comparisons are the whole of it. STRICT matters: a goods row whose type
+     is the string "0" rather than the number 0 matches no branch, stays null
+     and is dropped below, so an indexed container lookup would be wrong. Any
+     type outside 0..2 lands the same way. */
+  function resolveGoodsRow(goods) {
+    if (goods[0] === 0) {
+      return $dataItems[goods[1]];
+    }
+    if (goods[0] === 1) {
+      return $dataWeapons[goods[1]];
+    }
+    if (goods[0] === 2) {
+      return $dataArmors[goods[1]];
+    }
+    return null;
+  }
+
   this._data = [];
   this._price = [];
   this._shopGoods.forEach(function (goods) {
-    var item = null;
-    switch (goods[0]) {
-      case 0:
-        item = $dataItems[goods[1]];
-        break;
-      case 1:
-        item = $dataWeapons[goods[1]];
-        break;
-      case 2:
-        item = $dataArmors[goods[1]];
-        break;
+    var item = resolveGoodsRow(goods);
+    if (!item) {
+      return; /* deleted id, or a type nothing matched — the row vanishes */
     }
-    if (item) {
-      this._data.push(item);
-      this._price.push(goods[2] === 0 ? item.price : goods[3]);
-    }
-  }, this);
+    self._data.push(item);
+    /* goods[2] is the price TYPE and goods[3] the override; the two arrays
+       stay in lockstep by position, which is why price() has to find the
+       item in _data by identity to index _price. */
+    self._price.push(goods[2] === 0 ? item.price : goods[3]);
+  });
   window.__shopItemLists = (window.__shopItemLists || 0) + 1;
 };
 /* drawItem — :2994. MV shrinks the row by textPadding() and hard-codes

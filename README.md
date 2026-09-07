@@ -10,7 +10,9 @@ differences are asked for as capabilities rather than read off a version
 string, and everything a game can be that the mod cannot handle is reported by
 name rather than left to fail quietly.
 
-26 plugin files, about 28,700 lines, six tabs. MIT licensed.
+35 plugin files, about 51,100 lines, six tabs, 62 panels. MIT licensed; see
+[`NOTICE.md`](NOTICE.md). RPG Maker is a product of Gotcha Gotcha Games and
+KADOKAWA — this is an unofficial, unaffiliated tool.
 
 ---
 
@@ -33,8 +35,8 @@ core file is present (`js/rpg_core.js` for MV, `js/rmmz_core.js` for MZ).
 
 It touches exactly three things:
 
-- `js/plugins/GigaHack_*.js` — the 26 module files, copied in, mode 644.
-- `js/plugins.js` — 26 entries appended at the end, between marker comments.
+- `js/plugins/GigaHack_*.js` — the module files named in `manifest.json`, copied in, mode 644.
+- `js/plugins.js` — one entry per module appended at the end, between marker comments.
 - `js/plugins.js.gigahack-backup` — a copy of the original, written once on
   the first install and never overwritten afterwards.
 
@@ -57,7 +59,7 @@ Other flags:
 ./gigahack-install.sh --uninstall  # remove the module files, restore plugins.js
 ```
 
-`--uninstall` deletes the 26 module files and copies the backup back over
+`--uninstall` deletes those module files and copies the backup back over
 `js/plugins.js` byte for byte, then deletes the backup. Where no backup
 survives it strips the marked block instead, including the comma that
 separated it — a bare comma there is a legal array literal with a hole in it,
@@ -254,6 +256,13 @@ fast-forward plugin, an image-cache plugin, a save-location redirect, a
 circular-reference save encoder, two plugins that claim the letters GigaHack
 would otherwise pick for its hotkeys, and one deliberately absent from the
 quirks table so the "nothing I recognise is responsible" branch is covered too.
+
+The stubs are behavioural models written from the engines and annotated with
+the file and line each was learned from, so any of them can be checked against
+a real build. No engine source is redistributed — see
+[`gigahack-test/stubs/README.md`](gigahack-test/stubs/README.md) for what is
+reproduced exactly and why, and what is not, and [`NOTICE.md`](NOTICE.md) for
+what the licence covers and what it does not.
 
 The lint enforces the rules the codebase is held to: no prototype assignment
 that does not go through `$.install`, no CSS or JS above the Chromium 66 floor,

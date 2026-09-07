@@ -1,7 +1,7 @@
 /* =============================================================================
    GigaHack test harness — stubs/x-screen-mz.js
    THE SCREEN AND PICTURES: the MZ-only half.
-   Copied from /root/work/mz/js/rmmz_core.js, rmmz_objects.js, rmmz_scenes.js
+   Modelled on MZ rmmz_core.js, rmmz_objects.js, rmmz_scenes.js
    and rmmz_sprites.js (MZ 1.9.0, PIXI 5.3.12). Nothing here is from memory.
 
    Loaded IMMEDIATELY AFTER engine-mz.js. x-screen.js has already installed
@@ -107,18 +107,25 @@ ColorFilter.prototype._fragmentSrc = function () {
    (grep rmmz_core.js: zero hits).
    ---------------------------------------------------------------------- */
 ScreenSprite.prototype.setColor = function (r, g, b) {
-  if (this._red !== r || this._green !== g || this._blue !== b) {
-    r = Math.round(r || 0).clamp(0, 255);
-    g = Math.round(g || 0).clamp(0, 255);
-    b = Math.round(b || 0).clamp(0, 255);
-    this._red = r;
-    this._green = g;
-    this._blue = b;
-    var graphics = this._graphics;
-    graphics.clear();
-    graphics.beginFill((r << 16) | (g << 8) | b, 1);
-    graphics.drawRect(-50000, -50000, 100000, 100000);
+  /* The dirty test compares the RAW arguments against the stored channels,
+     which are already rounded and clamped — so setColor(0.4, 0, 0) on a black
+     sprite still repaints. Identical to MV's test; everything after it is not. */
+  if (this._red === r && this._green === g && this._blue === b) {
+    return;
   }
+  function channel(v) {
+    return Math.round(v || 0).clamp(0, 255);
+  }
+  this._red = channel(r);
+  this._green = channel(g);
+  this._blue = channel(b);
+  /* NO _colorText here: MZ dropped the field with the helper that made it. */
+  var gfx = this._graphics;
+  gfx.clear();
+  gfx.beginFill((this._red << 16) | (this._green << 8) | this._blue, 1);
+  /* A flat 100000-square centred on the origin, big enough for any zoom.
+     MV derives the same rectangle from Graphics instead. */
+  gfx.drawRect(-50000, -50000, 100000, 100000);
 };
 /* rmmz_core.js:3445 — MZ-only; MV's ScreenSprite has no destroy override. */
 ScreenSprite.prototype.destroy = function () {
@@ -247,10 +254,16 @@ Game_Picture.prototype.updateMove = function () {
    the duration the move began with; anything that rewrites _duration without
    rewriting _wholeDuration makes `lt` wrong and the picture jumps. */
 Game_Picture.prototype.applyEasing = function (current, target) {
-  var d = this._duration;
-  var wd = this._wholeDuration;
-  var lt = this.calcEasing((wd - d) / wd);
-  var t = this.calcEasing((wd - d + 1) / wd);
+  var whole = this._wholeDuration;
+  var elapsed = whole - this._duration;      /* frames already spent */
+  /* The curve is sampled TWICE: lt is where the move stands now, t is where
+     it stands after this frame. Both go through calcEasing, in that order. */
+  var lt = this.calcEasing(elapsed / whole);
+  var t = this.calcEasing((elapsed + 1) / whole);
+  /* Back-solve the value the move ORIGINALLY started from, rather than
+     storing it: current === start + (target - start) * lt, rearranged. That
+     is why _wholeDuration must keep the duration the move began with —
+     rewrite _duration alone and lt is wrong and the picture jumps. */
   var start = (current - target * lt) / (1 - lt);
   return start + (target - start) * t;
 };

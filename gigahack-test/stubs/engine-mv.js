@@ -1,6 +1,8 @@
 /* =============================================================================
    GigaHack test harness — stubs/engine-mv.js
-   The DIVERGENT MV surface. Copied from /root/work/mv/js/rpg_*.js (MV 1.6.1).
+   The DIVERGENT MV surface. Modelled on MV rpg_*.js (MV 1.6.1):
+   every citation below names the file and line the BEHAVIOUR was read from, and
+   the behaviour is reproduced exactly. The wording is this harness's own.
 
    STOCK ENGINE ONLY. Anything a third-party plugin does is in plugins-mv.js.
 
@@ -205,23 +207,42 @@ SceneManager.updateManagers = function () { ImageManager.update(); };
 SceneManager.renderScene = function () {
   if (this.isCurrentSceneStarted()) Graphics.render(this._scene);
 };
-/* rpg_managers.js:1975-1994, verbatim in structure. */
+/* rpg_managers.js:1975-1994. Behaviour reproduced, wording ours.
+
+   THREE facts live in this one body, and every one of them is why the mod
+   refuses to wrap updateMain on MV:
+     1. it RENDERS at the bottom — so returning early to "pause" stops the
+        screen being drawn, not just the logic;
+     2. it RE-ARMS the frame loop at the bottom — so returning early kills the
+        rAF chain outright and nothing ever calls updateMain again;
+     3. it is a CATCH-UP loop, not one step — calling it twice does not run
+        the game twice, it just re-arms the loop twice, and the queue doubles
+        every frame. run.js reproduces all three against this body.
+   MZ split these apart, which is the whole reason the port exists. */
 SceneManager.updateMain = function () {
   window.__mainUpdates = (window.__mainUpdates || 0) + 1;
   if (Utils.isMobileSafari()) {
+    /* No clock, no accumulator: exactly one logical step per frame and no
+       input poll at all. A slow frame simply loses that time forever. */
     this.changeScene();
     this.updateScene();
   } else {
-    var newTime = this._getTimeInMsWithoutMobileSafari();
-    var fTime = (newTime - this._currentTime) / 1000;
-    if (fTime > 0.25) fTime = 0.25;
-    this._currentTime = newTime;
-    this._accumulator += fTime;
-    while (this._accumulator >= this._deltaTime) {
+    var now = this._getTimeInMsWithoutMobileSafari();
+    var elapsed = (now - this._currentTime) / 1000;
+    this._currentTime = now;
+    /* Clamp, THEN bank. A three-second stall is worth 0.25s of catch-up, so
+       the loop below runs 15 times and not 180 — this ceiling is the whole
+       spiral-of-death guard. NaN survives Math.min exactly as it survives the
+       engine's `if (fTime > 0.25)`: it is banked, every comparison against it
+       is false, and the inner loop stops running for good. */
+    this._accumulator += Math.min(elapsed, 0.25);
+    /* One whole frame's worth of banked time = one input+scene step. The
+       decrement is the loop's own update clause, which is exactly where the
+       engine puts it: after the body, before the next test. */
+    for (; this._accumulator >= this._deltaTime; this._accumulator -= this._deltaTime) {
       this.updateInputData();
       this.changeScene();
       this.updateScene();
-      this._accumulator -= this._deltaTime;
     }
   }
   this.renderScene();

@@ -6,7 +6,7 @@
    file:line it came from. Where a stub simplifies, the simplification is the
    bug it will hide — so the awkward parts are kept.
 
-   Line references: MV = /root/work/mv/js/rpg_*.js, MZ = /root/work/mz/js/rmmz_*.js.
+   Line references: MV = MV rpg_*.js, MZ = MZ rmmz_*.js.
    A single reference means the two engines are byte-identical there (see
    docs/MV-MZ-DELTA.md §C.21, which lists the 33 hooks that port unchanged).
 
@@ -223,10 +223,16 @@ function Rectangle(x, y, w, h) { this.x = x || 0; this.y = y || 0; this.width = 
 
 /* -------------------------------------------------------------------------
    Input. keyMapper is BYTE-IDENTICAL between the engines: 24 entries
-   (MV rpg_core.js:3002-3027, MZ rmmz_core.js:5683-5708). It is copied here in
-   full rather than trimmed, because Profile derives GigaHack's default
-   hotkeys by subtracting everything keyMapper has claimed — a shortened table
-   would hand the mod free letters the real engine does not have.
+   (MV rpg_core.js:3002-3027, MZ rmmz_core.js:5683-5708). The table is
+   reproduced in full rather than trimmed, because Profile derives GigaHack's
+   default hotkeys by subtracting everything keyMapper has claimed — a
+   shortened table would hand the mod free letters the real engine does not
+   have.
+
+   This is one of the few places where reproducing the engine exactly is the
+   only correct option: a key-code map is the engine's interface, it is fact
+   rather than expression, and there is no other way to write which key means
+   'ok'. See stubs/README.md for where the line is drawn.
    ---------------------------------------------------------------------- */
 var Input = {
   keyMapper: {
@@ -1158,7 +1164,7 @@ function convertEscapeCharacters(text) {
 Window_Message.prototype.convertEscapeCharacters = convertEscapeCharacters;
 Window_ScrollText.prototype.convertEscapeCharacters = convertEscapeCharacters;
 
-/* Game_Screen — copied from the engine, awkward parts included: startTint
+/* Game_Screen — written from the engine, awkward parts included: startTint
    calls tone.clone() (the engine's own Array extension) and sets a TARGET
    that update() walks toward. A stub that applied instantly would hide the
    stutter the hold code avoids. Identical on both engines. */

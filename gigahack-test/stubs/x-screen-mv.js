@@ -1,7 +1,7 @@
 /* =============================================================================
    GigaHack test harness — stubs/x-screen-mv.js
    THE SCREEN AND PICTURES: the MV-only half.
-   Copied from /root/work/mv/js/rpg_core.js, rpg_objects.js, rpg_scenes.js and
+   Modelled on MV rpg_core.js, rpg_objects.js, rpg_scenes.js and
    rpg_sprites.js (MV 1.6.1, PIXI 4.5.4). Nothing here is written from memory.
 
    Loaded IMMEDIATELY AFTER engine-mv.js. x-screen.js has already installed
@@ -56,22 +56,33 @@ Utils.generateRuntimeId = function () {
    nothing in the engine reads back; MZ dropped both the field and the helper.
    ---------------------------------------------------------------------- */
 ScreenSprite.prototype.setColor = function (r, g, b) {
-  if (this._red !== r || this._green !== g || this._blue !== b) {
-    r = Math.round(r || 0).clamp(0, 255);
-    g = Math.round(g || 0).clamp(0, 255);
-    b = Math.round(b || 0).clamp(0, 255);
-    this._red = r;
-    this._green = g;
-    this._blue = b;
-    this._colorText = Utils.rgbToCssColor(r, g, b);
-
-    var graphics = this._graphics;
-    graphics.clear();
-    var intColor = (r << 16) | (g << 8) | b;
-    graphics.beginFill(intColor, 1);
-    /* whole screen with zoom. BWAHAHAHAHA  — the engine's own comment */
-    graphics.drawRect(-Graphics.width * 5, -Graphics.height * 5, Graphics.width * 10, Graphics.height * 10);
+  /* The dirty test compares the RAW arguments against the stored channels,
+     which are already rounded and clamped. So setColor(0.4, 0, 0) on a black
+     sprite is "different" and repaints, even though the rounded answer is the
+     same black it already had. Identical on both engines. */
+  if (this._red === r && this._green === g && this._blue === b) {
+    return;
   }
+  /* `v || 0` swallows undefined, null and NaN before the round. */
+  function channel(v) {
+    return Math.round(v || 0).clamp(0, 255);
+  }
+  this._red = channel(r);
+  this._green = channel(g);
+  this._blue = channel(b);
+  /* MV-ONLY: a CSS string the engine never reads back, kept because a mod can
+     read it and because MZ genuinely has no such field. */
+  this._colorText = Utils.rgbToCssColor(this._red, this._green, this._blue);
+
+  var gfx = this._graphics;
+  gfx.clear();
+  gfx.beginFill((this._red << 16) | (this._green << 8) | this._blue, 1);
+  /* "whole screen with zoom. BWAHAHAHAHA" is the engine's own comment on the
+     next line. The rectangle is ten screens across and ten down, centred on
+     the origin, so a zoomed-in spriteset still finds black underneath it.
+     MZ draws a flat 100000x100000 and never consults Graphics. */
+  gfx.drawRect(-Graphics.width * 5, -Graphics.height * 5,
+               Graphics.width * 10, Graphics.height * 10);
 };
 
 /* rpg_core.js:6176-6215 — MV-ONLY compatibility shims for an old third-party
@@ -165,20 +176,29 @@ ToneFilter.prototype.adjustSaturation = function (value) {
    matrix is never loaded, so clearing a tone back to [0,0,0,n] leaves the
    previous matrix in place and relies on the preceding reset() to undo it. */
 ToneFilter.prototype.adjustTone = function (r, g, b) {
-  r = (r || 0).clamp(-255, 255) / 255;
-  g = (g || 0).clamp(-255, 255) / 255;
-  b = (b || 0).clamp(-255, 255) / 255;
-
-  if (r !== 0 || g !== 0 || b !== 0) {
-    var matrix = [
-      1, 0, 0, r, 0,
-      0, 1, 0, g, 0,
-      0, 0, 1, b, 0,
-      0, 0, 0, 1, 0
-    ];
-
-    this._loadMatrix(matrix, true);
+  /* Clamped to +-255 then scaled to +-1. Note there is NO rounding here,
+     unlike ScreenSprite.setColor: a tone of 0.5 stays 0.5/255. */
+  function unit(v) {
+    return (v || 0).clamp(-255, 255) / 255;
   }
+  var red = unit(r);
+  var green = unit(g);
+  var blue = unit(b);
+  /* THE AWKWARD PART, kept: an all-zero tone loads NOTHING. Clearing a tone
+     back to [0,0,0,n] therefore leaves whatever matrix was loaded last in
+     place, and the only thing that actually undoes it is the reset() the
+     spriteset calls first. Drop that reset and the tone never clears. */
+  if (red === 0 && green === 0 && blue === 0) {
+    return;
+  }
+  /* Rows 0-2 are identity plus a per-channel offset in the alpha column;
+     row 3 leaves alpha alone. */
+  this._loadMatrix([
+    1, 0, 0, red, 0,
+    0, 1, 0, green, 0,
+    0, 0, 1, blue, 0,
+    0, 0, 0, 1, 0
+  ], true);
 };
 
 /* rpg_core.js:7503 — the CANVAS-mode tone. This one is a display object and
@@ -301,15 +321,22 @@ Game_Picture.prototype.erase = function () {
    applyEasing instead, so with easingType 0 the numbers agree and with any
    other easing type they do not. */
 Game_Picture.prototype.updateMove = function () {
-  if (this._duration > 0) {
-    var d = this._duration;
-    this._x = (this._x * (d - 1) + this._targetX) / d;
-    this._y = (this._y * (d - 1) + this._targetY) / d;
-    this._scaleX = (this._scaleX * (d - 1) + this._targetScaleX) / d;
-    this._scaleY = (this._scaleY * (d - 1) + this._targetScaleY) / d;
-    this._opacity = (this._opacity * (d - 1) + this._targetOpacity) / d;
-    this._duration--;
+  if (!(this._duration > 0)) {
+    return;
   }
+  var d = this._duration;
+  /* One frame of the linear walk, written once and applied five times. This
+     is precisely where MZ substitutes applyEasing; the two agree exactly when
+     MZ's easingType is 0 and diverge everywhere else. */
+  function step(from, to) {
+    return (from * (d - 1) + to) / d;
+  }
+  this._x = step(this._x, this._targetX);
+  this._y = step(this._y, this._targetY);
+  this._scaleX = step(this._scaleX, this._targetScaleX);
+  this._scaleY = step(this._scaleY, this._targetScaleY);
+  this._opacity = step(this._opacity, this._targetOpacity);
+  this._duration--;
 };
 
 /* -------------------------------------------------------------------------
@@ -448,11 +475,11 @@ Spriteset_Base.prototype.createToneChanger = function () {
    _battleField. MV-MZ-DELTA.md §C.16. */
 Spriteset_Base.prototype.createWebGLToneChanger = function () {
   var margin = 48;
-  var width = Graphics.width + margin * 2;
-  var height = Graphics.height + margin * 2;
+  var grown = margin * 2;   /* the margin is paid on BOTH sides of each axis */
   this._toneFilter = new ToneFilter();
   this._baseSprite.filters = [this._toneFilter];
-  this._baseSprite.filterArea = new Rectangle(-margin, -margin, width, height);
+  this._baseSprite.filterArea = new Rectangle(
+    -margin, -margin, Graphics.width + grown, Graphics.height + grown);
 };
 /* rpg_sprites.js:2177 — canvas mode adds a CHILD to the spriteset instead. */
 Spriteset_Base.prototype.createCanvasToneChanger = function () {
@@ -471,16 +498,24 @@ Spriteset_Base.prototype.createUpperLayer = function () {
    full screen instead (pictureContainerRect). Ids run 1..maxPictures, so
    there is no sprite for index 0. */
 Spriteset_Base.prototype.createPictures = function () {
-  var width = Graphics.boxWidth;
-  var height = Graphics.boxHeight;
-  var x = (Graphics.width - width) / 2;
-  var y = (Graphics.height - height) / 2;
   this._pictureContainer = new Sprite();
-  this._pictureContainer.setFrame(x, y, width, height);
-  for (var i = 1; i <= $gameScreen.maxPictures(); i++) {
-    this._pictureContainer.addChild(new Sprite_Picture(i));
+  var container = this._pictureContainer;
+  /* The frame is the BOX, centred in the screen — half the letterbox on each
+     side. MZ passes pictureContainerRect() here, which covers the full
+     screen, so the same picture lands on different pixels on the two engines
+     whenever boxWidth < width. */
+  container.setFrame(
+    (Graphics.width - Graphics.boxWidth) / 2,
+    (Graphics.height - Graphics.boxHeight) / 2,
+    Graphics.boxWidth,
+    Graphics.boxHeight
+  );
+  /* maxPictures() is re-read as the loop CONDITION, once per iteration, on
+     both engines — not hoisted. Ids start at 1, so index 0 has no sprite. */
+  for (var id = 1; id <= $gameScreen.maxPictures(); id++) {
+    container.addChild(new Sprite_Picture(id));
   }
-  this.addChild(this._pictureContainer);
+  this.addChild(container);
 };
 /* rpg_sprites.js:2195 */
 Spriteset_Base.prototype.createTimer = function () {

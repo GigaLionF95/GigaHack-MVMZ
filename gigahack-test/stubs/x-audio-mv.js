@@ -1,6 +1,6 @@
 /* =============================================================================
    GigaHack test harness — stubs/x-audio-mv.js
-   AUDIO: the MV-ONLY surface. Copied from /root/work/mv/js/rpg_core.js and
+   AUDIO: the MV-ONLY surface. Modelled on MV rpg_core.js and
    rpg_managers.js (MV 1.6.1).
 
    Loaded immediately after engine-mv.js, which is loaded after x-audio.js.
@@ -90,7 +90,7 @@ Decrypter.checkImgIgnore = function (url) {
   return false;
 };
 
-/* rpg_core.js:9253 — VERBATIM, awkward parts included, because the awkward
+/* rpg_core.js:9253 — behaviour kept exactly, awkward parts included, because the awkward
    parts are the behaviour.
 
    `var encryptedExt = ext;` then reassigned in every branch including the
@@ -291,23 +291,34 @@ WebAudio._shouldMuteOnHide = function () {
   return Utils.isMobileDevice();
 };
 
-/* rpg_core.js:7894 / :7909 — reach WebAudio._context.currentTime directly.
-   MZ's go through WebAudio._currentTime(), which returns 0 when the context is
-   null; MV's would throw. The bodies are otherwise the same. */
+/* NOT AN ENGINE SYMBOL — the linear gain ramp MV spells out FOUR times over:
+   at rpg_core.js:7894 and :7909 across the master node, and at :8088 and :8109
+   across a buffer's own. Named here so the four readings are visibly one
+   gesture, pinned to one instant: `from` is stamped at that instant and `to`
+   is scheduled `duration` seconds past it.
+
+   The instant comes from WebAudio._context.currentTime with NO null check,
+   because that is what every one of the four copies does — the guard they
+   share is on the NODE, never on the context, so a ramp asked for while the
+   context is missing throws right here. MZ's equivalents read
+   WebAudio._currentTime(), which answers 0 instead of throwing. */
+function mvRampGain(node, from, to, duration) {
+  var gain = node.gain;
+  var currentTime = WebAudio._context.currentTime;
+  gain.setValueAtTime(from, currentTime);
+  gain.linearRampToValueAtTime(to, currentTime + duration);
+}
+
+/* rpg_core.js:7894 / :7909 — the master pair, both guarded on the master node
+   and both ramping between silence and _masterVolume. */
 WebAudio._fadeIn = function (duration) {
   if (this._masterGainNode) {
-    var gain = this._masterGainNode.gain;
-    var currentTime = WebAudio._context.currentTime;
-    gain.setValueAtTime(0, currentTime);
-    gain.linearRampToValueAtTime(this._masterVolume, currentTime + duration);
+    mvRampGain(this._masterGainNode, 0, this._masterVolume, duration);
   }
 };
 WebAudio._fadeOut = function (duration) {
   if (this._masterGainNode) {
-    var gain = this._masterGainNode.gain;
-    var currentTime = WebAudio._context.currentTime;
-    gain.setValueAtTime(this._masterVolume, currentTime);
-    gain.linearRampToValueAtTime(0, currentTime + duration);
+    mvRampGain(this._masterGainNode, this._masterVolume, 0, duration);
   }
 };
 
@@ -315,7 +326,7 @@ WebAudio._fadeOut = function (duration) {
    WebAudio — the MV instance.
    ====================================================================== */
 
-/* rpg_core.js:7678 — VERBATIM, including the ordering wart: _load(url) runs
+/* rpg_core.js:7678 — behaviour kept exactly, including the ordering wart: _load(url) runs
    BEFORE `this._url = url`. On a synchronous failure the buffer therefore has
    _hasError true and _url still undefined, and AudioManager.checkWebAudioError
    reports "Failed to load: undefined". MZ assigns _url first
@@ -343,23 +354,27 @@ WebAudio.prototype.initialize = function (url) {
    Anything reading a buffer's state has to know which set it is looking at. */
 WebAudio.prototype.clear = function () {
   this.stop();
-  this._buffer = null;
-  this._sourceNode = null;
-  this._gainNode = null;
-  this._pannerNode = null;
-  this._totalTime = 0;
-  this._sampleRate = 0;
-  this._loopStart = 0;
-  this._loopLength = 0;
-  this._startTime = 0;
-  this._volume = 1;
-  this._pitch = 1;
-  this._pan = 0;
-  this._endTimer = null;
+  var self = this;
+  /* Grouped by the value each field resets to, which is also what each group
+     IS: the four live graph handles, the five numbers the decode and the start
+     of playback fill in, the playback parameters, the end timer, the two
+     listener queues, the two flags isError() and play() read back. The order
+     of the writes is the engine's, so a freshly cleared buffer enumerates its
+     own properties in the same order MV does. */
+  function resetAll(fields, value) {
+    fields.split(' ').forEach(function (name) { self[name] = value; });
+  }
+  resetAll('_buffer _sourceNode _gainNode _pannerNode', null);
+  resetAll('_totalTime _sampleRate _loopStart _loopLength _startTime', 0);
+  resetAll('_volume _pitch', 1);
+  resetAll('_pan', 0);
+  resetAll('_endTimer', null);
+  /* Written out rather than folded into a group: each buffer needs its OWN
+     pair of arrays, and a shared literal in a table would hand every buffer
+     the same two. */
   this._loadListeners = [];
   this._stopListeners = [];
-  this._hasError = false;
-  this._autoPlay = false;
+  resetAll('_hasError _autoPlay', false);
 };
 
 /* rpg_core.js:7963 / :7982. `url` and `pan` are identical on both engines and
@@ -447,10 +462,7 @@ WebAudio.prototype.stop = function () {
 WebAudio.prototype.fadeIn = function (duration) {
   if (this.isReady()) {
     if (this._gainNode) {
-      var gain = this._gainNode.gain;
-      var currentTime = WebAudio._context.currentTime;
-      gain.setValueAtTime(0, currentTime);
-      gain.linearRampToValueAtTime(this._volume, currentTime + duration);
+      mvRampGain(this._gainNode, 0, this._volume, duration);
     }
   } else if (this._autoPlay) {
     this.addLoadListener(function () {
@@ -464,31 +476,38 @@ WebAudio.prototype.fadeIn = function (duration) {
    fadeOut never stops anything. */
 WebAudio.prototype.fadeOut = function (duration) {
   if (this._gainNode) {
-    var gain = this._gainNode.gain;
-    var currentTime = WebAudio._context.currentTime;
-    gain.setValueAtTime(this._volume, currentTime);
-    gain.linearRampToValueAtTime(0, currentTime + duration);
+    mvRampGain(this._gainNode, this._volume, 0, duration);
   }
   this._autoPlay = false;
 };
 
-/* rpg_core.js:8124 — the wrap loop uses _loopStart/_loopLength (SECONDS after
-   _onXhrLoad divides them by the sample rate). MZ keeps the raw sample values
-   in _loopStart/_loopLength and the seconds in _loopStartTime/_loopLengthTime,
-   and seek() reads the *Time pair. Same arithmetic, different field names —
-   read the wrong pair and a saved BGM position is off by the sample rate. */
+/* NOT AN ENGINE SYMBOL — the wrap MV writes out twice, once in seek
+   (rpg_core.js:8124) and once at the top of _startPlaying (rpg_core.js:8208),
+   in both cases over _loopStart/_loopLength. Named here so the two readings
+   are visibly the same arithmetic.
+
+   Repeated subtraction rather than a modulo, because the loop region begins at
+   _loopStart and not at zero; a _loopLength that is zero or negative means
+   "not a looping track" and the value passes straight through. */
+function mvWrapIntoLoopRegion(value, loopStart, loopLength) {
+  while (loopLength > 0 && value >= loopStart + loopLength) {
+    value -= loopLength;
+  }
+  return value;
+}
+
+/* rpg_core.js:8124 — the pair wrapped against is _loopStart/_loopLength, which
+   hold SECONDS on MV (_onXhrLoad divides them by the sample rate). MZ keeps the
+   raw sample counts under those two names and the seconds under
+   _loopStartTime/_loopLengthTime, and its seek() reads the *Time pair. Same
+   arithmetic, different field names — read the wrong pair on the wrong engine
+   and a saved BGM position is out by a factor of the sample rate. */
 WebAudio.prototype.seek = function () {
-  if (WebAudio._context) {
-    var pos = (WebAudio._context.currentTime - this._startTime) * this._pitch;
-    if (this._loopLength > 0) {
-      while (pos >= this._loopStart + this._loopLength) {
-        pos -= this._loopLength;
-      }
-    }
-    return pos;
-  } else {
+  if (!WebAudio._context) {
     return 0;
   }
+  var elapsed = (WebAudio._context.currentTime - this._startTime) * this._pitch;
+  return mvWrapIntoLoopRegion(elapsed, this._loopStart, this._loopLength);
 };
 
 /* rpg_core.js:8163 — _load is XHR + decodeAudioData in the engine. The
@@ -526,35 +545,34 @@ WebAudio.prototype._onFakeDecode = function () {
     this._loopLength = window.__audioLoop.length;
     this._sampleRate = window.__audioLoop.sampleRate;
   }
-  var buffer = window.__audioFakeBuffer();
-  this._buffer = buffer;
-  this._totalTime = buffer.duration;
-  if (this._loopLength > 0 && this._sampleRate > 0) {
-    this._loopStart /= this._sampleRate;
-    this._loopLength /= this._sampleRate;
-  } else {
-    this._loopStart = 0;
-    this._loopLength = this._totalTime;
-  }
+  this._buffer = window.__audioFakeBuffer();
+  this._totalTime = this._buffer.duration;
+  /* Samples to seconds, and it is all-or-nothing: a track that named a loop
+     region AND a sample rate gets both of its numbers divided down, and a
+     track that named neither is handed the whole file as its loop region
+     starting at zero. There is no half-converted state. */
+  var rate = this._sampleRate;
+  var parsedLoop = this._loopLength > 0 && rate > 0;
+  this._loopStart = parsedLoop ? this._loopStart / rate : 0;
+  this._loopLength = parsedLoop ? this._loopLength / rate : this._totalTime;
   this._onLoad();
 };
 
-/* rpg_core.js:8208 — VERBATIM including the engine's own broken indentation on
-   the wrap loop. ONE source node, started at offset; MZ splits the buffer into
-   chunks and starts a node per chunk (rmmz_core.js:5271). _startTime is set
-   AFTER start() on MV and BEFORE the node work on MZ. */
+/* rpg_core.js:8208 — ONE source node, started at the wrapped offset; MZ splits
+   the buffer into chunks and starts a node per chunk (rmmz_core.js:5271).
+   _startTime is derived from the SAME wrapped offset, and it is written AFTER
+   start() on MV where MZ writes it before any node work. */
 WebAudio.prototype._startPlaying = function (loop, offset) {
-  if (this._loopLength > 0) {
-    while (offset >= this._loopStart + this._loopLength) {
-      offset -= this._loopLength;
-    }
-  }
+  offset = mvWrapIntoLoopRegion(offset, this._loopStart, this._loopLength);
   this._removeEndTimer();
   this._removeNodes();
   this._createNodes();
   this._connectNodes();
-  this._sourceNode.loop = loop;
-  this._sourceNode.start(0, offset);
+  var node = this._sourceNode;
+  node.loop = loop;
+  node.start(0, offset);
+  /* Not "now": the clock is wound BACK by however far into the track the
+     offset is, pitch-scaled, so seek() can read the position straight off it. */
   this._startTime = WebAudio._context.currentTime - offset / this._pitch;
   this._createEndTimer();
 };
@@ -565,15 +583,32 @@ WebAudio.prototype._startPlaying = function (loop, offset) {
    graph is the same, the construction order is not. */
 WebAudio.prototype._createNodes = function () {
   var context = WebAudio._context;
-  this._sourceNode = context.createBufferSource();
-  this._sourceNode.buffer = this._buffer;
-  this._sourceNode.loopStart = this._loopStart;
-  this._sourceNode.loopEnd = this._loopStart + this._loopLength;
-  this._sourceNode.playbackRate.setValueAtTime(this._pitch, context.currentTime);
-  this._gainNode = context.createGain();
-  this._gainNode.gain.setValueAtTime(this._volume, context.currentTime);
-  this._pannerNode = context.createPanner();
-  this._pannerNode.panningModel = 'equalpower';
+  /* One instant for both scheduled writes. The engine reads currentTime twice,
+     a statement apart; nothing can move the clock between them. */
+  var now = context.currentTime;
+
+  /* The source carries the decoded buffer and the loop region, which it wants
+     in SECONDS and as a start/end pair — the class stores a start/LENGTH pair,
+     so the end is derived here and nowhere else. */
+  var source = context.createBufferSource();
+  source.buffer = this._buffer;
+  source.loopStart = this._loopStart;
+  source.loopEnd = this._loopStart + this._loopLength;
+  source.playbackRate.setValueAtTime(this._pitch, now);
+  this._sourceNode = source;
+
+  /* Volume and pan ride on their own nodes, so the buffer's current values are
+     stamped onto fresh nodes every time playback restarts. */
+  var gainNode = context.createGain();
+  gainNode.gain.setValueAtTime(this._volume, now);
+  this._gainNode = gainNode;
+
+  var panner = context.createPanner();
+  panner.panningModel = 'equalpower';
+  this._pannerNode = panner;
+
+  /* Reads _pannerNode back off `this`, so it has to come after the assignment
+     above rather than take the local. */
   this._updatePanner();
 };
 WebAudio.prototype._connectNodes = function () {
@@ -676,15 +711,19 @@ Html5Audio.setup = function (url) {
   this._url = url;
 };
 
-/* rpg_core.js:8625. */
+/* rpg_core.js:8625. Note what clear does NOT touch: _url, _staticSePath and
+   the <audio> element itself all survive it, which is how the singleton hands
+   the previous track's identity to the next one. */
 Html5Audio.clear = function () {
   this.stop();
   this._volume = 1;
   this._loadListeners = [];
-  this._hasError = false;
-  this._autoPlay = false;
-  this._isLoading = false;
-  this._buffered = false;
+  var self = this;
+  /* The four state flags, in the engine's write order. Every one of them is
+     false-by-default, which is why the whole tail is one sweep. */
+  ['_hasError', '_autoPlay', '_isLoading', '_buffered'].forEach(function (flag) {
+    self[flag] = false;
+  });
 };
 
 /* rpg_core.js:8641 — the one member AudioManager.loadStaticSe calls, and the
@@ -699,24 +738,40 @@ Html5Audio.setStaticSe = function (url) {
 };
 
 /* rpg_core.js:8655 / :8668 — url read-only, volume read/write, and NOTHING for
-   pitch or pan. The `.bind(this)` on the getter is the engine's. */
-Object.defineProperty(Html5Audio, 'url', {
-  get: function () {
-    return Html5Audio._url;
+   pitch or pan, so updateBufferParameters' writes to those two land as plain
+   own properties nobody reads. Both accessors reach for the STATIC field, not
+   for `this`, which is the whole reason two BGMs on this path share one volume.
+
+   Declared as one defineProperties so the pair reads as the class's entire
+   public surface; the engine spells it as two calls, in this order, and
+   omitting `enumerable` leaves both non-enumerable either way.
+
+   The `.bind(this)` on the volume getter is the engine's own and is kept: the
+   getter body never mentions `this`, so the binding is inert, but it is what a
+   probe reading the descriptor back gets handed. */
+Object.defineProperties(Html5Audio, {
+  url: {
+    get: function () {
+      return Html5Audio._url;
+    },
+    configurable: true
   },
-  configurable: true
-});
-Object.defineProperty(Html5Audio, 'volume', {
-  get: function () {
-    return Html5Audio._volume;
-  }.bind(this),
-  set: function (value) {
-    Html5Audio._volume = value;
-    if (Html5Audio._audioElement) {
-      Html5Audio._audioElement.volume = this._volume;
-    }
-  },
-  configurable: true
+  volume: {
+    get: function () {
+      return Html5Audio._volume;
+    }.bind(this),
+    set: function (value) {
+      Html5Audio._volume = value;
+      /* Written back through `this`, unlike every other read in the pair.
+         Identical while the setter is reached as Html5Audio.volume = x, which
+         is the only route the engine ever takes to it. */
+      var element = Html5Audio._audioElement;
+      if (element) {
+        element.volume = this._volume;
+      }
+    },
+    configurable: true
+  }
 });
 
 /* rpg_core.js:8688 / :8699 / :8710. isPlaying dereferences _audioElement with
@@ -731,30 +786,56 @@ Html5Audio.isPlaying = function () {
   return !this._audioElement.paused;
 };
 
+/* NOT AN ENGINE SYMBOL — the guarded "kill whatever tween is running" that MV
+   writes out three times: inside play's load listener (rpg_core.js:8730), at
+   the top of _startGainTween (:8873) and at the top of _startPlaying (:8836).
+   All three are guarded, so cancelling with no tween in flight does nothing.
+   _applyTweenValue has a FOURTH copy that is deliberately NOT routed through
+   here, because that one is unguarded — see the note there. */
+function mvHtml5CancelGainTween(owner) {
+  if (owner._gainTweenInterval) {
+    clearInterval(owner._gainTweenInterval);
+    owner._gainTweenInterval = null;
+  }
+}
+
 /* rpg_core.js:8722 / :8747 / :8799 / :8814 / :8824 / :8839 / :8857. */
 Html5Audio.play = function (loop, offset) {
   if (this.isReady()) {
-    offset = offset || 0;
-    this._startPlaying(loop, offset);
-  } else if (Html5Audio._audioElement) {
-    this._autoPlay = true;
-    this.addLoadListener(function () {
-      if (this._autoPlay) {
-        this.play(loop, offset);
-        if (this._gainTweenInterval) {
-          clearInterval(this._gainTweenInterval);
-          this._gainTweenInterval = null;
-        }
-      }
-    }.bind(this));
-    if (!this._isLoading) this._load(this._url);
+    this._startPlaying(loop, offset || 0);
+    return;
+  }
+  if (!Html5Audio._audioElement) {
+    return;
+  }
+  /* Deferred: remember the intent, replay it from the load listener, and only
+     then start the load — and only if one is not already running, so a second
+     play() during a load queues a listener without re-fetching. */
+  this._autoPlay = true;
+  var self = this;
+  this.addLoadListener(function () {
+    /* Re-checked at load time, so a stop() in the meantime cancels the play
+       rather than surprising the player with it. */
+    if (!self._autoPlay) {
+      return;
+    }
+    self.play(loop, offset);
+    mvHtml5CancelGainTween(self);
+  });
+  if (!this._isLoading) {
+    this._load(this._url);
   }
 };
-/* Note _tweenInterval here vs _gainTweenInterval everywhere else — the engine
-   really does check a field that is never assigned, so this branch is dead.
-   Kept verbatim. */
+/* Note _tweenInterval here against _gainTweenInterval everywhere else — the
+   engine really does test a field nothing ever assigns, so in stock MV the
+   branch is unreachable. Its BEHAVIOUR is kept anyway, including the
+   _audioElement dereference on the last line that no `if` covers: set the
+   field by hand and a null element throws here exactly as MV would. */
 Html5Audio.stop = function () {
-  if (this._audioElement) this._audioElement.pause();
+  var element = this._audioElement;
+  if (element) {
+    element.pause();
+  }
   this._autoPlay = false;
   if (this._tweenInterval) {
     clearInterval(this._tweenInterval);
@@ -770,89 +851,113 @@ Html5Audio.stop = function () {
    the fake element's volume, not a Web Audio ramp: the html5 path fades in
    software and cannot be scheduled ahead. */
 Html5Audio.fadeIn = function (duration) {
-  if (this.isReady()) {
-    if (this._audioElement) {
-      this._tweenTargetGain = this._volume;
-      this._tweenGain = 0;
-      this._startGainTween(duration);
+  if (!this.isReady()) {
+    /* Deferred only for a buffer that is ALREADY auto-playing. A fade-in asked
+       for on an idle, unloaded buffer is dropped on the floor — the same shape
+       as WebAudio.prototype.fadeIn's else-if, and the reason replayBgm's
+       playBgm-then-fadeIn ordering matters. */
+    if (this._autoPlay) {
+      var self = this;
+      this.addLoadListener(function () { self.fadeIn(duration); });
     }
-  } else if (this._autoPlay) {
-    this.addLoadListener(function () {
-      this.fadeIn(duration);
-    }.bind(this));
+    return;
   }
-};
-Html5Audio.fadeOut = function (duration) {
   if (this._audioElement) {
-    this._tweenTargetGain = 0;
-    this._tweenGain = this._volume;
+    this._tweenTargetGain = this._volume;   /* rising TO the set volume ... */
+    this._tweenGain = 0;                    /* ... from silence.            */
     this._startGainTween(duration);
   }
 };
-Html5Audio._startGainTween = function (duration) {
-  this._audioElement.volume = this._tweenGain;
-  if (this._gainTweenInterval) {
-    clearInterval(this._gainTweenInterval);
-    this._gainTweenInterval = null;
+Html5Audio.fadeOut = function (duration) {
+  /* No isReady() on this side: a fade-out on a buffer that has not loaded yet
+     still starts a tween over the element's volume. */
+  if (!this._audioElement) {
+    return;
   }
-  this._tweenGainStep = (this._tweenTargetGain - this._tweenGain) / (60 * duration);
+  this._tweenTargetGain = 0;                /* falling TO silence ...       */
+  this._tweenGain = this._volume;           /* ... from the set volume.     */
+  this._startGainTween(duration);
+};
+Html5Audio._startGainTween = function (duration) {
+  /* Unguarded on purpose: reaching a tween with no element is MV throwing. */
+  this._audioElement.volume = this._tweenGain;
+  mvHtml5CancelGainTween(this);
+  /* One step per frame at 60Hz for `duration` seconds. A duration of 0 makes
+     the step infinite, which the first tick clamps straight onto the target —
+     an instant fade rather than a division error. */
+  var frames = 60 * duration;
+  this._tweenGainStep = (this._tweenTargetGain - this._tweenGain) / frames;
   this._gainTweenInterval = setInterval(function () {
     Html5Audio._applyTweenValue(Html5Audio._tweenTargetGain);
   }, 1000 / 60);
 };
 Html5Audio._applyTweenValue = function (volume) {
-  Html5Audio._tweenGain += Html5Audio._tweenGainStep;
-  if (Html5Audio._tweenGain < 0 && Html5Audio._tweenGainStep < 0) {
-    Html5Audio._tweenGain = 0;
+  var step = Html5Audio._tweenGainStep;
+  var gain = Html5Audio._tweenGain + step;
+  /* Clamped only in the direction of travel: a falling tween is floored at 0,
+     a rising one capped at `volume` — the CALLER's ceiling, which the interval
+     fills in with _tweenTargetGain and which is not necessarily _volume. */
+  if (gain < 0 && step < 0) {
+    gain = 0;
+  } else if (gain > volume && step > 0) {
+    gain = volume;
   }
-  else if (Html5Audio._tweenGain > volume && Html5Audio._tweenGainStep > 0) {
-    Html5Audio._tweenGain = volume;
-  }
-
-  if (Math.abs(Html5Audio._tweenTargetGain - Html5Audio._tweenGain) < 0.01) {
+  Html5Audio._tweenGain = gain;
+  /* Within a hundredth of the target counts as arrived: snap exactly onto it
+     and stop the timer. This cancel is the engine's UNGUARDED one and is
+     written out rather than routed through mvHtml5CancelGainTween, because it
+     runs whether or not there is an interval id in the field. */
+  if (Math.abs(Html5Audio._tweenTargetGain - gain) < 0.01) {
     Html5Audio._tweenGain = Html5Audio._tweenTargetGain;
     clearInterval(Html5Audio._gainTweenInterval);
     Html5Audio._gainTweenInterval = null;
   }
-
+  /* The snapped value, not the clamped one — the two differ on the last tick. */
   Html5Audio._audioElement.volume = Html5Audio._tweenGain;
 };
+/* Guarded, unlike isPlaying() right above it: with no element the position is
+   reported as the start of the track rather than thrown over. */
 Html5Audio.seek = function () {
-  if (this._audioElement) {
-    return this._audioElement.currentTime;
-  } else {
-    return 0;
-  }
+  return this._audioElement ? this._audioElement.currentTime : 0;
 };
 Html5Audio.addLoadListener = function (listner) {
   this._loadListeners.push(listner);
 };
 Html5Audio._load = function (url) {
-  if (this._audioElement) {
-    this._isLoading = true;
-    this._audioElement.src = url;
-    window.__audioLoads.push(url);
-    this._buffered = !!window.__audioExists(url);
-    this._audioElement.load();
+  var element = this._audioElement;
+  if (!element) {
+    return;
   }
+  this._isLoading = true;
+  element.src = url;
+  window.__audioLoads.push(url);
+  /* The fake transport: the fixture table answers for the network, and the
+     element's load() is what drains the listener queue through _onLoad. */
+  this._buffered = !!window.__audioExists(url);
+  element.load();
 };
 Html5Audio._startPlaying = function (loop, offset) {
+  /* Line one dereferences the element with no guard, and three lines later the
+     engine tests it — by then the test cannot fail, so it is decoration. Both
+     halves are kept: starting playback with no element still throws here. */
   this._audioElement.loop = loop;
-  if (this._gainTweenInterval) {
-    clearInterval(this._gainTweenInterval);
-    this._gainTweenInterval = null;
-  }
-  if (this._audioElement) {
-    this._audioElement.volume = this._volume;
-    this._audioElement.currentTime = offset;
-    this._audioElement.play();
+  /* Playing again cancels a fade in progress, so the new start is at full
+     volume rather than wherever the last tween had got to. */
+  mvHtml5CancelGainTween(this);
+  var element = this._audioElement;
+  if (element) {
+    element.volume = this._volume;
+    element.currentTime = offset;
+    element.play();
   }
 };
 Html5Audio._onLoad = function () {
   this._isLoading = false;
+  /* Drained by shifting, and the queue is re-read every turn rather than
+     snapshotted: a listener that queues another listener — or replaces the
+     array wholesale by calling clear() — is honoured by this same loop. */
   while (this._loadListeners.length > 0) {
-    var listener = this._loadListeners.shift();
-    listener();
+    this._loadListeners.shift()();
   }
 };
 
@@ -883,6 +988,24 @@ Object.defineProperty(AudioManager, 'masterVolume', {
   configurable: true
 });
 
+/* NOT AN ENGINE SYMBOL — "install a BGM buffer and start it, unless a ME is
+   holding the channel". MV writes this out twice, once at the bottom of
+   playBgm (rpg_managers.js:1175) and once inside createDecryptBuffer (:1203),
+   which the engine chose to duplicate rather than share; naming it once makes
+   it visible that the encrypted route lands on the SAME three steps.
+
+   The ME guard is the interesting one: during a ME the buffer is built,
+   retuned and left silent, and stopMe is what eventually starts it. The
+   retune has to sit between the assignment and the start, because
+   updateBgmParameters reads _bgmBuffer back off the manager. */
+function mvInstallBgmBuffer(self, bgm, pos) {
+  self._bgmBuffer = self.createBuffer('bgm', bgm.name);
+  self.updateBgmParameters(bgm);
+  if (!self._meBuffer) {
+    self._bgmBuffer.play(true, pos || 0);
+  }
+}
+
 /* rpg_managers.js:1175 — MV's playBgm has an ENCRYPTED-AUDIO BRANCH that MZ
    does not, and passes the folder WITHOUT a trailing slash. Everything else
    matches MZ (rmmz_managers.js:1164), including the `if (!this._meBuffer)`
@@ -894,15 +1017,13 @@ AudioManager.playBgm = function (bgm, pos) {
   } else {
     this.stopBgm();
     if (bgm.name) {
-      if (Decrypter.hasEncryptedAudio && this.shouldUseHtml5Audio()) {
+      /* BOTH conditions, and shouldUseHtml5Audio is hard-false on stock MV —
+         so the encrypted detour below is unreachable until a mod reopens it. */
+      var viaHtml5 = Decrypter.hasEncryptedAudio && this.shouldUseHtml5Audio();
+      if (viaHtml5) {
         this.playEncryptedBgm(bgm, pos);
-      }
-      else {
-        this._bgmBuffer = this.createBuffer('bgm', bgm.name);
-        this.updateBgmParameters(bgm);
-        if (!this._meBuffer) {
-          this._bgmBuffer.play(true, pos || 0);
-        }
+      } else {
+        mvInstallBgmBuffer(this, bgm, pos);
       }
     }
   }
@@ -921,12 +1042,10 @@ AudioManager.playEncryptedBgm = function (bgm, pos) {
   Decrypter.decryptHTML5Audio(url, bgm, pos);
 };
 AudioManager.createDecryptBuffer = function (url, bgm, pos) {
+  /* The one-slot blob cache, written before the buffer is built because
+     createBuffer reads it back to decide what Html5Audio.setup gets. */
   this._blobUrl = url;
-  this._bgmBuffer = this.createBuffer('bgm', bgm.name);
-  this.updateBgmParameters(bgm);
-  if (!this._meBuffer) {
-    this._bgmBuffer.play(true, pos || 0);
-  }
+  mvInstallBgmBuffer(this, bgm, pos);
   this.updateCurrentBgm(bgm, pos);
 };
 
@@ -963,13 +1082,18 @@ AudioManager.stopMe = function () {
 /* rpg_managers.js:1264 — folder 'bgs', no encryption branch. */
 AudioManager.playBgs = function (bgs, pos) {
   if (this.isCurrentBgs(bgs)) {
+    /* Same track already running: retune it in place, never restart it. */
     this.updateBgsParameters(bgs);
   } else {
     this.stopBgs();
     if (bgs.name) {
-      this._bgsBuffer = this.createBuffer('bgs', bgs.name);
+      var buffer = this.createBuffer('bgs', bgs.name);
+      /* Published before the retune, which reads _bgsBuffer off the manager
+         rather than taking it as an argument. No ME guard here — a BGS starts
+         immediately whatever else is playing. */
+      this._bgsBuffer = buffer;
       this.updateBgsParameters(bgs);
-      this._bgsBuffer.play(true, pos || 0);
+      buffer.play(true, pos || 0);
     }
   }
   this.updateCurrentBgs(bgs, pos);
@@ -1034,17 +1158,38 @@ AudioManager.stopSe = function () {
    loadStaticSe also has the Html5Audio side-channel, which MZ deleted with the
    class. Neither engine ever empties _staticBuffers: it grows once per unique
    system sound and stays. */
+/* NOT AN ENGINE SYMBOL — the linear scan over _staticBuffers that MV spells
+   out twice, in playStaticSe (rpg_managers.js:1387) and again in isStaticSe
+   (:1413). Both walk front to back and both stop at the FIRST match, which is
+   what makes a duplicate reservation unreachable rather than an error.
+
+   The key is _reservedSeName, a field MV's createBuffer never sets — only
+   loadStaticSe does. So a buffer that reached _staticBuffers by any other
+   route matches nothing and, having no such property, compares undefined
+   against the name without throwing. Handing back the buffer rather than a
+   flag lets isStaticSe ask "is there one" and playStaticSe act on it. */
+function mvFindStaticSeBuffer(self, name) {
+  var buffers = self._staticBuffers;
+  for (var i = 0; i < buffers.length; i++) {
+    if (buffers[i]._reservedSeName === name) {
+      return buffers[i];
+    }
+  }
+  return null;
+}
+
 AudioManager.playStaticSe = function (se) {
   if (se.name) {
+    /* Loads on first use only — after this the buffer is certain to be there
+       unless something else emptied the cache mid-call. */
     this.loadStaticSe(se);
-    for (var i = 0; i < this._staticBuffers.length; i++) {
-      var buffer = this._staticBuffers[i];
-      if (buffer._reservedSeName === se.name) {
-        buffer.stop();
-        this.updateSeParameters(buffer, se);
-        buffer.play(false);
-        break;
-      }
+    var buffer = mvFindStaticSeBuffer(this, se.name);
+    if (buffer) {
+      /* Restarted from scratch, so the same system sound retriggers instead of
+         layering the way playSe's throwaway buffers do. */
+      buffer.stop();
+      this.updateSeParameters(buffer, se);
+      buffer.play(false);
     }
   }
 };
@@ -1059,13 +1204,7 @@ AudioManager.loadStaticSe = function (se) {
   }
 };
 AudioManager.isStaticSe = function (se) {
-  for (var i = 0; i < this._staticBuffers.length; i++) {
-    var buffer = this._staticBuffers[i];
-    if (buffer._reservedSeName === se.name) {
-      return true;
-    }
-  }
-  return false;
+  return !!mvFindStaticSeBuffer(this, se.name);
 };
 
 /* rpg_managers.js:1464 — MV builds `path + folder + '/' + name + ext` (the

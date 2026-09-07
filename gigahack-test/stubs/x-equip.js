@@ -3,9 +3,9 @@
    EQUIPMENT, PARTY INVENTORY and the SHOP. Everything that is IDENTICAL on
    RPG Maker MV 1.6.1 and MZ 1.9.0.
 
-   Copied from the shipped engine source, awkward parts included, with the
-   file:line each group came from. MV = /root/work/mv/js/rpg_*.js,
-   MZ = /root/work/mz/js/rmmz_*.js. A single reference means the two engines
+   Modelled on the shipped engine source, awkward parts included, with the
+   file:line each group came from. MV = MV rpg_*.js,
+   MZ = MZ rmmz_*.js. A single reference means the two engines
    are byte-identical there apart from var/let and function/arrow spelling;
    this file is ES5 because the harness runs on the same floor as the mod, so
    MZ's arrows and spreads are written out longhand and each such rewrite is
@@ -208,15 +208,17 @@ Game_BattlerBase.prototype.isDualWield = function () {
    equip-sealed one look editable — exactly backwards.
    ---------------------------------------------------------------------- */
 Game_BattlerBase.prototype.canEquip = function (item) {
-  if (!item) {
-    return false;
-  } else if (DataManager.isWeapon(item)) {
-    return this.canEquipWeapon(item);
-  } else if (DataManager.isArmor(item)) {
-    return this.canEquipArmor(item);
-  } else {
-    return false;
+  if (item) {
+    if (DataManager.isWeapon(item)) {
+      return this.canEquipWeapon(item);
+    }
+    if (DataManager.isArmor(item)) {
+      return this.canEquipArmor(item);
+    }
   }
+  /* No item, or one filed in neither container: it never reaches a check, and
+     "no check applies" is spelled false, not undefined. */
+  return false;
 };
 Game_BattlerBase.prototype.canEquipWeapon = function (item) {
   return this.isEquipWtypeOk(item.wtypeId) && !this.isEquipTypeSealed(item.etypeId);
@@ -239,19 +241,23 @@ Game_BattlerBase.prototype.canEquipArmor = function (item) {
 /* initEquips — MV :3571 / MZ :4213. REPLACES the slot array wholesale, sized
    from equipSlots(), then fills it with setEquip(isWeapon, id) PAIRS, then
    releases with forcing=true (no trade back to the party — these items were
-   never in it), then refreshes. The `if (j < maxSlots)` drops any surplus
-   entry in the actor's database `equips` array silently. */
+   never in it), then refreshes. Any surplus entry in the actor's database
+   `equips` array is dropped silently — there is no slot to put it in. */
 Game_Actor.prototype.initEquips = function (equips) {
   var slots = this.equipSlots();
-  var maxSlots = slots.length;
+  var i;
+  /* Pass one sizes the slot array from equipSlots() and NOTHING else — every
+     slot is a fresh, empty Game_Item before any of them is written to. */
   this._equips = [];
-  for (var i = 0; i < maxSlots; i++) {
-    this._equips[i] = new Game_Item();
+  while (this._equips.length < slots.length) {
+    this._equips.push(new Game_Item());
   }
-  for (var j = 0; j < equips.length; j++) {
-    if (j < maxSlots) {
-      this._equips[j].setEquip(slots[j] === 1, equips[j]);
-    }
+  /* Pass two writes the database's (isWeapon, id) pairs in. The bound is the
+     SHORTER of the two lengths, which is where both asymmetries come from: a
+     database `equips` array longer than the slot array loses its tail with no
+     complaint, and one shorter than it leaves the remaining slots empty. */
+  for (i = 0; i < equips.length && i < this._equips.length; i++) {
+    this._equips[i].setEquip(slots[i] === 1, equips[i]);
   }
   this.releaseUnequippableItems(true);
   this.refresh();
@@ -267,10 +273,17 @@ Game_Actor.prototype.initEquips = function (equips) {
        so this is the line that decides whether a shield can go there at all.
    Index 0 is skipped because equipTypes[0] is the empty placeholder. */
 Game_Actor.prototype.equipSlots = function () {
+  /* One slot per equip type after the placeholder, so slot k names etypeId
+     k + 1 and the array is one SHORTER than $dataSystem.equipTypes. */
+  var slotCount = $dataSystem.equipTypes.length - 1;
   var slots = [];
-  for (var i = 1; i < $dataSystem.equipTypes.length; i++) {
-    slots.push(i);
+  var slotId;
+  for (slotId = 0; slotId < slotCount; slotId++) {
+    slots[slotId] = slotId + 1;
   }
+  /* And here the naming stops holding: dual wield relabels slot 1 as etype 1,
+     a WEAPON, whatever equipTypes[2] calls it. The length guard is first, so
+     a project with fewer than two equip types never asks. */
   if (slots.length >= 2 && this.isDualWield()) {
     slots[1] = 1;
   }
@@ -379,45 +392,81 @@ Game_Actor.prototype.discardEquip = function (item) {
    trait table that makes an item both equippable and mismatched would spin
    here in the real engine too. */
 Game_Actor.prototype.releaseUnequippableItems = function (forcing) {
-  for (;;) {
-    var slots = this.equipSlots();
-    var equips = this.equips();
-    var changed = false;
-    for (var i = 0; i < equips.length; i++) {
-      var item = equips[i];
-      if (item && (!this.canEquip(item) || item.etypeId !== slots[i])) {
-        if (!forcing) {
-          this.tradeItemWithParty(null, item);
-        }
-        this._equips[i].setObject(null);
-        changed = true;
+  var actor = this;
+
+  /* ONE sweep. Both the slot types and the worn items are re-read here, not
+     hoisted out, because emptying a slot can change what equipSlots() answers
+     next time round (dropping a weapon can end dual wield). Returns whether
+     it emptied anything, which is the outer loop's only exit condition. */
+  function sweepOnce() {
+    var slots = actor.equipSlots();
+    var worn = actor.equips();
+    var emptied = false;
+    var i, item, stillFits;
+    for (i = 0; i < worn.length; i++) {
+      item = worn[i];
+      if (!item) {
+        continue;
       }
+      /* Two ways to fail, in this order: the actor may no longer be allowed
+         the item at all, or the item's etypeId may no longer match the type
+         this slot now has. canEquip is asked FIRST and short-circuits, so a
+         refused item is never compared against slots[i]. */
+      stillFits = actor.canEquip(item) && item.etypeId === slots[i];
+      if (stillFits) {
+        continue;
+      }
+      if (!forcing) {
+        actor.tradeItemWithParty(null, item);
+      }
+      actor._equips[i].setObject(null);
+      emptied = true;
     }
-    if (!changed) {
-      break;
-    }
+    return emptied;
+  }
+
+  while (sweepOnce()) {
+    /* Sweep again. Nothing to do here: the work is the sweep itself, and the
+       loop is unbounded on purpose — see the note above. */
   }
 };
 
 /* clearEquipments / optimizeEquipments — MV :3694/:3703 / MZ :4334/:4343.
-   Both skip slots isEquipChangeOk refuses, which is the ONLY place in the
-   equip surface where a locked slot is honoured. */
+   Both walk a FIXED slot count and skip whatever isEquipChangeOk refuses,
+   which is the ONLY place in the equip surface where a locked slot is
+   honoured. That shared walk is named here rather than written twice.
+
+   The count is a parameter, not something the walk reads for itself, because
+   the two callers take it at different moments — see optimizeEquipments. Note
+   isEquipChangeOk is asked FRESH inside the loop even though the count is
+   frozen: emptying one slot can change what equipSlots() answers for the next,
+   and a slot id past the end of a shortened array asks about undefined. */
+function walkChangeableSlots(actor, slotCount, visit) {
+  var slotId;
+  for (slotId = 0; slotId < slotCount; slotId++) {
+    if (actor.isEquipChangeOk(slotId)) {
+      visit(slotId);
+    }
+  }
+}
+
 Game_Actor.prototype.clearEquipments = function () {
-  var maxSlots = this.equipSlots().length;
-  for (var i = 0; i < maxSlots; i++) {
-    if (this.isEquipChangeOk(i)) {
-      this.changeEquip(i, null);
-    }
-  }
+  var actor = this;
+  walkChangeableSlots(this, this.equipSlots().length, function (slotId) {
+    actor.changeEquip(slotId, null);
+  });
 };
+/* The count is taken BEFORE the clear, and that is observable: stripping every
+   slot can end dual wield, and equipSlots() then answers a SHORTER array. The
+   optimize pass still walks the pre-clear count and so still visits the slot
+   that has just stopped existing. */
 Game_Actor.prototype.optimizeEquipments = function () {
-  var maxSlots = this.equipSlots().length;
+  var actor = this;
+  var slotCount = this.equipSlots().length;
   this.clearEquipments();
-  for (var i = 0; i < maxSlots; i++) {
-    if (this.isEquipChangeOk(i)) {
-      this.changeEquip(i, this.bestEquipItem(i));
-    }
-  }
+  walkChangeableSlots(this, slotCount, function (slotId) {
+    actor.changeEquip(slotId, actor.bestEquipItem(slotId));
+  });
 };
 
 /* bestEquipItem — MV :3713 / MZ :4353. Searches only $gameParty.equipItems(),
@@ -426,20 +475,28 @@ Game_Actor.prototype.optimizeEquipments = function () {
    params sum below -1000 can never be chosen and null is returned instead.
    MV passes `this` as filter's thisArg; MZ uses an arrow. Same thing. */
 Game_Actor.prototype.bestEquipItem = function (slotId) {
-  var etypeId = this.equipSlots()[slotId];
-  var items = $gameParty.equipItems().filter(function (item) {
-    return item.etypeId === etypeId && this.canEquip(item);
-  }, this);
-  var bestItem = null;
-  var bestPerformance = -1000;
-  for (var i = 0; i < items.length; i++) {
-    var performance = this.calcEquipItemPerformance(items[i]);
-    if (performance > bestPerformance) {
-      bestPerformance = performance;
-      bestItem = items[i];
+  var actor = this;
+  var wantedType = this.equipSlots()[slotId];
+  var winner = null;
+  /* The floor is a finite -1000, not -Infinity and not null-means-unset, so
+     an item scoring at or below -1000 loses to "nothing" and null comes back
+     even though a candidate existed. */
+  var bestScore = -1000;
+
+  /* Two passes, exactly as the engine has them: every carried item is asked
+     canEquip before any of them is scored. */
+  var shortlist = $gameParty.equipItems().filter(function (item) {
+    return item.etypeId === wantedType && actor.canEquip(item);
+  });
+  shortlist.forEach(function (item) {
+    var score = actor.calcEquipItemPerformance(item);
+    /* Strictly greater, so the FIRST item of a tied pair keeps the slot. */
+    if (score > bestScore) {
+      bestScore = score;
+      winner = item;
     }
-  }
-  return bestItem;
+  });
+  return winner;
 };
 /* calcEquipItemPerformance — MV :3729 / MZ :4373. reduce with NO initial
    value, so a params array of length 1 returns that element untouched and an
@@ -485,18 +542,26 @@ Game_Party.prototype.hasMaxItems = function (item) {
    gone by the time bodies are stripped. */
 Game_Party.prototype.gainItem = function (item, amount, includeEquip) {
   var container = this.itemContainer(item);
-  if (container) {
-    var lastNumber = this.numItems(item);
-    var newNumber = lastNumber + amount;
-    container[item.id] = newNumber.clamp(0, this.maxItems(item));
-    if (container[item.id] === 0) {
-      delete container[item.id];
-    }
-    if (includeEquip && newNumber < 0) {
-      this.discardMembersEquip(item, -newNumber);
-    }
-    $gameMap.requestRefresh();
+  if (!container) {
+    return;
   }
+  /* The UNCLAMPED total is the one that matters twice over: the container
+     stores the clamped copy, but the shortfall handed to the bodies below is
+     measured off this. Clamping first would lose the debt entirely. */
+  var wanted = this.numItems(item) + amount;
+  container[item.id] = wanted.clamp(0, this.maxItems(item));
+  if (container[item.id] === 0) {
+    /* Owning none of something is spelled "absent", never "0". */
+    delete container[item.id];
+  }
+  if (includeEquip && wanted < 0) {
+    /* Stripping bodies happens AFTER the delete above, so nothing here can
+       land back in a stack this same call has just removed. */
+    this.discardMembersEquip(item, -wanted);
+  }
+  /* Unconditional, and reached even by a call that changed nothing: this is
+     why a bulk "give 400 items" loop costs 400 refresh requests. */
+  $gameMap.requestRefresh();
 };
 
 /* discardMembersEquip — MV :5006 / MZ :5658. The `while` per actor is not a
@@ -699,13 +764,18 @@ Scene_Shop.prototype.doSell = function (number) {
   $gameParty.loseItem(this._item, number);
 };
 Scene_Shop.prototype.maxBuy = function () {
-  var max = $gameParty.maxItems(this._item) - $gameParty.numItems(this._item);
+  /* Stack room is the bound that always applies, and it is NOT floored at
+     zero: a party already over the cap comes back negative. */
+  var room = $gameParty.maxItems(this._item) - $gameParty.numItems(this._item);
   var price = this.buyingPrice();
   if (price > 0) {
-    return Math.min(max, Math.floor(this.money() / price));
-  } else {
-    return max;
+    /* Math.floor, not a bitwise truncation: gold above 2^31 still divides.
+       The test is `> 0` and not `<= 0` on purpose — a price that is neither
+       (NaN) takes the room-only exit, exactly as the engine's if/else does. */
+    return Math.min(room, Math.floor(this.money() / price));
   }
+  /* Free, or unpriced: bounded by room alone, and money() is never asked. */
+  return room;
 };
 Scene_Shop.prototype.maxSell = function () {
   return $gameParty.numItems(this._item);

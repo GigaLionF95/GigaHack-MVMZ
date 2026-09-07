@@ -1,7 +1,10 @@
 /* =============================================================================
    GigaHack test harness — stubs/x-interp-mv.js
    The MV 1.6.1 half of the INTERPRETER AND EVENTS surface.
-   Copied from rpg_objects.js / rpg_managers.js / rpg_core.js (MV 1.6.1).
+   Modelled on rpg_objects.js / rpg_managers.js / rpg_core.js (MV 1.6.1). Every
+   body carries the file:line whose BEHAVIOUR it reproduces; the wording is
+   this harness's own, and where the engine's shape is itself the fact worth
+   knowing the comment says so in prose instead.
 
    Loaded immediately after engine-mv.js, which is where Array.prototype.contains
    is polyfilled — MV's own rpg_core.js:120 polyfill, and the reason two bodies
@@ -23,9 +26,9 @@
    ========================================================================== */
 
 /* -------------------------------------------------------------------------
-   DEPENDENCY FILLS — MV spellings. Same rule as in x-interp.js: copied from
-   the engine, placed early enough that a later file modelling the owning
-   class properly wins.
+   DEPENDENCY FILLS — MV spellings. Same rule as in x-interp.js: read off the
+   engine, placed early enough that a later file modelling the owning class
+   properly wins.
    ---------------------------------------------------------------------- */
 /* rpg_core.js:2146. MV asks Graphics; MZ has a whole Video static class and
    asks Video.isPlaying() (rmmz_core.js:5569). updateWaitMode's 'video' arm is
@@ -65,22 +68,24 @@ ImageManager.requestCharacter = function (filename, hue) {
 /* rpg_objects.js:4972. MV NORMALISES the optional argument first
    (`if (includeEquip === undefined) includeEquip = false;`); MZ deleted those
    three lines (rmmz_objects.js:5627) and relies on `undefined && ...` being
-   falsy. Same answer, different body — copied as written on each side because
-   a mod that shadows hasItem has a different signature to preserve.
+   falsy. Same answer, different body — modelled separately on each side
+   because a mod that shadows hasItem has a different signature to preserve.
    command111's Item/Weapon/Armor arms and meetsConditions' itemValid clause
    are the callers. isAnyMemberEquipped is the party area's; it is only reached
    when includeEquip is true, so it is left to throw if a check goes there. */
 Game_Party.prototype.hasItem = function (item, includeEquip) {
+  /* MV's normalising line, kept because it is the difference: after it,
+     includeEquip is a real boolean and the `&&` below cannot see undefined. */
   if (includeEquip === undefined) {
     includeEquip = false;
   }
   if (this.numItems(item) > 0) {
     return true;
-  } else if (includeEquip && this.isAnyMemberEquipped(item)) {
-    return true;
-  } else {
-    return false;
   }
+  /* The `!!` is not decoration: the engine's arms return the LITERALS true and
+     false, so a shadowed isAnyMemberEquipped answering a truthy object must
+     still make this answer true rather than the object. */
+  return !!(includeEquip && this.isAnyMemberEquipped(item));
 };
 
 /* rpg_managers.js:2588. One term. MZ's (rmmz_managers.js:2866) ANDs in
@@ -261,165 +266,201 @@ Game_Interpreter.prototype.setupReservedCommonEvent = function () {
   }
 };
 
-/* rpg_objects.js:8871. Ten arms. The four differences from MZ's are all in
-   here: 'route'/'animation'/'balloon' read this._character DIRECTLY (MZ calls
-   this.character(this._characterId) first and can therefore get null), and
-   'video' asks Graphics.isVideoPlaying (MZ asks Video.isPlaying). The clearing
-   of _waitMode at the bottom is unconditional on both. */
-Game_Interpreter.prototype.updateWaitMode = function () {
-  var waiting = false;
-  switch (this._waitMode) {
-    case 'message':
-      waiting = $gameMessage.isBusy();
-      break;
-    case 'transfer':
-      waiting = $gamePlayer.isTransferring();
-      break;
-    case 'scroll':
-      waiting = $gameMap.isScrolling();
-      break;
-    case 'route':
-      waiting = this._character.isMoveRouteForcing();
-      break;
-    case 'animation':
-      waiting = this._character.isAnimationPlaying();
-      break;
-    case 'balloon':
-      waiting = this._character.isBalloonPlaying();
-      break;
-    case 'gather':
-      waiting = $gamePlayer.areFollowersGathering();
-      break;
-    case 'action':
-      waiting = BattleManager.isActionForced();
-      break;
-    case 'video':
-      waiting = Graphics.isVideoPlaying();
-      break;
-    case 'image':
-      waiting = !ImageManager.isReady();
-      break;
-  }
-  if (!waiting) {
-    this._waitMode = '';
-  }
-  return waiting;
-};
+/* rpg_objects.js:8871. TEN wait modes and exactly one probe each, which is why
+   they are written here as a table: the engine's switch has no fall-through, no
+   shared arm and no default, so the mode string is nothing but a key.
 
-/* rpg_objects.js:8923. VERBATIM — the real dispatcher is already this small on
-   both engines; the giant per-command switch a plugin author expects does not
-   exist, the method name is built from the code. Three MV-specific facts:
-   this._params is assigned here (MZ has no such field), the handler is called
-   with NO arguments, and _index++ happens only when the handler returned
-   truthy — a handler returning false leaves _index where it was, which is how
-   command101 and command201 re-run themselves on the next frame. */
+   The four differences from MZ's are all in this table. 'route', 'animation'
+   and 'balloon' read this._character DIRECTLY — MZ calls
+   this.character(this._characterId) first and can therefore get null, where MV
+   dereferences a stale object; and 'video' asks Graphics.isVideoPlaying where
+   MZ asks Video.isPlaying.
+
+   A mode the table does not name is not waiting — that includes '' — and the
+   clearing of _waitMode when nothing is waiting is unconditional on both. */
+Game_Interpreter.prototype.updateWaitMode = (function () {
+  var probes = {
+    message: function () { return $gameMessage.isBusy(); },
+    transfer: function () { return $gamePlayer.isTransferring(); },
+    scroll: function () { return $gameMap.isScrolling(); },
+    route: function () { return this._character.isMoveRouteForcing(); },
+    animation: function () { return this._character.isAnimationPlaying(); },
+    balloon: function () { return this._character.isBalloonPlaying(); },
+    gather: function () { return $gamePlayer.areFollowersGathering(); },
+    action: function () { return BattleManager.isActionForced(); },
+    video: function () { return Graphics.isVideoPlaying(); },
+    image: function () { return !ImageManager.isReady(); }
+  };
+  var owns = Object.prototype.hasOwnProperty;
+
+  return function () {
+    /* hasOwnProperty and not a bare lookup: a `switch` matches those ten
+       literal strings and nothing else, so a _waitMode of 'toString' or
+       'constructor' has to miss rather than find Object.prototype's. */
+    var probe = owns.call(probes, this._waitMode) ? probes[this._waitMode] : null;
+    /* The probe's answer is passed through UNCHANGED, truthiness and all: the
+       engine assigns it to `waiting` and returns that, so a probe returning 0
+       returns 0 from here too. */
+    var waiting = probe ? probe.call(this) : false;
+    if (!waiting) {
+      this._waitMode = '';
+    }
+    return waiting;
+  };
+}());
+
+/* rpg_objects.js:8923. The real dispatcher is this small on both engines; the
+   giant per-command switch a plugin author expects does not exist, the method
+   name is built from the code. Three MV-specific facts: this._params is
+   assigned here (MZ has no such field), the handler is called with NO
+   arguments, and _index++ happens only when the handler returned truthy — a
+   handler returning false leaves _index where it was, which is how command101
+   and command201 re-run themselves on the next frame.
+
+   Two answers that are easy to get backwards, and are written as separate
+   exits here so they cannot be: running off the end of the list terminates and
+   still answers TRUE, and a command code with no command<code> method is not an
+   error at all — it is skipped and the index advances over it. */
 Game_Interpreter.prototype.executeCommand = function () {
   var command = this.currentCommand();
-  if (command) {
-    this._params = command.parameters;
-    this._indent = command.indent;
-    var methodName = 'command' + command.code;
-    if (typeof this[methodName] === 'function') {
-      if (!this[methodName]()) {
-        return false;
-      }
-    }
-    this._index++;
-  } else {
+  if (!command) {
     this.terminate();
+    return true;
   }
+  this._params = command.parameters;
+  this._indent = command.indent;
+  var handler = this['command' + command.code];
+  if (typeof handler === 'function' && !handler.call(this)) {
+    return false;
+  }
+  this._index++;
   return true;
 };
 
-/* rpg_objects.js:9543. Awkward part kept: case 0 writes
-   `$gameVariables.setValue(variableId, oldValue = value)` — an assignment
-   INSIDE the argument list, whose only effect is to clobber oldValue for a
-   `case` that has already returned. MZ cleaned that to plain `value`. The
-   try/catch wrapping the whole switch is on both, and it means a divide by a
-   non-number silently writes 0 instead of throwing. */
-Game_Interpreter.prototype.operateVariable = function (variableId, operationType, value) {
-  try {
-    var oldValue = $gameVariables.value(variableId);
-    switch (operationType) {
-      case 0:  // Set
-        $gameVariables.setValue(variableId, oldValue = value);
-        break;
-      case 1:  // Add
-        $gameVariables.setValue(variableId, oldValue + value);
-        break;
-      case 2:  // Sub
-        $gameVariables.setValue(variableId, oldValue - value);
-        break;
-      case 3:  // Mul
-        $gameVariables.setValue(variableId, oldValue * value);
-        break;
-      case 4:  // Div
-        $gameVariables.setValue(variableId, oldValue / value);
-        break;
-      case 5:  // Mod
-        $gameVariables.setValue(variableId, oldValue % value);
-        break;
-    }
-  } catch (e) {
-    $gameVariables.setValue(variableId, 0);
-  }
-};
+/* rpg_objects.js:9543. Six operations, and every one of them is
+   "old op new" — so they are written here as the six binary functions they
+   are, indexed by operationType in the editor's own order.
 
-/* rpg_objects.js:9097. MV clamps cancelType AFTER reading it, with an if; MZ
-   folds the same test into the declaration's ternary. Same result, and the
-   callback closes over `this` through .bind — MZ uses an arrow. */
+   The awkward bit in the engine is operation 0, which spells its arm
+   `$gameVariables.setValue(variableId, oldValue = value)`: an assignment INSIDE
+   the argument list whose only effect is to clobber a local that nothing reads
+   again, because that arm has already chosen its value. MZ cleaned it to a
+   plain `value`. Set is Set on both engines and the table says so directly.
+
+   Three behaviours the table has to keep exactly. The old value is read BEFORE
+   the operation is chosen, so a value() that throws lands in the catch whatever
+   the operation was. An operationType outside 0..5 writes NOTHING — the engine
+   falls off the end of its switch and never calls setValue. And the whole thing
+   is wrapped in a try/catch that writes a flat 0 on any failure, which is why a
+   divide by a non-number silently zeroes the variable instead of throwing. */
+Game_Interpreter.prototype.operateVariable = (function () {
+  var combine = [
+    function (old, operand) { return operand; },        // 0  Set
+    function (old, operand) { return old + operand; },  // 1  Add
+    function (old, operand) { return old - operand; },  // 2  Sub
+    function (old, operand) { return old * operand; },  // 3  Mul
+    function (old, operand) { return old / operand; },  // 4  Div
+    function (old, operand) { return old % operand; }   // 5  Mod
+  ];
+
+  return function (variableId, operationType, value) {
+    try {
+      var current = $gameVariables.value(variableId);
+      /* typeof, because a `switch` matches with === : the STRING '1' picks no
+         arm in the engine and must pick no row here either. */
+      var op = typeof operationType === 'number' ? combine[operationType] : null;
+      if (op) {
+        $gameVariables.setValue(variableId, op(current, value));
+      }
+    } catch (e) {
+      $gameVariables.setValue(variableId, 0);
+    }
+  };
+}());
+
+/* rpg_objects.js:9097. Only params[0] and params[1] are guaranteed: a choice
+   command written by an older editor simply stops early, so each tail parameter
+   carries its own default and the test is on params.length, never on
+   undefined-ness. The defaults are 0 / 2 / 0 and they are the editor's, not a
+   convenience.
+
+   MV clamps cancelType AFTER reading it, with an if; MZ folds the same test
+   into the declaration's ternary. Same answer either way, and -2 is what the
+   message window reads as "cancel takes the branch".
+
+   The callback fires long after this method returns and has to reach the
+   interpreter it was made for; MV binds, MZ uses an arrow, and this closes over
+   a named local, which is the one spelling ES5 gives us. What matters is that
+   _indent is read WHEN THE PLAYER CHOOSES, not now. */
 Game_Interpreter.prototype.setupChoices = function (params) {
+  function tail(index, fallback) {
+    return params.length > index ? params[index] : fallback;
+  }
+
   var choices = params[0].clone();
   var cancelType = params[1];
-  var defaultType = params.length > 2 ? params[2] : 0;
-  var positionType = params.length > 3 ? params[3] : 2;
-  var background = params.length > 4 ? params[4] : 0;
+  var defaultType = tail(2, 0);
+  var positionType = tail(3, 2);
+  var background = tail(4, 0);
+
   if (cancelType >= choices.length) {
     cancelType = -2;
   }
+
+  var interpreter = this;
   $gameMessage.setChoices(choices, defaultType, cancelType);
   $gameMessage.setChoiceBackground(background);
   $gameMessage.setChoicePositionType(positionType);
   $gameMessage.setChoiceCallback(function (n) {
-    this._branch[this._indent] = n;
-  }.bind(this));
+    interpreter._branch[interpreter._indent] = n;
+  });
 };
 
 /* --- The commands. Every one reads this._params. ---------------------- */
 
-/* Show Text — rpg_objects.js:9058. Returns FALSE unconditionally, so
+/* Show Text — rpg_objects.js:9058. Returns FALSE on every path, so
    executeCommand does not advance _index and the command re-enters next frame
    until $gameMessage stops being busy. MV has FOUR setFaceImage-family params
    and no speaker name; MZ added $gameMessage.setSpeakerName(params[4]) and
    restructured the whole body into an early `if (busy) return false;` that
    ends `return true` — so MZ ADVANCES the index itself and MV does not. The
-   inner `this._index++` before setWaitMode is MV-only for exactly that reason. */
+   `this._index++` before setWaitMode is MV-only for exactly that reason, and it
+   is the one at the END of the body, past the swallowed rows.
+
+   The rest is a swallow: a Show Text command eats the 401 rows that follow it,
+   and then at most ONE input row (102/103/104), and each swallowed row costs an
+   _index++ so executeCommand never dispatches it as a command of its own. Any
+   OTHER code after the 401s is left where it is and dispatched normally. */
 Game_Interpreter.prototype.command101 = function () {
-  if (!$gameMessage.isBusy()) {
-    $gameMessage.setFaceImage(this._params[0], this._params[1]);
-    $gameMessage.setBackground(this._params[2]);
-    $gameMessage.setPositionType(this._params[3]);
-    while (this.nextEventCode() === 401) {  // Text data
-      this._index++;
-      $gameMessage.add(this.currentCommand().parameters[0]);
-    }
-    switch (this.nextEventCode()) {
-      case 102:  // Show Choices
-        this._index++;
-        this.setupChoices(this.currentCommand().parameters);
-        break;
-      case 103:  // Input Number
-        this._index++;
-        this.setupNumInput(this.currentCommand().parameters);
-        break;
-      case 104:  // Select Item
-        this._index++;
-        this.setupItemChoice(this.currentCommand().parameters);
-        break;
-    }
-    this._index++;
-    this.setWaitMode('message');
+  if ($gameMessage.isBusy()) {
+    return false;
   }
+
+  var p = this._params;
+  $gameMessage.setFaceImage(p[0], p[1]);
+  $gameMessage.setBackground(p[2]);
+  $gameMessage.setPositionType(p[3]);
+
+  while (this.nextEventCode() === 401) {  // Text data
+    this._index++;
+    $gameMessage.add(this.currentCommand().parameters[0]);
+  }
+
+  var following = this.nextEventCode();
+  if (following === 102 || following === 103 || following === 104) {
+    this._index++;
+    var row = this.currentCommand().parameters;
+    if (following === 102) {
+      this.setupChoices(row);        // Show Choices
+    } else if (following === 103) {
+      this.setupNumInput(row);       // Input Number
+    } else {
+      this.setupItemChoice(row);     // Select Item
+    }
+  }
+
+  this._index++;
+  this.setWaitMode('message');
   return false;
 };
 
@@ -441,156 +482,183 @@ Game_Interpreter.prototype.command105 = function () {
 /* Conditional Branch — rpg_objects.js:9183. All fourteen operand types, so the
    switch/variable/self-switch arms sit in their real context.
 
+   The engine is one 130-line switch with three nested switches inside it. Every
+   arm does the same two things — pick a test, answer it — and none of them
+   falls through, so they are written here as a table of testers indexed by
+   params[0], with the sub-switches as tables of their own. Each tester is
+   called with the interpreter as `this`, which is what the Script arm's eval
+   and the Character arm's this.character() need.
+
+   THE FALSE THAT IS NOT A TEST. The engine seeds `result = false` and every arm
+   only ASSIGNS it, so anything that does not reach an assignment answers false:
+   an operand code the editor never wrote, a self switch on an interpreter with
+   no event, a timer that is not running, an actor id with no actor, a troop
+   index with no enemy, a character() that answered null, a sub-code out of
+   range. Each tester below reproduces that by returning false itself; the
+   dispatcher answers false for an operand with no tester at all.
+
+   What an arm DOES answer is passed through untouched — `result` is whatever
+   the engine assigned, and a test method returning undefined files undefined,
+   which is NOT false and therefore does not skip the branch.
+
    Two arms differ from MZ:
-     · case 3 (Timer) asks $gameTimer.seconds(), an INTEGER — so "timer >= 5"
+     · operand 3 (Timer) asks $gameTimer.seconds(), an INTEGER — so "timer >= 5"
        is true from 5.0s. MZ computes $gameTimer.frames() / 60 and compares the
        fraction, so the same branch flips up to 59 frames later.
-     · case 4 (Actor), "In the Party", uses $gameParty.members().contains(actor).
+     · operand 4 (Actor), "In the Party", uses $gameParty.members().contains().
        MZ uses .includes. Identical semantics; different method, and .contains
        exists only because MV polyfills it onto Array.prototype.
-   MV's case 11 (Button) has ONE form, Input.isPressed; MZ added a params[2]
+   MV's operand 11 (Button) has ONE form, Input.isPressed; MZ added a params[2]
    switch for triggered/repeated. Left as MV has it.
 
    The tail is the load-bearing part and is identical on both: the result is
    filed under this._indent in the shared _branch map, and a false result skips
    forward to the matching indent. _branch is keyed by INDENT, not by index, so
    two branches at the same depth share a slot. */
-Game_Interpreter.prototype.command111 = function () {
-  var result = false;
-  switch (this._params[0]) {
-    case 0:  // Switch
-      result = ($gameSwitches.value(this._params[1]) === (this._params[2] === 0));
-      break;
-    case 1:  // Variable
-      var value1 = $gameVariables.value(this._params[1]);
-      var value2;
-      if (this._params[2] === 0) {
-        value2 = this._params[3];
-      } else {
-        value2 = $gameVariables.value(this._params[3]);
-      }
-      switch (this._params[4]) {
-        case 0:  // Equal to
-          result = (value1 === value2);
-          break;
-        case 1:  // Greater than or Equal to
-          result = (value1 >= value2);
-          break;
-        case 2:  // Less than or Equal to
-          result = (value1 <= value2);
-          break;
-        case 3:  // Greater than
-          result = (value1 > value2);
-          break;
-        case 4:  // Less than
-          result = (value1 < value2);
-          break;
-        case 5:  // Not Equal to
-          result = (value1 !== value2);
-          break;
-      }
-      break;
-    case 2:  // Self Switch
-      if (this._eventId > 0) {
-        var key = [this._mapId, this._eventId, this._params[1]];
-        result = ($gameSelfSwitches.value(key) === (this._params[2] === 0));
-      }
-      break;
-    case 3:  // Timer
-      if ($gameTimer.isWorking()) {
-        if (this._params[2] === 0) {
-          result = ($gameTimer.seconds() >= this._params[1]);
-        } else {
-          result = ($gameTimer.seconds() <= this._params[1]);
-        }
-      }
-      break;
-    case 4:  // Actor
-      var actor = $gameActors.actor(this._params[1]);
-      if (actor) {
-        var n = this._params[3];
-        switch (this._params[2]) {
-          case 0:  // In the Party
-            result = $gameParty.members().contains(actor);
-            break;
-          case 1:  // Name
-            result = (actor.name() === n);
-            break;
-          case 2:  // Class
-            result = actor.isClass($dataClasses[n]);
-            break;
-          case 3:  // Skill
-            result = actor.hasSkill(n);
-            break;
-          case 4:  // Weapon
-            result = actor.hasWeapon($dataWeapons[n]);
-            break;
-          case 5:  // Armor
-            result = actor.hasArmor($dataArmors[n]);
-            break;
-          case 6:  // State
-            result = actor.isStateAffected(n);
-            break;
-        }
-      }
-      break;
-    case 5:  // Enemy
-      var enemy = $gameTroop.members()[this._params[1]];
-      if (enemy) {
-        switch (this._params[2]) {
-          case 0:  // Appeared
-            result = enemy.isAlive();
-            break;
-          case 1:  // State
-            result = enemy.isStateAffected(this._params[3]);
-            break;
-        }
-      }
-      break;
-    case 6:  // Character
-      var character = this.character(this._params[1]);
-      if (character) {
-        result = (character.direction() === this._params[2]);
-      }
-      break;
-    case 7:  // Gold
-      switch (this._params[2]) {
-        case 0:  // Greater than or equal to
-          result = ($gameParty.gold() >= this._params[1]);
-          break;
-        case 1:  // Less than or equal to
-          result = ($gameParty.gold() <= this._params[1]);
-          break;
-        case 2:  // Less than
-          result = ($gameParty.gold() < this._params[1]);
-          break;
-      }
-      break;
-    case 8:  // Item
-      result = $gameParty.hasItem($dataItems[this._params[1]]);
-      break;
-    case 9:  // Weapon
-      result = $gameParty.hasItem($dataWeapons[this._params[1]], this._params[2]);
-      break;
-    case 10:  // Armor
-      result = $gameParty.hasItem($dataArmors[this._params[1]], this._params[2]);
-      break;
-    case 11:  // Button
-      result = Input.isPressed(this._params[1]);
-      break;
-    case 12:  // Script
-      result = !!eval(this._params[1]);
-      break;
-    case 13:  // Vehicle
-      result = ($gamePlayer.vehicle() === $gameMap.vehicle(this._params[1]));
-      break;
+Game_Interpreter.prototype.command111 = (function () {
+  /* A `switch` matches with ===, so a table standing in for one has to refuse
+     a key a bare index would happily coerce and find — the STRING '3' picks no
+     case in the engine and must pick no row here. */
+  function pick(table, code) {
+    return typeof code === 'number' ? table[code] : undefined;
   }
-  this._branch[this._indent] = result;
-  if (this._branch[this._indent] === false) {
-    this.skipBranch();
-  }
-  return true;
-};
+
+  /* The six comparisons an operand can end in, in the editor's order:
+     ==, >=, <=, >, <, !=. Read off params[4] for a Variable branch. */
+  var compare = [
+    function (a, b) { return a === b; },
+    function (a, b) { return a >= b; },
+    function (a, b) { return a <= b; },
+    function (a, b) { return a > b; },
+    function (a, b) { return a < b; },
+    function (a, b) { return a !== b; }
+  ];
+
+  /* Gold offers only three of them, and NOT the same three: >=, <=, <. */
+  var goldCompare = [compare[1], compare[2], compare[4]];
+
+  /* The seven things a branch can ask about an actor, off params[2], with
+     params[3] as the thing asked about. */
+  var actorTests = [
+    function (actor, n) { return $gameParty.members().contains(actor); },
+    function (actor, n) { return actor.name() === n; },
+    function (actor, n) { return actor.isClass($dataClasses[n]); },
+    function (actor, n) { return actor.hasSkill(n); },
+    function (actor, n) { return actor.hasWeapon($dataWeapons[n]); },
+    function (actor, n) { return actor.hasArmor($dataArmors[n]); },
+    function (actor, n) { return actor.isStateAffected(n); }
+  ];
+
+  /* And the two it can ask about an enemy. */
+  var enemyTests = [
+    function (enemy, n) { return enemy.isAlive(); },
+    function (enemy, n) { return enemy.isStateAffected(n); }
+  ];
+
+  var operand = [];
+
+  /* 0 — Switch. params[2] is 0 for ON and 1 for OFF, so the test is not "is it
+     on" but "does it agree with what was asked". */
+  operand[0] = function (p) {
+    return $gameSwitches.value(p[1]) === (p[2] === 0);
+  };
+
+  /* 1 — Variable, against a constant (params[2] === 0) or another variable. */
+  operand[1] = function (p) {
+    var left = $gameVariables.value(p[1]);
+    var right = p[2] === 0 ? p[3] : $gameVariables.value(p[3]);
+    var how = pick(compare, p[4]);
+    return how ? how(left, right) : false;
+  };
+
+  /* 2 — Self switch, keyed by the interpreter's OWN captured map and event ids.
+     An interpreter with no event (a reserved common event) cannot key one and
+     answers false without touching $gameSelfSwitches at all. */
+  operand[2] = function (p) {
+    if (this._eventId > 0) {
+      var key = [this._mapId, this._eventId, p[1]];
+      return $gameSelfSwitches.value(key) === (p[2] === 0);
+    }
+    return false;
+  };
+
+  /* 3 — Timer, and only while it is running. */
+  operand[3] = function (p) {
+    if ($gameTimer.isWorking()) {
+      var how = p[2] === 0 ? compare[1] : compare[2];
+      return how($gameTimer.seconds(), p[1]);
+    }
+    return false;
+  };
+
+  /* 4 — Actor. Both the actor and the sub-test have to exist. */
+  operand[4] = function (p) {
+    var actor = $gameActors.actor(p[1]);
+    var test = pick(actorTests, p[2]);
+    return actor && test ? test(actor, p[3]) : false;
+  };
+
+  /* 5 — Enemy, addressed by INDEX into the live troop rather than by id, so
+     params[1] means something different here than everywhere else. */
+  operand[5] = function (p) {
+    var enemy = $gameTroop.members()[p[1]];
+    var test = pick(enemyTests, p[2]);
+    return enemy && test ? test(enemy, p[3]) : false;
+  };
+
+  /* 6 — Character facing. character() answers null in battle and for an
+     interpreter that has been transferred off its own map. */
+  operand[6] = function (p) {
+    var character = this.character(p[1]);
+    return character ? character.direction() === p[2] : false;
+  };
+
+  /* 7 — Gold. $gameParty.gold() is asked only once a comparison is found. */
+  operand[7] = function (p) {
+    var how = pick(goldCompare, p[2]);
+    return how ? how($gameParty.gold(), p[1]) : false;
+  };
+
+  /* 8/9/10 — the party's stock. Only the two equipment kinds pass MV's second
+     `includeEquip` argument; Item passes one and lets hasItem default it. */
+  operand[8] = function (p) {
+    return $gameParty.hasItem($dataItems[p[1]]);
+  };
+  operand[9] = function (p) {
+    return $gameParty.hasItem($dataWeapons[p[1]], p[2]);
+  };
+  operand[10] = function (p) {
+    return $gameParty.hasItem($dataArmors[p[1]], p[2]);
+  };
+
+  /* 11 — Button, held right now. */
+  operand[11] = function (p) {
+    return Input.isPressed(p[1]);
+  };
+
+  /* 12 — Script. The `!!` is what files a BOOLEAN rather than the script's own
+     answer, and the eval is direct so `this` is the interpreter, which is what
+     a conditional-branch script written against the engine expects. */
+  operand[12] = function (p) {
+    return !!eval(p[1]);
+  };
+
+  /* 13 — Vehicle, by identity of the vehicle object, not by id. */
+  operand[13] = function (p) {
+    return $gamePlayer.vehicle() === $gameMap.vehicle(p[1]);
+  };
+
+  return function () {
+    var p = this._params;
+    var test = pick(operand, p[0]);
+    var result = test ? test.call(this, p) : false;
+    this._branch[this._indent] = result;
+    if (this._branch[this._indent] === false) {
+      this.skipBranch();
+    }
+    return true;
+  };
+}());
 
 /* Else — rpg_objects.js:9321. Kept because command111 is unreadable without
    the other half of the contract: `!== false`, so an indent that was never
@@ -629,9 +697,9 @@ Game_Interpreter.prototype.command121 = function () {
 /* Control Variables — rpg_objects.js:9424. The Constant and Variable operands
    are the two the panels drive and they are exact.
 
-   The MV/MZ split is in the RANDOM operand, and it is structural. MV computes
-   the span into `value`, runs its OWN loop, and RETURNS EARLY — two loops in
-   one method, and nothing outside case 2 ever touches randomness. MZ deleted
+   The MV/MZ split is in the RANDOM operand, and it is structural. MV gives it
+   a loop of its OWN and RETURNS EARLY — two loops in one method, and nothing
+   but the Random operand ever touches randomness. MZ deleted
    that early return: it carries a separate `randomMax` (1 for every other
    operand) and funnels ALL five operands through one loop that adds
    Math.randomInt(randomMax) — zero unless the operand was Random. Because that
@@ -639,37 +707,48 @@ Game_Interpreter.prototype.command121 = function () {
    `typeof value === "number"` test around the addition; MV needs no such test
    precisely because its Random case never reaches the shared loop.
 
-   Note the `break` after `return true` in case 2 — unreachable, and in the
-   source. Kept.
+   The engine's case 2 carries a `break` after its `return true` — unreachable,
+   and in the source. There is nothing to keep: it never ran.
+
+   ONE ROLL PER TARGET is the part worth being careful about. Random rolls
+   inside its loop, so "set variables 1..5 to a random 1..6" gives five
+   independent numbers; every other operand computes ONE value before its loop
+   and writes that same value to every target. An operand code the editor never
+   wrote writes 0 to the whole range rather than skipping it.
 
    gameDataOperand (operand 3) is NOT defined here: it reaches actors, enemies,
    characters, party and system counters across four other areas. Operand 3
    therefore throws rather than quietly returning 0. */
 Game_Interpreter.prototype.command122 = function () {
-  var value = 0;
-  switch (this._params[3]) { // Operand
-    case 0: // Constant
-      value = this._params[4];
-      break;
-    case 1: // Variable
-      value = $gameVariables.value(this._params[4]);
-      break;
-    case 2: // Random
-      value = this._params[5] - this._params[4] + 1;
-      for (var i = this._params[0]; i <= this._params[1]; i++) {
-        this.operateVariable(i, this._params[2], this._params[4] + Math.randomInt(value));
-      }
-      return true;
-      break;
-    case 3: // Game Data
-      value = this.gameDataOperand(this._params[4], this._params[5], this._params[6]);
-      break;
-    case 4: // Script
-      value = eval(this._params[4]);
-      break;
+  var p = this._params;
+  var id;
+
+  /* Random: rolled again for every variable in the range. The span is
+     inclusive of both ends, which is where the + 1 comes from. */
+  if (p[3] === 2) {
+    var floor = p[4];
+    var span = p[5] - floor + 1;
+    for (id = p[0]; id <= p[1]; id++) {
+      this.operateVariable(id, p[2], floor + Math.randomInt(span));
+    }
+    return true;
   }
-  for (var i = this._params[0]; i <= this._params[1]; i++) {
-    this.operateVariable(i, this._params[2], value);
+
+  /* Everything else: one value, computed once, written to every target.
+     `eval` stays in this method body rather than a helper so a Script operand
+     sees the interpreter as `this`, the way the engine's does. */
+  var value = 0;
+  if (p[3] === 0) {                                    // Constant
+    value = p[4];
+  } else if (p[3] === 1) {                             // Variable
+    value = $gameVariables.value(p[4]);
+  } else if (p[3] === 3) {                             // Game Data
+    value = this.gameDataOperand(p[4], p[5], p[6]);
+  } else if (p[3] === 4) {                             // Script
+    value = eval(p[4]);
+  }
+  for (id = p[0]; id <= p[1]; id++) {
+    this.operateVariable(id, p[2], value);
   }
   return true;
 };
@@ -686,24 +765,28 @@ Game_Interpreter.prototype.command123 = function () {
   return true;
 };
 
-/* Transfer Player — rpg_objects.js:9709. Returns false and advances _index by
-   hand inside the guard, so a transfer attempted during a message re-runs next
-   frame. MZ inverted this into an early `return false` and ends `return true`.
-   The five-argument reserveTransfer order is (mapId, x, y, direction, fadeType)
-   on both. */
+/* Transfer Player — rpg_objects.js:9709. The RETURN VALUE is the MV/MZ split
+   and it is the reason the single `return false` at the bottom is left standing
+   rather than folded into an early exit: MV answers false whether it transferred
+   or not, and advances _index by hand inside the guard, so a transfer attempted
+   during a message re-runs next frame and a transfer that happened does not.
+   MZ answers TRUE on the transferring path and lets executeCommand advance.
+
+   params[0] chooses how the next three parameters are read — 0 means they ARE
+   the destination, anything else means they are the ids of variables holding
+   it — and it applies to all three together, which is why one flag drives all
+   three reads. The five-argument reserveTransfer order is
+   (mapId, x, y, direction, fadeType) on both engines. */
 Game_Interpreter.prototype.command201 = function () {
+  var p = this._params;
+  var indirect = p[0] !== 0;
+
+  function place(index) {
+    return indirect ? $gameVariables.value(p[index]) : p[index];
+  }
+
   if (!$gameParty.inBattle() && !$gameMessage.isBusy()) {
-    var mapId, x, y;
-    if (this._params[0] === 0) {  // Direct designation
-      mapId = this._params[1];
-      x = this._params[2];
-      y = this._params[3];
-    } else {  // Designation with variables
-      mapId = $gameVariables.value(this._params[1]);
-      x = $gameVariables.value(this._params[2]);
-      y = $gameVariables.value(this._params[3]);
-    }
-    $gamePlayer.reserveTransfer(mapId, x, y, this._params[4], this._params[5]);
+    $gamePlayer.reserveTransfer(place(1), place(2), place(3), p[4], p[5]);
     this.setWaitMode('transfer');
     this._index++;
   }
@@ -756,43 +839,46 @@ Game_Event.prototype.isTriggerIn = function (triggers) {
    The actor clause is the .contains/.includes split again (MZ :9338 is
    otherwise identical, line for line).
 
+   Six independent gates, each with its own *Valid flag, and the engine nests
+   the flag test and the gate test as two ifs; && is the same thing and short
+   circuits the same way, so a gate that is switched off never reads the world
+   it would have asked about. The FIRST failure answers, and nothing after it
+   is evaluated.
+
    Two exactnesses worth keeping: variableValid is `< c.variableValue` → false,
    i.e. the page needs variable >= value; and selfSwitchValid compares
    `!== true`, not falsiness, so a self switch holding a truthy non-true value
    fails the page. The key is [this._mapId, this._eventId, ch] — the event's
-   OWN stored map id, not $gameMap.mapId(). */
+   OWN stored map id, not $gameMap.mapId().
+
+   The two temporaries the engine keeps are kept here too, for order rather
+   than for reading: $gameActors.actor() LAZILY CREATES the actor it is asked
+   for, so it has to run before $gameParty.members() and not as an argument
+   evaluated after it. */
 Game_Event.prototype.meetsConditions = function (page) {
   var c = page.conditions;
-  if (c.switch1Valid) {
-    if (!$gameSwitches.value(c.switch1Id)) {
-      return false;
-    }
+
+  if (c.switch1Valid && !$gameSwitches.value(c.switch1Id)) {
+    return false;
   }
-  if (c.switch2Valid) {
-    if (!$gameSwitches.value(c.switch2Id)) {
-      return false;
-    }
+  if (c.switch2Valid && !$gameSwitches.value(c.switch2Id)) {
+    return false;
   }
-  if (c.variableValid) {
-    if ($gameVariables.value(c.variableId) < c.variableValue) {
-      return false;
-    }
+  if (c.variableValid && $gameVariables.value(c.variableId) < c.variableValue) {
+    return false;
   }
   if (c.selfSwitchValid) {
-    var key = [this._mapId, this._eventId, c.selfSwitchCh];
-    if ($gameSelfSwitches.value(key) !== true) {
+    var selfKey = [this._mapId, this._eventId, c.selfSwitchCh];
+    if ($gameSelfSwitches.value(selfKey) !== true) {
       return false;
     }
   }
-  if (c.itemValid) {
-    var item = $dataItems[c.itemId];
-    if (!$gameParty.hasItem(item)) {
-      return false;
-    }
+  if (c.itemValid && !$gameParty.hasItem($dataItems[c.itemId])) {
+    return false;
   }
   if (c.actorValid) {
-    var actor = $gameActors.actor(c.actorId);
-    if (!$gameParty.members().contains(actor)) {
+    var wanted = $gameActors.actor(c.actorId);
+    if (!$gameParty.members().contains(wanted)) {
       return false;
     }
   }

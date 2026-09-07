@@ -16,7 +16,7 @@
 #
 # WHAT THIS TOUCHES
 #   <root>/js/plugins/GigaHack_*.js   copied in (new files, ours)
-#   <root>/js/plugins.js              26 entries appended between markers
+#   <root>/js/plugins.js              one entry per module, appended between markers
 #   <root>/js/plugins.js.gigahack-backup   the original, kept forever
 #
 # Nothing else is written, ever. --uninstall restores the file byte for byte.
@@ -29,7 +29,7 @@
 #=============================================================================
 set -eu
 
-VERSION="2.0.0"
+VERSION="2.1.0"
 BEGIN_MARK="// >>> GigaHack ${VERSION} BEGIN — installed automatically; edit at your own risk"
 END_MARK="// <<< GigaHack END"
 ANY_BEGIN="// >>> GigaHack"
@@ -82,9 +82,9 @@ if [ -z "$PAYLOAD" ]; then
 	fi
 	echo "  The unpacked folder should contain:" >&2
 	echo "" >&2
-	echo "      GigaHack-2.0.0/" >&2
+	echo "      GigaHack-${VERSION}/" >&2
 	echo "        manifest.json" >&2
-	echo "        js/plugins/GigaHack_Core.js   (and 25 more)" >&2
+	echo "        js/plugins/GigaHack_Core.js   (and the rest)" >&2
 	echo "        profiles/" >&2
 	echo "        gigahack-install.sh" >&2
 	echo "" >&2
@@ -407,7 +407,7 @@ do_install() {
 				bad "js/plugins.js ends in a shape this installer does not recognise ($err). Left untouched." ;;
 			*)  bad "could not rewrite js/plugins.js: $err" ;;
 		esac
-		bad "Add the 26 GigaHack entries by hand, or restore plugins.js$BACKUP_SUFFIX and report this."
+		bad "Add the GigaHack entries by hand — manifest.json lists them, in order — or restore plugins.js$BACKUP_SUFFIX and report this."
 		failed=$((failed + 1)); return 1
 	fi
 	rm -f "$tmp.err" "$ent" "$strip"

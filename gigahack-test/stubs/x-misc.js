@@ -3,7 +3,7 @@
    The SMALL SHARED SURFACE: the odds and ends that MV 1.6.1 and MZ 1.9.0 agree
    on byte for byte, plus the DATA SHAPES the database rows are supposed to have.
 
-   Copied from the shipped engine sources, not written from memory. Line
+   Modelled on the shipped engine sources, not written from memory. Line
    references are MV = js/rpg_*.js (1.6.1), MZ = js/rmmz_*.js (1.9.0). Where one
    reference is given for both, the two bodies are identical character for
    character and the difference is only the line they sit on.

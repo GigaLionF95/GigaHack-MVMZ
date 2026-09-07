@@ -58,9 +58,14 @@ is worth doing regardless.
 
 This is the single most important thing to understand before editing it.
 
-Every stub is copied from the shipped engine source — `/root/work/mv/js/rpg_*.js`
-(MV 1.6.1) and `/root/work/mz/js/rmmz_*.js` (MZ 1.9.0) — and annotated with the
-file:line it came from. Not paraphrased from memory. **Where a stub simplifies,
+Every stub is a behavioural MODEL written from the shipped engine source — MV
+1.6.1's `rpg_*.js` and MZ 1.9.0's `rmmz_*.js`, which live inside any game folder
+you already have — and annotated with the file and line it was learned from, so
+any of it can be checked against a real build rather than trusted. The engine's
+INTERFACE is reproduced exactly, because names, constants, data tables, call
+order and return values are fact rather than expression; its implementation is
+not, and no engine source is redistributed here. See `stubs/README.md`.
+**Where a stub simplifies,
 the simplification is the bug it will hide.** Eleven real defects got through
 the 1.x suite precisely because the harness was politer than the engine, and
 every one of them is still true:

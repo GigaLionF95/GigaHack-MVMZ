@@ -1,8 +1,8 @@
 /* =============================================================================
    GigaHack test harness — stubs/x-screen.js
    THE SCREEN AND PICTURES: everything the two engines agree on.
-   Copied from the shipped sources — MV 1.6.1 /root/work/mv/js/rpg_*.js and
-   MZ 1.9.0 /root/work/mz/js/rmmz_*.js — not written from memory.
+   Modelled on the shipped sources — MV 1.6.1 MV rpg_*.js and
+   MZ 1.9.0 MZ rmmz_*.js — not written from memory.
 
    Loaded IMMEDIATELY AFTER core.js and BEFORE engine-mv.js / engine-mz.js.
    Its per-engine halves are x-screen-mv.js and x-screen-mz.js.
@@ -396,20 +396,37 @@ Game_Screen.prototype.update = function () {
   this.updatePictures();
 };
 
+/* NOT AN ENGINE SYMBOL — the single step every timed approach on the screen
+   takes. With `frames` frames of the effect still to run, the value closes
+   1/frames of the gap to its target, so the step shrinks as the value nears
+   the target and the LAST step (frames === 1) lands exactly on it. `frames`
+   is always the duration BEFORE this frame's decrement.
+
+   The engine writes the arithmetic out at each site rather than naming it —
+   the two fades at MV rpg_objects.js:808/:816 (MZ :975/:983), the screen tint
+   at MV :824 (MZ :991, and it is core.js that carries that one), the picture
+   tint at MV :1083 (MZ :1262) — so each site reads as its own formula. It is
+   one formula with a different target: fade-out approaches 0, fade-in
+   approaches 255, a tint approaches its channel. The fade-out site adds a
+   literal 0 here where the engine adds nothing, which is the same number for
+   every input a fade can hold. */
+function stepTowardOverFrames(current, target, frames) {
+  return (current * (frames - 1) + target) / frames;
+}
+
 /* MV :808 / MZ :975 — decays toward 0, never reaching it in `duration`
    frames on the way out because the last step is (b*(d-1))/d with d === 1. */
 Game_Screen.prototype.updateFadeOut = function () {
   if (this._fadeOutDuration > 0) {
-    var d = this._fadeOutDuration;
-    this._brightness = (this._brightness * (d - 1)) / d;
+    this._brightness = stepTowardOverFrames(this._brightness, 0, this._fadeOutDuration);
     this._fadeOutDuration--;
   }
 };
-/* MV :816 / MZ :983 */
+/* MV :816 / MZ :983 — the same step with 255 for a target, which is the whole
+   of the difference between fading in and fading out. */
 Game_Screen.prototype.updateFadeIn = function () {
   if (this._fadeInDuration > 0) {
-    var d = this._fadeInDuration;
-    this._brightness = (this._brightness * (d - 1) + 255) / d;
+    this._brightness = stepTowardOverFrames(this._brightness, 255, this._fadeInDuration);
     this._fadeInDuration--;
   }
 };
@@ -422,21 +439,38 @@ Game_Screen.prototype.updateFadeIn = function () {
    OVERSHOOTS _shakePower (up to about 2x), and _shake keeps moving for one
    frame after _shakeDuration hits 0 because the guard is `|| this._shake !== 0`. */
 Game_Screen.prototype.updateShake = function () {
-  if (this._shakeDuration > 0 || this._shake !== 0) {
-    var delta = (this._shakePower * this._shakeSpeed * this._shakeDirection) / 10;
-    if (this._shakeDuration <= 1 && this._shake * (this._shake + delta) < 0) {
-      this._shake = 0;
-    } else {
-      this._shake += delta;
-    }
-    if (this._shake > this._shakePower * 2) {
-      this._shakeDirection = -1;
-    }
-    if (this._shake < -this._shakePower * 2) {
-      this._shakeDirection = 1;
-    }
-    this._shakeDuration--;
+  /* Two reasons to keep running, and the second is the interesting one: an
+     oscillator caught mid-swing keeps stepping AFTER _shakeDuration has hit
+     0, until _shake lands back on exactly 0. _shakeDuration goes negative
+     while that happens, which is fine and is what the engine does. */
+  var oscillating = this._shakeDuration > 0 || this._shake !== 0;
+  if (!oscillating) {
+    return;
   }
+  var delta = (this._shakePower * this._shakeSpeed * this._shakeDirection) / 10;
+  /* On the final frame only, a step that would carry _shake ACROSS zero is
+     replaced by a snap to zero, so the shake ends centred. The test is a
+     strict sign product: a step landing exactly ON zero is not a crossing and
+     takes the ordinary path (which puts it at zero anyway). */
+  var wouldCrossZero = this._shake * (this._shake + delta) < 0;
+  if (this._shakeDuration <= 1 && wouldCrossZero) {
+    this._shake = 0;
+  } else {
+    this._shake += delta;
+  }
+  /* Reversal happens at TWICE the power, which is why _shake overshoots
+     _shakePower by up to 2x — the thing a square-wave stub hides. The two
+     tests are INDEPENDENT ifs rather than an else-if, and that matters: with
+     a negative _shakePower the bounds cross over, both fire, and the second
+     write is the one that sticks. */
+  var reversalPoint = this._shakePower * 2;
+  if (this._shake > reversalPoint) {
+    this._shakeDirection = -1;
+  }
+  if (this._shake < -reversalPoint) {
+    this._shakeDirection = 1;
+  }
+  this._shakeDuration--;
 };
 
 /* MV :889 / MZ :1060 — the red damage flash, hard-coded on both. */
@@ -555,12 +589,18 @@ Game_Picture.prototype.rotate = function (speed) {
    the engine's own Array extension (core.js:109), so an object literal or a
    typed array thrown at tintPicture dies inside the engine, not at the call. */
 Game_Picture.prototype.tint = function (tone, duration) {
+  /* Before tone.clone(), and that ordering is observable: a caller who passes
+     something without clone() leaves the picture with a neutral _tone and the
+     OLD target, not with _tone still null. */
   if (!this._tone) {
     this._tone = [0, 0, 0, 0];
   }
   this._toneTarget = tone.clone();
   this._toneDuration = duration;
-  if (this._toneDuration === 0) {
+  if (duration === 0) {
+    /* Instant tint: no frames to interpolate over, so the tone jumps to the
+       target — cloned a SECOND time, so _tone and _toneTarget never end up
+       sharing one array that a later updateTone would edit under itself. */
     this._tone = this._toneTarget.clone();
   }
 };
@@ -570,16 +610,19 @@ Game_Picture.prototype.update = function () {
   this.updateTone();
   this.updateRotation();
 };
-/* MV :1083 / MZ :1262 — linear on BOTH; MZ's easing applies to movement
-   only, never to tone. */
+/* MV :1083 / MZ :1262 — the four channels take the same step the fades take,
+   each toward its own target, and that step is LINEAR on both engines: MZ's
+   easing applies to movement only, never to tone. All four read the duration
+   from before the decrement, which is why the temporary is worth having. */
 Game_Picture.prototype.updateTone = function () {
-  if (this._toneDuration > 0) {
-    var d = this._toneDuration;
-    for (var i = 0; i < 4; i++) {
-      this._tone[i] = (this._tone[i] * (d - 1) + this._toneTarget[i]) / d;
-    }
-    this._toneDuration--;
+  if (this._toneDuration <= 0) {
+    return;
   }
+  var d = this._toneDuration;
+  for (var i = 0; i < 4; i++) {
+    this._tone[i] = stepTowardOverFrames(this._tone[i], this._toneTarget[i], d);
+  }
+  this._toneDuration--;
 };
 /* MV :1093 / MZ :1272 — speed/2 degrees per frame, and it never wraps, so
    _angle grows without bound on a spinning picture. */
@@ -610,18 +653,23 @@ Sprite_Picture.prototype.picture = function () {
    erasePicture(id) hide the sprite without destroying it. */
 Sprite_Picture.prototype.updateBitmap = function () {
   var picture = this.picture();
-  if (picture) {
-    var pictureName = picture.name();
-    if (this._pictureName !== pictureName) {
-      this._pictureName = pictureName;
-      this.loadBitmap();
-    }
-    this.visible = true;
-  } else {
+  if (!picture) {
+    /* Empty slot — erased, or never shown. The sprite itself survives; it is
+       blanked and hidden. _pictureName is cleared as well, which is why
+       re-showing the SAME file after an erase does load it again. */
     this._pictureName = '';
     this.bitmap = null;
     this.visible = false;
+    return;
   }
+  /* name() is asked every frame; the load is what is cached, keyed on the
+     name alone. Swapping a picture's file mid-move reloads on that frame. */
+  var name = picture.name();
+  if (name !== this._pictureName) {
+    this._pictureName = name;
+    this.loadBitmap();
+  }
+  this.visible = true;
 };
 /* MV :1989 / MZ :2972 — one line on both, but NOT the same one line: MV's
    ImageManager.loadPicture takes (filename, hue) (rpg_managers.js:831) and
@@ -687,17 +735,29 @@ Sprite_Timer.prototype.update = function () {
    ---------------------------------------------------------------------- */
 Object.setPrototypeOf(Spriteset_Base.prototype, Sprite.prototype);
 
+/* NOT AN ENGINE SYMBOL — the counter-move that keeps the zoom centre still.
+   Scaling happens about the spriteset's top-left corner, so a point sitting at
+   `center` slides out to center*scale; pushing the whole spriteset back by
+   center*(scale-1) puts it where it was. Rounded, so the offset is a whole
+   pixel. The engine writes the sum once per axis (MV rpg_sprites.js:2243-2244
+   / MZ rmmz_sprites.js:3220-3221); it is one sum, read twice. */
+function zoomOffsetPixels(center, scale) {
+  return Math.round(-center * (scale - 1));
+}
+
 /* MV rpg_sprites.js:2238 / MZ rmmz_sprites.js:3215 — byte-identical, and the
    only place the screen's zoom and shake reach the display list. Both round:
    zoom offset and shake are integer pixels, so a shake of 0.4 shows nothing.
-   Shake is added to x AFTER the zoom offset, never scaled by it. */
+   Shake is added to x AFTER the zoom offset, never scaled by it — it is
+   rounded on its own and summed, so two halves can round up to a whole pixel
+   that neither of them was. */
 Spriteset_Base.prototype.updatePosition = function () {
   var screen = $gameScreen;
   var scale = screen.zoomScale();
   this.scale.x = scale;
   this.scale.y = scale;
-  this.x = Math.round(-screen.zoomX() * (scale - 1));
-  this.y = Math.round(-screen.zoomY() * (scale - 1));
+  this.x = zoomOffsetPixels(screen.zoomX(), scale);
+  this.y = zoomOffsetPixels(screen.zoomY(), scale);
   this.x += Math.round(screen.shake());
 };
 

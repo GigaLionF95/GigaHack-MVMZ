@@ -3,13 +3,15 @@
    The INTERPRETER AND EVENTS surface that MV 1.6.1 and MZ 1.9.0 agree on.
 
    Loaded immediately after core.js, before engine-*.js. Everything here is
-   copied from the shipped engine source and carries the file:line it came
-   from; where a body is reduced, the comment says what was dropped and why.
+   written from the shipped engine source and carries the file:line whose
+   behaviour it reproduces; where a body is reduced, the comment says what was
+   dropped and why.
 
    Line references: MV = rpg_objects.js unless the citation names another file,
    MZ = rmmz_objects.js likewise. A single "MV :nnnn / MZ :nnnn" pair means the
-   two bodies are token-for-token identical apart from var/let/const and the
-   arrow-vs-function spelling, which ES5 forces anyway.
+   ENGINE'S OWN two bodies agree token for token apart from var/let/const and
+   the arrow-vs-function spelling, which ES5 forces anyway — that is the claim
+   the pair is making, and it is why one stub can stand in for both.
 
    WHAT IS NOT HERE, ON PURPOSE. Four things a naive reading calls "the same on
    both engines" are not, and each one lives in x-interp-mv.js / x-interp-mz.js
@@ -33,7 +35,7 @@
    DEPENDENCY FILLS.
 
    The interpreter reaches out of its own class on nearly every path, and
-   core.js does not model all of it. These are copied from the engine like
+   core.js does not model all of it. These are read off the engine like
    everything else. They are in THIS file, the earliest of the three, so that
    any later stub file that models the owning class properly simply overrides
    them — last assignment wins, and the better model is always the later one.
@@ -101,7 +103,7 @@ Scene_Shop.prototype = Object.create(Scene_Base.prototype);
 Scene_Shop.prototype.constructor = Scene_Shop;
 /* MV rpg_managers.js:2109 / MZ rmmz_managers.js:2243. The real body is
    `this._nextScene.prepare.apply(this._nextScene, arguments)` — MZ spells it
-   with a spread, MV with apply, same effect. It cannot be copied verbatim
+   with a spread, MV with apply, same effect. It cannot be reproduced exactly where it is interface
    because core.js's SceneManager.push is a RECORDER: it appends a class
    name to window.__pushed and never constructs _nextScene. So this records in
    the same register core.js chose, and a check reads __preparedScene next to
@@ -165,17 +167,13 @@ Game_Interpreter.prototype.isRunning = function () {
    every wait test pass for the wrong reason. */
 Game_Interpreter.prototype.update = function () {
   while (this.isRunning()) {
-    if (this.updateChild() || this.updateWait()) {
-      break;
-    }
-    if (SceneManager.isSceneChanging()) {
-      break;
-    }
-    if (!this.executeCommand()) {
-      break;
-    }
-    if (this.checkFreeze()) {
-      break;
+    /* Three ways to be held BEFORE a command runs, asked in this order and
+       short-circuiting: a live child, a wait, a scene on its way out. */
+    var held = this.updateChild() || this.updateWait() || SceneManager.isSceneChanging();
+    /* ...and two ways for the command itself to end the frame: it asked to
+       stop, or it was the hundred-thousandth one this frame. */
+    if (held || !this.executeCommand() || this.checkFreeze()) {
+      return;
     }
   }
 };
@@ -229,15 +227,15 @@ Game_Interpreter.prototype.fadeSpeed = function () {
    update() and then reports a freeze. core.js keeps frameCount writable for
    exactly this kind of reason; a check that drives a long list must bump it. */
 Game_Interpreter.prototype.checkFreeze = function () {
-  if (this._frameCount !== Graphics.frameCount) {
-    this._frameCount = Graphics.frameCount;
+  var thisFrame = Graphics.frameCount;
+  if (this._frameCount !== thisFrame) {
+    this._frameCount = thisFrame;
     this._freezeChecker = 0;
   }
-  if (this._freezeChecker++ >= 100000) {
-    return true;
-  } else {
-    return false;
-  }
+  /* POST-increment: the counter is read, THEN raised, so the 100001st command
+     of a frame is the first one to be refused. The engine spells the same
+     answer as an if/else pair of literals. */
+  return this._freezeChecker++ >= 100000;
 };
 
 /* MV :8953 / MZ :9689. Nulls the list and clears the comment buffer and
@@ -282,20 +280,26 @@ Game_Interpreter.prototype.setupChild = function (list, eventId) {
   this._childInterpreter.setup(list, eventId);
 };
 
-/* MV :9028 / MZ :9764 — identical. Returns null in battle, the player for a
-   negative param, and for 0 the interpreter's OWN event. On MZ this is also
-   the wait-mode path: clear() keeps _characterId and updateWaitMode calls
-   character(this._characterId) every frame. */
+/* MV :9028 / MZ :9764 — identical. Four answers, tested in this order, and the
+   two nulls are not the same null: the first is "there are no map characters
+   at all right now", the second is "this interpreter is no longer standing on
+   the map it captured". Written as separate exits so they can carry separate
+   reasons. A negative param is the player whichever map that is; 0 is the
+   interpreter's OWN event, which is what makes an unqualified move route in an
+   event page move that event. On MZ this is also the wait-mode path: clear()
+   keeps _characterId and updateWaitMode calls character(this._characterId)
+   every frame, which is how MZ gets a null where MV holds a stale object. */
 Game_Interpreter.prototype.character = function (param) {
   if ($gameParty.inBattle()) {
     return null;
-  } else if (param < 0) {
+  }
+  if (param < 0) {
     return $gamePlayer;
-  } else if (this.isOnCurrentMap()) {
-    return $gameMap.event(param > 0 ? param : this._eventId);
-  } else {
+  }
+  if (!this.isOnCurrentMap()) {
     return null;
   }
+  return $gameMap.event(param > 0 ? param : this._eventId);
 };
 
 /* MV :9040 / MZ :9776 — identical apart from MZ's prettier-ignore wrapping. */
@@ -390,7 +394,8 @@ Game_CommonEvent.prototype.update = function () {
      · the fields the engine sets in initMembers do not exist on a
        core.js-constructed event until something calls initMembers() —
        fixtures.js has to, and the report for this file says which.
-   Everything below is otherwise verbatim.
+   Everything below otherwise answers exactly as the engine's own body does,
+   for every input, including the ones that throw.
    ---------------------------------------------------------------------- */
 /* MV :8444 / MZ :9150. SHAPE: the leading
    `Game_Character.prototype.initMembers.call(this)` is dropped (no parent
@@ -483,12 +488,14 @@ Game_Event.prototype.refresh = function () {
    highest-numbered page whose conditions are met. */
 Game_Event.prototype.findProperPageIndex = function () {
   var pages = this.event().pages;
-  for (var i = pages.length - 1; i >= 0; i--) {
-    var page = pages[i];
-    if (this.meetsConditions(page)) {
+  var i = pages.length;
+  while (i--) {
+    if (this.meetsConditions(pages[i])) {
       return i;
     }
   }
+  /* Ran out of pages: -1 is a real answer, not an error, and refresh() turns
+     it into clearPageSettings. */
   return -1;
 };
 
@@ -515,43 +522,63 @@ Game_Event.prototype.clearPageSettings = function () {
   this.setThrough(true);
 };
 
-/* MV :8678 / MZ :9395 — verbatim, and the ONLY place _interpreter is ever
-   created for a map event. trigger 4 is Parallel; every other trigger nulls
-   it. That is why updateParallel is a no-op on a normal NPC and why a panel
-   that wants a per-event interpreter must look at trigger 4 events. */
+/* MV :8678 / MZ :9395 — the ONLY place _interpreter is ever created for a map
+   event. trigger 4 is Parallel; every other trigger nulls it. That is why
+   updateParallel is a no-op on a normal NPC and why a panel that wants a
+   per-event interpreter must look at trigger 4 events.
+
+   Three parts, and the middle one is the surprising one. First the artwork,
+   which is a tile OR a character sheet and never both. Then facing and
+   pattern, which are applied ONLY when the new page asks for something the
+   event does not already remember — that is what _originalDirection and
+   _originalPattern are for, and it is why walking an event onto a new page
+   with the same image leaves it facing where it stood. Then every remaining
+   page field, handed to its own setter.
+
+   The ORDER of that last group is observable — anything that hooks one of
+   these setters sees them in exactly this sequence — so it is written as data
+   rather than as prose. setDirectionFix appears in it even though the facing
+   block above may already have called it with false: the page's own
+   directionFix is applied last and wins, and an event whose page fixes its
+   direction still turns once, on the frame the page changes. */
 Game_Event.prototype.setupPageSettings = function () {
   var page = this.page();
-  var image = page.image;
-  if (image.tileId > 0) {
-    this.setTileImage(image.tileId);
+  var art = page.image;
+
+  if (art.tileId > 0) {
+    this.setTileImage(art.tileId);
   } else {
-    this.setImage(image.characterName, image.characterIndex);
+    this.setImage(art.characterName, art.characterIndex);
   }
-  if (this._originalDirection !== image.direction) {
-    this._originalDirection = image.direction;
+
+  if (this._originalDirection !== art.direction) {
+    this._originalDirection = art.direction;
     this._prelockDirection = 0;
     this.setDirectionFix(false);
-    this.setDirection(image.direction);
+    this.setDirection(art.direction);
   }
-  if (this._originalPattern !== image.pattern) {
-    this._originalPattern = image.pattern;
-    this.setPattern(image.pattern);
+  if (this._originalPattern !== art.pattern) {
+    this._originalPattern = art.pattern;
+    this.setPattern(art.pattern);
   }
-  this.setMoveSpeed(page.moveSpeed);
-  this.setMoveFrequency(page.moveFrequency);
-  this.setPriorityType(page.priorityType);
-  this.setWalkAnime(page.walkAnime);
-  this.setStepAnime(page.stepAnime);
-  this.setDirectionFix(page.directionFix);
-  this.setThrough(page.through);
-  this.setMoveRoute(page.moveRoute);
+
+  var forwarded = [
+    ['setMoveSpeed', 'moveSpeed'],
+    ['setMoveFrequency', 'moveFrequency'],
+    ['setPriorityType', 'priorityType'],
+    ['setWalkAnime', 'walkAnime'],
+    ['setStepAnime', 'stepAnime'],
+    ['setDirectionFix', 'directionFix'],
+    ['setThrough', 'through'],
+    ['setMoveRoute', 'moveRoute']
+  ];
+  for (var i = 0; i < forwarded.length; i++) {
+    this[forwarded[i][0]](page[forwarded[i][1]]);
+  }
+
   this._moveType = page.moveType;
   this._trigger = page.trigger;
-  if (this._trigger === 4) {
-    this._interpreter = new Game_Interpreter();
-  } else {
-    this._interpreter = null;
-  }
+  this._interpreter = this._trigger === 4 ? new Game_Interpreter() : null;
 };
 
 /* The setters setupPageSettings and clearPageSettings call. In the engine they
@@ -724,25 +751,30 @@ Game_Map.prototype.updateEvents = function () {
 };
 
 /* MV :6113 / MZ :6799 — identical, and the most load-bearing loop in the
-   class. `for(;;)` with THREE exits: the interpreter is still running; nothing
-   else wants to start; or it falls through and starts the next thing in the
-   same frame. So terminating one map event and starting the next costs zero
-   frames, and a hook that returns early here silently starves every autorun
-   and every reserved common event without stopping the game. */
+   class. The engine spells it `for (;;)` with a mid-loop `if (!setupStarting
+   Event()) return;`, which is a do/while by another name and is written as one
+   here. TWO exits, and what happens between them is the point: the interpreter
+   is still running, or nothing else wants to start — and anything that DOES
+   want to start is started in the SAME frame the last one finished. So
+   terminating one map event and starting the next costs zero frames, and a
+   hook that returns early here silently starves every autorun and every
+   reserved common event without stopping the game. */
 Game_Map.prototype.updateInterpreter = function () {
-  for (;;) {
+  do {
     this._interpreter.update();
     if (this._interpreter.isRunning()) {
-      return;
+      return;                       /* exit one: still busy, come back next frame */
     }
-    if (this._interpreter.eventId() > 0) {
-      this.unlockEvent(this._interpreter.eventId());
+    /* It stopped. eventId survives terminate(), so this is where the map
+       learns WHICH event just finished and hands its lock back. */
+    var finishedEventId = this._interpreter.eventId();
+    if (finishedEventId > 0) {
+      this.unlockEvent(finishedEventId);
       this._interpreter.clear();
     }
-    if (!this.setupStartingEvent()) {
-      return;
-    }
-  }
+    /* exit two is the while: nothing else wants to start. Otherwise round
+       again, in the SAME frame, on whatever setupStartingEvent just loaded. */
+  } while (this.setupStartingEvent());
 };
 
 /* MV :6129 / MZ :6815 */
@@ -760,19 +792,13 @@ Game_Map.prototype.unlockEvent = function (eventId) {
    between engines and live in the engine files. */
 Game_Map.prototype.setupStartingEvent = function () {
   this.refreshIfNeeded();
-  if (this._interpreter.setupReservedCommonEvent()) {
-    return true;
-  }
-  if (this.setupTestEvent()) {
-    return true;
-  }
-  if (this.setupStartingMapEvent()) {
-    return true;
-  }
-  if (this.setupAutorunCommonEvent()) {
-    return true;
-  }
-  return false;
+  /* Highest rank first, short-circuiting, so at most ONE of the four ever
+     runs. !! because the engine's four `return true`s hand back a literal and
+     these four sources do not all promise one. */
+  return !!(this._interpreter.setupReservedCommonEvent() ||
+    this.setupTestEvent() ||
+    this.setupStartingMapEvent() ||
+    this.setupAutorunCommonEvent());
 };
 
 /* MV :6161 / MZ :6847. FIRST starting event by list order wins, and its flag
@@ -780,15 +806,22 @@ Game_Map.prototype.setupStartingEvent = function () {
    "starting" while it runs. */
 Game_Map.prototype.setupStartingMapEvent = function () {
   var events = this.events();
-  for (var i = 0; i < events.length; i++) {
-    var event = events[i];
-    if (event.isStarting()) {
-      event.clearStartingFlag();
-      this._interpreter.setup(event.list(), event.eventId());
-      return true;
+  var armed = null;
+  var i;
+  for (i = 0; i < events.length; i++) {
+    if (events[i].isStarting()) {
+      armed = events[i];
+      break;                    /* first by list order, and only the first */
     }
   }
-  return false;
+  if (!armed) {
+    return false;
+  }
+  /* Disarmed BEFORE its list is handed over, so isAnyEventStarting() is
+     already false for this event while its own commands run. */
+  armed.clearStartingFlag();
+  this._interpreter.setup(armed.list(), armed.eventId());
+  return true;
 };
 
 /* MV :5449 / MZ :6119. OVERRIDES core.js's, which read window.__eventRunning
