@@ -96,7 +96,8 @@ keys currently in use: `vars.set`, `switches.set`, `inv.gold`, `inv.items`,
 `battle.states`, `battle.params`, `forge.write`, `shop.open`, `media.volume`,
 `media.play`, `media.master`, `keys.map`, `keys.pad`, `screen.tone`,
 `screen.brightness`, `screen.flash`, `screen.shake`, `screen.zoom`,
-`screen.weather`, `screen.picture`, `plugin.param`, `build.frameHook`.
+`screen.weather`, `screen.picture`, `screen.window`, `plugin.param`,
+`build.frameHook`.
 A key no quirk in `$.compat`'s table claims gets the honest "no loaded plugin is
 known to touch this" rather than a guess, which is the right answer until
 somebody has actually watched a suite break it.
@@ -279,7 +280,8 @@ Order matters; later files depend on earlier ones.
               — publishes $.snap
 27 Quest      why an event is locked, common events, objectives, script dump
 28 Media      the audio the game ships, its image folders, screenshots
-29 Screen     tint, weather, zoom, shake, the picture slots
+29 Screen     tint, weather, zoom, shake, the picture slots, and the game's
+              own windows made transparent or hidden
 30 Auto       run something when the game reaches a state; run splits
               — consumes $.watch
 31 Kit        equipment loadouts, an ad-hoc shop

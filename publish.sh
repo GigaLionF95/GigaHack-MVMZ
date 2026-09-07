@@ -117,7 +117,7 @@ if git diff --cached --quiet; then
 else
     git commit -m "GigaHack MV/MZ $VER
 
-A mod menu for any RPG Maker MV or MZ game. 35 modules, six tabs, 67 panels, an
+A mod menu for any RPG Maker MV or MZ game. 35 modules, six tabs, 68 panels, an
 engine capability table, a per-game profile system, a boot index, and a plugin
 compatibility layer that names what is degrading a control and why.
 

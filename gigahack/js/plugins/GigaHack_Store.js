@@ -488,7 +488,21 @@
                 on: true, max: 200,
                 kinds: ['tint', 'fade', 'flash', 'shake', 'zoom', 'weather', 'picture']
             },
-            pictures: { preview: false, filter: 'in use' }
+            pictures: { preview: false, filter: 'in use' },
+
+            // The game's OWN windows, made transparent or hidden. `on` and
+            // `hide` are both registered unsafeAtBoot by the module: a game
+            // found with its interface already gone is indistinguishable from
+            // a broken one, which is the whole reason that rule exists.
+            win: {
+                on: false,
+                hide: false,
+                scope: 'all',     // 'all' | 'message'
+                frame: 255,       // opacity — the box and its plate
+                back: 255,        // backOpacity — the plate alone
+                contents: 255,    // contentsOpacity — the text
+                dimmer: true      // the dim band, which opacity cannot reach
+            }
         },
         // M30 run something when the game reaches a state; run splits.
         auto: {

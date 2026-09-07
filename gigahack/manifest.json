@@ -125,7 +125,7 @@
     },
     {
       "name": "GigaHack_Screen",
-      "description": "tint, weather, zoom, shake and the picture slots"
+      "description": "tint, weather, zoom, shake, the picture slots, window transparency"
     },
     {
       "name": "GigaHack_Auto",

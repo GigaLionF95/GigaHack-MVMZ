@@ -1881,6 +1881,67 @@ not logged means a screen left permanently offset cannot be traced to the call
 that did it, and a fade-in that is not logged means the log cannot tell a
 fade-out that was never answered from one that was.
 
+### Windows
+
+The game's own interface, made see-through or taken off the screen. The engine
+already does this to itself — `Scene_Map` hides the whole window layer to
+photograph the map for a battle background, and a window in "transparent"
+background mode is literally one with its opacity set to zero — so this panel
+drives the same two mechanisms rather than inventing a third.
+
+Three numbers, and they are not the same number:
+
+| | What it fades |
+|---|---|
+| **Frame** | the box and the plate behind it, together |
+| **Plate** | the plate alone |
+| **Text** | the contents drawn into the window |
+
+The plate sits inside the frame, so what you see of it is the frame's number
+multiplied by its own — which makes **frame 0 with text 255** a single setting
+rather than a trick: dialogue with no box. That is what the "no box, text kept"
+preset is, and it is the reason this panel exists.
+
+| Control | What it does |
+|---|---|
+| Hide them | The whole window layer goes down and comes back. Forced off at every launch. |
+| Apply these | The transparency override. Also forced off at every launch. |
+| Which | Every window, or the message window alone. The scrolling-text window is a different class and is not the message window — "every window" is how to include it, and the panel says so. |
+| Frame / Plate / Text | 0–255 each. |
+| Take the dim band too | A window in dim background mode draws that band from a *separate sprite*, which the frame's opacity cannot reach. With this off the band stays behind after the window has gone. |
+| Presets | No box text kept · fully transparent · hidden · back to normal. |
+| Right now | Whether the layer is showing, how many windows are on it, how many objects on it are not windows, how many windows are parented somewhere else, and how many this panel is currently holding. |
+| Reset everything | Every window back to the value it had when the override first reached it — not to a default, because a bare window does not start at the same numbers on the two engines and one written number would be wrong on one of them. |
+
+**It is re-asserted every frame, because the game writes these properties
+itself.** A message page calls the engine's own background-type setter, which
+is an `opacity = 255` assignment; a menu sets its own opacity as it opens. An
+override written once would last until the next line of dialogue. The cost of
+holding it shows up by name in Debug → Performance like any other per-frame
+hook.
+
+**What it cannot reach**, listed in the panel rather than left to be discovered:
+
+- a plugin that draws its interface as sprites instead of windows — it has no
+  frame, plate or contents opacity to write, and the panel counts how many
+  objects on the layer are not windows
+- a window parented straight to the scene instead of through the scene's own
+  `addWindow`; it is counted one level down and reported as unreachable rather
+  than silently missed
+- the tint, the brightness, the scene fade and any picture over the screen —
+  none of them is a window, and Screen and Pictures own those
+- windows belonging to a scene that has since been left; they no longer exist,
+  and the count is shown rather than swallowed
+
+**Transparent is not closed.** Openness is the game's own animation and is
+deliberately not written, so a window at opacity 0 is invisible and still open:
+a menu you cannot see still answers the keys. That is the honest behaviour, and
+it is why "hidden" and "fully transparent" are separate presets.
+
+`GigaHack.api.hideUI()` toggles the layer from the console, and
+`GigaHack.screen.windows.withHidden(fn)` hides the interface, runs something,
+and puts it back in a `finally` — which is the seam a screenshot should use.
+
 ### Audio
 
 A name is not a file. Everything in this panel is shaped by the fact that the

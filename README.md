@@ -10,7 +10,7 @@ differences are asked for as capabilities rather than read off a version
 string, and everything a game can be that the mod cannot handle is reported by
 name rather than left to fail quietly.
 
-35 plugin files, about 51,100 lines, six tabs, 67 panels. MIT licensed; see
+35 plugin files, about 51,100 lines, six tabs, 68 panels. MIT licensed; see
 [`NOTICE.md`](NOTICE.md). RPG Maker is a product of Gotcha Gotcha Games and
 KADOKAWA — this is an unofficial, unaffiliated tool.
 
@@ -118,7 +118,9 @@ line was said. Games with a backlog of their own can show that instead, and
 games with a Steam binding get an achievements panel. Everything `$gameScreen`
 holds — tint, weather, zoom, shake, brightness and all hundred picture slots —
 is visible and writable, which is how a screen a crashed cutscene left black
-gets unstuck. The audio the project ships can be auditioned folder by folder,
+gets unstuck — and the game's own windows can be made see-through or taken off
+the screen entirely, including the frameless-dialogue setting a screenshot
+wants. The audio the project ships can be auditioned folder by folder,
 and its image folders browsed, previewed and animated frame by frame.
 
 **Debug** — environment and capability report, installed hooks, loaded plugins

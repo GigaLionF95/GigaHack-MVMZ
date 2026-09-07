@@ -1,6 +1,7 @@
 //=============================================================================
 // GigaHack MV/MZ
-// 29 · screen.js — tint, weather, zoom, shake and the picture slots
+// 29 · screen.js — tint, weather, zoom, shake, the picture slots, and the
+//      transparency of the game's own windows
 //-----------------------------------------------------------------------------
 // This module exists because of one failure: the screen is black, or shifted,
 // or raining, and nothing in the game says why. Every control here is shaped by
@@ -80,7 +81,7 @@
 
 /*:
  * @target MZ
- * @plugindesc GigaHack — tint, weather, zoom, shake and the picture slots
+ * @plugindesc GigaHack — tint, weather, zoom, shake, pictures, window transparency
  * @author gigahack
  * @help GigaHack_Screen.js — requires Core, Caps, Store, Profile, UI, Shell,
  * Hooks, Tabs, Compat; uses Index to look a picture's file up, and Events for
@@ -89,7 +90,9 @@
  * Game → Screen holds the tint, brightness, flash, shake, zoom and weather,
  * plus one button that clears all of them. Game → Pictures lists every picture
  * slot. Game → Screen log records every write that went through the engine's
- * own functions, and who was running when it did.
+ * own functions, and who was running when it did. Game → Windows makes the
+ * GAME's own windows transparent or takes them off the screen entirely, and
+ * publishes that as $.screen.windows for the console and for a screenshot.
  */
 
 (function ($) {
@@ -2856,9 +2859,758 @@
     }
 
     /* =====================================================================
-       PART 11 — REGISTRATION
+       PART 11 — THE GAME'S OWN WINDOWS
 
-       All three panels register unconditionally: the module's marker has to
+       Not GigaHack's overlay: the boxes the GAME draws — the message window
+       above all — so a scene can be looked at, or photographed, without the
+       interface sitting on top of it.
+
+       WHAT THE THREE PROPERTIES ACTUALLY REACH. A window's frame and the
+       plate behind its text hang off ONE container, and `opacity` alphas
+       that container. `backOpacity` alphas the plate alone, INSIDE that
+       container, so the plate's real alpha is the frame's multiplied by its
+       own and a frame at 0 takes the plate with it whatever the plate says.
+       `contentsOpacity` alphas the text, which is NOT inside that container.
+       So frame 0 with the text left at 255 is dialogue with no box, in one
+       property write. Both engines agree on all of that and disagree only
+       about which object each property writes through — which is exactly
+       why nothing here asks: the properties ARE the interface, and reaching
+       past them to the sprite underneath is the only thing that would have
+       to know which engine this is.
+
+       WHY THIS IS A PER-FRAME HOLD AND NOT A WRITE. The game writes these
+       itself. A message window re-asserts its background type from
+       updateBackground on EVERY page, and the engine implements
+       "transparent" as exactly `opacity = 0` — so one write made between two
+       messages is gone by the next one. A menu opening writes them too. The
+       re-assertion happens inside the scene's update; $.onFrame runs after
+       that and before the render, which is the only place a hold can win.
+       Same shape as the tone hold above, and the same rule: AFTER the engine
+       has moved the value, never before.
+
+       OPENNESS IS DELIBERATELY LEFT ALONE. It is a second axis on the same
+       container: opacity fades a window, openness squashes it shut. A window
+       at opacity 0 is still OPEN and still takes input, which is why
+       "transparent" and "hidden" are two different requests and are two
+       different controls here.
+
+       AND ONE THING opacity CANNOT REACH BY ITSELF. The dark band a window
+       in "dim" background mode lays over the scene is a separate sprite,
+       added with addChildToBack, which puts it in the WINDOW's children
+       rather than inside the container opacity alphas — so a dimmed window
+       faded to nothing still shows the band. The engine re-ties that sprite
+       to OPENNESS once a frame from the window's own update, so it can be
+       written here afterwards and is, under its own switch. With the switch
+       off the band stays and the panel says why rather than pretending the
+       window is gone.
+
+       RESTORING WRITES BACK WHAT EACH WINDOW HAD, PER WINDOW. It cannot
+       write a default: a bare window's plate does not start at the same
+       number on the two engines — one seeds it when the parts are built and
+       the other leaves it alone until the window class asks the save — so a
+       "restore" that wrote one number would be wrong on one engine every
+       time. What goes back is what was read from that window the first time
+       this hold reached it, which also covers a window built while the hold
+       was already on.
+       ===================================================================== */
+    var WIN_UNSAFE = 'a game found with its own interface already invisible is indistinguishable from a ' +
+        'broken game, and the menu that would put it back is behind it';
+
+    var WIN_SCOPES = ['every window', 'the message window'];
+    function scopeLabel(k) { return k === 'message' ? WIN_SCOPES[1] : WIN_SCOPES[0]; }
+    function scopeKey(label) { return label === WIN_SCOPES[1] ? 'message' : 'all'; }
+
+    var WIN = S.windows = {};
+
+    function winCfg() {
+        return {
+            on: !!cfg('win.on', false),
+            hide: !!cfg('win.hide', false),
+            scope: cfg('win.scope', 'all') === 'message' ? 'message' : 'all',
+            frame: Math.round(num('win.frame', 255, 0, 255)),
+            back: Math.round(num('win.back', 255, 0, 255)),
+            contents: Math.round(num('win.contents', 255, 0, 255)),
+            dimmer: cfg('win.dimmer', true) !== false
+        };
+    }
+
+    /**
+     * The ENGINE'S OWN test for "is this child a window".
+     *
+     * The window layer itself uses this flag to tell a window from anything
+     * else parked beside it, on both engines, and it is an instance field
+     * written when the window is built — so it is a fact about the object
+     * rather than about the engine, and a plugin's own window class carries
+     * it for free. Anything on the layer without it is not a window, is not
+     * touched by the opacity controls, and is counted and named instead.
+     */
+    function isWindow(node) { return !!(node && node._isWindow); }
+
+    function messageClass() {
+        return $.safe(function () {
+            return typeof Window_Message === 'function' ? Window_Message : null;
+        }, 'message window class', null);
+    }
+    /** By class, so a plugin's subclass of it still counts. */
+    function isMessage(win) {
+        var C = messageClass();
+        if (!C) return false;
+        return !!$.safe(function () { return win instanceof C; }, 'message window test', false);
+    }
+    function kindOf(win) {
+        return $.safe(function () {
+            return (win.constructor && win.constructor.name) || 'window';
+        }, 'window kind', 'window') || 'window';
+    }
+
+    function findLayer(sc) {
+        var out = {
+            available: false, node: null, windows: [], others: 0, offLayer: 0,
+            why: 'no scene is running, so there is no window layer to read.'
+        };
+        if (!sc) return out;
+        return $.safe(function () {
+            var layer = sc._windowLayer;
+            if (!layer || !layer.children) {
+                out.why = 'this scene has no window layer with children on it — it has not built one yet, ' +
+                    'or something replaced the scene base. The game\'s own windows cannot be reached here.';
+                return out;
+            }
+            out.available = true;
+            out.node = layer;
+            out.why = '';
+            for (var i = 0; i < layer.children.length; i++) {
+                if (isWindow(layer.children[i])) out.windows.push(layer.children[i]);
+                else out.others++;
+            }
+            // A window parented straight to the scene never reaches the layer,
+            // and the scene's own addWindow is the only route that puts one
+            // there. One level down is what is counted; anything buried deeper
+            // is neither counted nor reached, and the panel says so.
+            var kids = sc.children || [];
+            for (var k = 0; k < kids.length; k++) {
+                if (kids[k] !== layer && isWindow(kids[k])) out.offLayer++;
+            }
+            return out;
+        }, 'window layer', out);
+    }
+
+    /* What each window had when this hold first reached it, and the layer's
+       own flag beside it. Keyed by the SCENE as well: the windows of a scene
+       that has been left no longer exist, cannot be restored, and holding
+       them would keep a dead scene alive. The count of those is reported
+       rather than swallowed. */
+    var saved = [];
+    var savedLayer = null;
+    var forgotten = 0;
+    var lastScene = null;
+    /* A window whose parts could not be read is asked ONCE. $.safe logs every
+       failure, and a per-frame read that throws would fill the log with the
+       same line sixty times a second. */
+    var unreadable = [];
+
+    function pruneScene(sc) {
+        if (sc === lastScene) return;
+        lastScene = sc;
+        var kept = [];
+        for (var i = 0; i < saved.length; i++) {
+            if (saved[i].win && saved[i].scene === sc) kept.push(saved[i]);
+            else forgotten++;
+        }
+        saved = kept;
+        unreadable = [];
+        if (savedLayer && savedLayer.scene !== sc) savedLayer = null;
+    }
+
+    function readRaw(win) {
+        if (unreadable.indexOf(win) > -1) return null;
+        var v = $.safe(function () {
+            var a = win.opacity, b = win.backOpacity, c = win.contentsOpacity;
+            if (typeof a !== 'number' || typeof b !== 'number' || typeof c !== 'number') return null;
+            return [a, b, c];
+        }, 'window opacity read', null);
+        if (!v) unreadable.push(win);
+        return v;
+    }
+    function writeProp(win, prop, value) {
+        return !!$.safe(function () { win[prop] = value; return true; }, 'window ' + prop, false);
+    }
+
+    /* The dim band. The engine writes this sprite's opacity from the window's
+       openness once a frame, from inside the scene's update, so this runs
+       after it or not at all. Putting it back means writing the openness —
+       which is the value the engine would have written anyway. */
+    function putDimmer(win, frame) {
+        var d = win._dimmerSprite;
+        if (!d || d.visible === false || typeof d.opacity !== 'number') return false;
+        var want = Math.round(nz(win.openness, 255) * frame / 255);
+        if (Math.abs(d.opacity - want) < 0.5) return false;
+        return writeProp(d, 'opacity', want);
+    }
+    function restoreDimmer(win) {
+        var d = win._dimmerSprite;
+        if (!d || typeof d.opacity !== 'number') return;
+        writeProp(d, 'opacity', Math.round(nz(win.openness, 255)));
+    }
+
+    function slotFor(win, sc) {
+        for (var i = 0; i < saved.length; i++) if (saved[i].win === win) return saved[i];
+        var v = readRaw(win);
+        if (!v) return null;
+        var slot = { scene: sc, win: win, opacity: v[0], backOpacity: v[1], contentsOpacity: v[2] };
+        saved.push(slot);
+        return slot;
+    }
+    function isSaved(win) {
+        for (var i = 0; i < saved.length; i++) if (saved[i].win === win) return true;
+        return false;
+    }
+    function restoreSlot(s) {
+        writeProp(s.win, 'opacity', s.opacity);
+        writeProp(s.win, 'backOpacity', s.backOpacity);
+        writeProp(s.win, 'contentsOpacity', s.contentsOpacity);
+        restoreDimmer(s.win);
+    }
+
+    /**
+     * One pass, and the only thing that ever writes a window.
+     *
+     * Written only where the value differs, so a hold that is already
+     * satisfied costs three reads per window and nothing else, and a window
+     * this hold has stopped being responsible for — the scope narrowed, the
+     * switch went off — is put back on the frame it stops rather than left
+     * carrying an override nothing is asserting any more.
+     */
+    function applyWindows() {
+        var c = winCfg();
+        var sc = scene();
+        pruneScene(sc);
+        var li = findLayer(sc);
+
+        if (c.hide && li.available) {
+            if (!savedLayer) savedLayer = { scene: sc, node: li.node, visible: li.node.visible !== false };
+            if (li.node.visible !== false) writeProp(li.node, 'visible', false);
+        } else if (!c.hide && savedLayer) {
+            writeProp(savedLayer.node, 'visible', savedLayer.visible);
+            savedLayer = null;
+        }
+        if (!li.available) return 0;
+
+        var i;
+        for (i = saved.length - 1; i >= 0; i--) {
+            if (c.on && (c.scope === 'all' || isMessage(saved[i].win))) continue;
+            restoreSlot(saved[i]);
+            saved.splice(i, 1);
+        }
+        if (!c.on) return 0;
+
+        var n = 0;
+        for (i = 0; i < li.windows.length; i++) {
+            var win = li.windows[i];
+            if (c.scope === 'message' && !isMessage(win)) continue;
+            if (!slotFor(win, sc)) continue;
+            var v = readRaw(win);
+            if (!v) continue;
+            if (Math.abs(v[0] - c.frame) >= 0.5) writeProp(win, 'opacity', c.frame);
+            if (Math.abs(v[1] - c.back) >= 0.5) writeProp(win, 'backOpacity', c.back);
+            if (Math.abs(v[2] - c.contents) >= 0.5) writeProp(win, 'contentsOpacity', c.contents);
+            if (c.dimmer) putDimmer(win, c.frame);
+            n++;
+        }
+        return n;
+    }
+
+    function winBadge() {
+        var c = winCfg();
+        U.setActive('game windows', c.on || c.hide);
+    }
+
+    /* ------------------------------------------------------------ readers */
+
+    WIN.available = function () {
+        var li = findLayer(scene());
+        return { ok: li.available, why: li.why };
+    };
+
+    /** Scalars only — never the layer or a window — so the answer is safe to
+        snapshot, log and keep. */
+    WIN.state = function () {
+        var c = winCfg();
+        var li = findLayer(scene());
+        return {
+            on: c.on, hide: c.hide, scope: c.scope,
+            frame: c.frame, back: c.back, contents: c.contents, dimmer: c.dimmer,
+            held: saved.length, forgotten: forgotten,
+            messageClass: !!messageClass(),
+            layer: {
+                available: li.available,
+                visible: li.available ? li.node.visible !== false : true,
+                windows: li.windows.length,
+                others: li.others,
+                offLayer: li.offLayer,
+                why: li.why
+            }
+        };
+    };
+
+    /** Every window on the layer, read fresh. No window reference escapes. */
+    WIN.list = function () {
+        var li = findLayer(scene());
+        var out = [];
+        for (var i = 0; i < li.windows.length; i++) {
+            var win = li.windows[i];
+            var v = readRaw(win);
+            out.push({
+                kind: kindOf(win),
+                message: isMessage(win),
+                readable: !!v,
+                opacity: v ? Math.round(v[0]) : 0,
+                backOpacity: v ? Math.round(v[1]) : 0,
+                contentsOpacity: v ? Math.round(v[2]) : 0,
+                openness: Math.round(nz($.safe(function () { return win.openness; }, 'window openness', 0), 0)),
+                visible: win.visible !== false,
+                dimmed: !!(win._dimmerSprite && win._dimmerSprite.visible !== false),
+                held: isSaved(win),
+                why: v ? '' : 'this window\'s parts could not be read, so its opacity cannot be written ' +
+                    'either. It was asked once and is not asked again on this scene.'
+            });
+        }
+        return out;
+    };
+
+    /**
+     * What this cannot reach, named. Each entry is a real limit of the
+     * mechanism rather than a caveat: the opacity controls write four
+     * properties on objects the window layer holds, and everything below is
+     * outside that.
+     */
+    WIN.cannotReach = function () {
+        var st = WIN.state();
+        var out = [];
+        out.push({
+            id: 'sprites',
+            what: 'a plugin that draws its interface as sprites rather than windows',
+            why: 'it is not a window, so it has no frame, plate or contents opacity to write. ' +
+                (st.layer.others
+                    ? st.layer.others + ' object(s) on this layer are not windows and are left alone; hiding ' +
+                      'the layer does take them down with it, because they are on it.'
+                    : 'nothing on this layer is currently anything other than a window.')
+        });
+        out.push({
+            id: 'offLayer',
+            what: 'a window parented straight to the scene instead of to the window layer',
+            why: st.layer.offLayer === 0
+                ? 'the scene\'s own addWindow is the only route onto the layer; a plugin that skips it is ' +
+                  'not found here. None does, one level down from this scene.'
+                : st.layer.offLayer + ' window(s) sit on the scene rather than on its layer and are not reached.'
+        });
+        out.push({
+            id: 'dimmer',
+            what: 'the dark band a window in dim background mode lays over the scene',
+            why: 'it is a separate sprite outside the container opacity alphas, tied to openness instead, so ' +
+                'fading the window does not fade it. ' + (winCfg().dimmer
+                    ? 'It is being written here too, after the engine, because "take the band with the frame" is on.'
+                    : '"Take the band with the frame" is off, so the band stays exactly where it was.')
+        });
+        out.push({
+            id: 'screen',
+            what: 'the tint, the brightness, the scene\'s own fade and any picture over the screen',
+            why: 'none of those is a window. The Screen and Pictures tabs own them, and "unstick everything" ' +
+                'is the one button that clears the lot.'
+        });
+        out.push({
+            id: 'openness',
+            what: 'whether a window is open, and whether it takes input',
+            why: 'openness is the game\'s own animation and is deliberately not written here. A window at ' +
+                'opacity 0 is invisible and still open, so a menu you cannot see still answers the keys.'
+        });
+        return out;
+    };
+
+    /* ------------------------------------------------------------- writes */
+
+    function firstTarget() {
+        var c = winCfg();
+        var li = findLayer(scene());
+        for (var i = 0; i < li.windows.length; i++) {
+            if (c.scope === 'message' && !isMessage(li.windows[i])) continue;
+            if (readRaw(li.windows[i])) return li.windows[i];
+        }
+        return null;
+    }
+
+    function winResult(ok, message) {
+        return { ok: !!ok, got: undefined, want: undefined, culprits: [], message: message || '' };
+    }
+
+    /**
+     * Change the override and apply it once, through $.compat.verify.
+     *
+     * The verify probe is one target window read back through the same three
+     * properties that were written. With no window on the layer there is
+     * nothing to measure and nothing is wrong — the override simply applies
+     * to each window as it appears — so that case is reported in words
+     * instead of being marked as a write that did not stick.
+     */
+    WIN.set = function (fields) {
+        fields = fields || {};
+        if (!$.allowWrite('Changing the game\'s window transparency')) {
+            return winResult(false, 'read-only mode is on.');
+        }
+        var before = winCfg();
+        if (fields.scope !== undefined) set('win.scope', fields.scope === 'message' ? 'message' : 'all');
+        if (fields.frame !== undefined) set('win.frame', Math.round(clamp(nz(fields.frame, 255), 0, 255)));
+        if (fields.back !== undefined) set('win.back', Math.round(clamp(nz(fields.back, 255), 0, 255)));
+        if (fields.contents !== undefined) set('win.contents', Math.round(clamp(nz(fields.contents, 255), 0, 255)));
+        if (fields.dimmer !== undefined) set('win.dimmer', !!fields.dimmer);
+        if (fields.hide !== undefined) set('win.hide', !!fields.hide);
+        if (fields.on !== undefined) set('win.on', !!fields.on);
+        winBadge();
+
+        // One undo entry per change: it puts every window back to what it had
+        // AND the switches back to where they were, because either half alone
+        // would leave the next frame re-asserting what was just undone.
+        $.undo.push('change the game\'s window transparency', function () {
+            WIN.restore();
+            set('win.on', before.on); set('win.hide', before.hide); set('win.scope', before.scope);
+            set('win.frame', before.frame); set('win.back', before.back);
+            set('win.contents', before.contents); set('win.dimmer', before.dimmer);
+            winBadge();
+        });
+
+        var c = winCfg();
+        var probe = firstTarget();
+        if (!c.on || !probe) {
+            applyWindows();
+            return winResult(true, (c.on && !probe)
+                ? 'no window this scope reaches is on the layer yet, so there was nothing to write. The ' +
+                  'override applies to each window as it appears.'
+                : '');
+        }
+        var want = c.frame + ',' + c.back + ',' + c.contents;
+        return verify('screen.window', function () { applyWindows(); }, function () {
+            var v = readRaw(probe);
+            return v ? Math.round(v[0]) + ',' + Math.round(v[1]) + ',' + Math.round(v[2]) : 'unreadable';
+        }, want);
+    };
+
+    /** The one switch. Hides the whole layer, which is what the engine itself
+        does to photograph a scene without its interface. */
+    WIN.hide = function (on) {
+        if (on && !$.allowWrite('Hiding the game\'s windows')) return WIN.state();
+        var was = !!cfg('win.hide', false);
+        set('win.hide', !!on);
+        winBadge();
+        applyWindows();
+        $.undo.push(on ? 'hide the game\'s windows' : 'show the game\'s windows', function () {
+            set('win.hide', was);
+            winBadge();
+            applyWindows();
+        });
+        return WIN.state();
+    };
+
+    /** Put every window this hold touched back to what it had, and the layer
+        back to the flag it had. Returns how many windows went back. */
+    WIN.restore = function () {
+        var n = saved.length;
+        for (var i = 0; i < saved.length; i++) restoreSlot(saved[i]);
+        saved = [];
+        if (savedLayer) {
+            writeProp(savedLayer.node, 'visible', savedLayer.visible);
+            savedLayer = null;
+        }
+        return n;
+    };
+
+    /**
+     * Everything off, everything back.
+     *
+     * Deliberately NOT gated on read-only: it only ever writes back values
+     * this module read off the game itself, and refusing the way out of an
+     * invisible interface would be the control that lies.
+     */
+    WIN.reset = function () {
+        var n = WIN.restore();
+        set('win.on', false);
+        set('win.hide', false);
+        set('win.scope', 'all');
+        set('win.frame', 255);
+        set('win.back', 255);
+        set('win.contents', 255);
+        set('win.dimmer', true);
+        winBadge();
+        $.log('ok', 'the game\'s windows are back to what they had — ' + n + ' window(s) restored');
+        return { ok: true, restored: n, why: '' };
+    };
+
+    /* The four the panel offers. "No box, text kept" is the screenshot one:
+       the frame and the plate go, the words stay exactly where they were. */
+    var WIN_PRESETS = [
+        { id: 'nobox', label: 'no box, text kept',
+          fields: { on: true, hide: false, frame: 0, back: 0, contents: 255 } },
+        { id: 'clear', label: 'fully transparent',
+          fields: { on: true, hide: false, frame: 0, back: 0, contents: 0 } },
+        { id: 'hidden', label: 'hidden', fields: null },
+        { id: 'normal', label: 'back to normal', fields: null }
+    ];
+    WIN.presets = function () {
+        return WIN_PRESETS.map(function (p) { return { id: p.id, label: p.label }; });
+    };
+    WIN.preset = function (id) {
+        if (id === 'normal') return WIN.reset();
+        if (id === 'hidden') { WIN.hide(true); return { ok: true, restored: 0, why: '' }; }
+        for (var i = 0; i < WIN_PRESETS.length; i++) {
+            if (WIN_PRESETS[i].id === id && WIN_PRESETS[i].fields) {
+                var r = WIN.set(WIN_PRESETS[i].fields);
+                return { ok: r.ok, restored: 0, why: r.message };
+            }
+        }
+        return { ok: false, restored: 0, why: 'no preset is called "' + String(id) + '".' };
+    };
+
+    /**
+     * Hide, run, put back — synchronously, in one call, never through the
+     * settings store.
+     *
+     * This is what a screenshot wants and it is the engine's own shape for
+     * it: the engine hides the whole window layer, takes its picture and
+     * puts the layer back. Nothing is persisted, so a caller that throws
+     * still leaves the interface on screen.
+     */
+    WIN.withHidden = function (fn) {
+        var li = findLayer(scene());
+        if (!li.available) return fn();
+        var was = li.node.visible;
+        writeProp(li.node, 'visible', false);
+        try {
+            return fn();
+        } finally {
+            writeProp(li.node, 'visible', was);
+        }
+    };
+
+    /* The hold itself. It runs after the scene has updated and before the
+       render, which is the only place a value the game re-asserts every page
+       can be won back. It returns on the first line while nothing is armed
+       and nothing is being held, so the cost of having this module installed
+       is one function call a frame. */
+    $.onFrame('game window override', function () {
+        var c = winCfg();
+        if (!c.on && !c.hide && !saved.length && !savedLayer) return;
+        $.safe(applyWindows, 'game window override');
+    });
+
+    /* =====================================================================
+       PANEL — Windows
+       ===================================================================== */
+    function buildWindows() {
+        var st = WIN.state();
+        var rows = WIN.list();
+        var winDegraded = degraded('screen.window');
+        var scopeUnavailable = !st.messageClass;
+
+        /* ------------------------------------------------------- sidebar */
+        var sidebar = [
+            W.group('Right now', [
+                kv('Layer', st.layer.available ? (st.layer.visible ? 'showing' : 'hidden') : 'not readable',
+                    'Layer|The scene\'s own window layer, which every window is drawn on.'),
+                kv('Windows', st.layer.windows),
+                kv('Not windows', st.layer.others,
+                    'Not windows|Anything else on the layer; opacity cannot touch it.'),
+                kv('Off the layer', st.layer.offLayer,
+                    'Off the layer|Windows parented to the scene instead; not reached.'),
+                kv('Held', st.held, 'Held|Windows this override is re-asserting every frame.'),
+                st.forgotten ? note(st.forgotten + ' window(s) belonged to a scene that has since been ' +
+                    'left. That scene and its windows no longer exist, so they were dropped rather than ' +
+                    'restored.') : null,
+                st.layer.available ? null : warn(st.layer.why)
+            ], { tag: st.layer.windows + ' on screen' }),
+            W.group('Put it back', [
+                W.button({
+                    label: 'reset everything', variant: 'danger', wide: true, _ungated: true,
+                    tip: 'Reset|Every window back to what it had, every switch off.',
+                    onClick: function () {
+                        var r = WIN.reset();
+                        U.toast({ title: 'WINDOWS RESTORED', msg: r.restored + ' window(s)', severity: 'ok' });
+                        U.rerender();
+                    }
+                }),
+                note('each window goes back to the values it had when this override first reached it — not ' +
+                    'to a default, because a bare window does not start at the same numbers on the two ' +
+                    'engines and one written number would be wrong on one of them.'),
+                degradeNote('screen.window')
+            ])
+        ];
+
+        /* ---------------------------------------------------------- hide */
+        var hideGroup = W.group('Hide the game\'s windows', [
+            W.toggleRow('Hide them', {
+                value: st.hide, sub: 'forced off at every launch',
+                tip: 'Hide|Takes the whole window layer down, and puts it back.',
+                onChange: function (v) { WIN.hide(v); U.rerender(); },
+                extra: bind('hideGameWindows')
+                    ? h('span', { class: 'mm-sub', text: bind('hideGameWindows') })
+                    : null
+            }),
+            note('this is what the engine itself does to photograph a scene without its interface: the whole ' +
+                'window layer goes down for the shot and comes back afterwards.'),
+            note('GigaHack\'s own menu is not on that layer — it is drawn beside the game canvas rather than ' +
+                'inside it — so it stays on screen and stays reachable.'),
+            st.layer.available ? null : warn(st.layer.why)
+        ], { tag: st.hide ? 'hidden' : 'showing' });
+
+        /* -------------------------------------------------- transparency */
+        var draftScope = st.scope;
+        function slider(label, key, value, tip) {
+            return W.row(label, W.slider({
+                value: value, min: 0, max: 255, step: 1, width: '150px', disabled: winDegraded,
+                // One write per commit, not one per pointermove: each write is
+                // a verify, an undo entry and a journal-free per-frame hold.
+                onCommit: function (v) {
+                    var f = {};
+                    f[key] = v;
+                    f.on = true;
+                    var r = WIN.set(f);
+                    if (!r.ok && r.message) {
+                        U.toast({ title: 'DID NOT STICK', msg: r.message, severity: 'warn' });
+                    }
+                    U.rerender();
+                }
+            }), { tip: tip || null });
+        }
+
+        var clearGroup = W.group('Transparency', [
+            degradeNote('screen.window'),
+            W.toggleRow('Apply these', {
+                value: st.on, sub: 'forced off at every launch',
+                tip: 'Apply|Re-asserted every frame, after the game writes its own.',
+                onChange: function (v) { WIN.set({ on: v }); U.rerender(); }
+            }),
+            W.row('Which', W.dropdown({
+                options: WIN_SCOPES, value: scopeLabel(draftScope), width: '150px',
+                disabled: scopeUnavailable,
+                onChange: function (v) { WIN.set({ scope: scopeKey(v) }); U.rerender(); }
+            })),
+            scopeUnavailable
+                ? warn('the message window class is not on this build, so "the message window" cannot be ' +
+                    'told from any other window and only "every window" can be offered.')
+                : note('the scrolling-text window is a different class and is not the message window; use ' +
+                    '"every window" to include it.'),
+            slider('Frame', 'frame', st.frame,
+                'Frame|The box and its plate together; the text is separate.'),
+            slider('Plate', 'back', st.back,
+                'Plate|The panel behind the text, inside the frame\'s own fade.'),
+            slider('Text', 'contents', st.contents,
+                'Text|The words themselves, which the frame\'s fade does not touch.'),
+            note('the plate sits inside the frame, so what you see of it is the frame\'s number multiplied ' +
+                'by its own — a frame at 0 takes the plate with it whatever the plate says. The text does ' +
+                'not, which is what makes "no box, text kept" a single setting.'),
+            W.toggleRow('Take the dim band too', {
+                value: st.dimmer,
+                tip: 'Dim band|The dark band a dimmed window lays over the scene.',
+                onChange: function (v) { WIN.set({ dimmer: v }); U.rerender(); }
+            }),
+            note('a window in dim background mode draws that band from a separate sprite that the frame\'s ' +
+                'opacity cannot reach. With this off the band stays behind after the window has gone.')
+        ], { tag: st.on ? st.frame + '/' + st.back + '/' + st.contents : 'off' });
+
+        /* ------------------------------------------------------- presets */
+        var presetGroup = W.group('Presets', [
+            h('div', { class: 'mm-inline', style: 'padding:2px' },
+                WIN_PRESETS.map(function (p) {
+                    return W.button({
+                        label: p.label,
+                        variant: p.id === 'normal' ? 'danger' : (p.id === 'nobox' ? 'prime' : null),
+                        mutates: p.id !== 'normal', _ungated: p.id === 'normal',
+                        onClick: function () {
+                            var r = WIN.preset(p.id);
+                            if (!r.ok && r.why) U.toast({ title: 'NOT APPLIED', msg: r.why, severity: 'warn' });
+                            U.rerender();
+                        }
+                    });
+                })),
+            note('"no box, text kept" is the one for a photograph: the frame and the plate go and the words ' +
+                'stay exactly where they were. "Fully transparent" takes the words as well, and the window ' +
+                'is still open and still taking input. "Hidden" takes the layer down instead.')
+        ]);
+
+        /* --------------------------------------------------- the live list */
+        var table = W.table({
+            virtual: true, rowH: 17, key: 'screen.windows',
+            empty: st.layer.available ? 'no window is on this scene\'s layer' : 'no window layer here',
+            cols: [
+                { label: 'window', w: '1 1 0' },
+                { label: 'frame', w: '0 0 46px', cls: 'mm-td-num' },
+                { label: 'plate', w: '0 0 46px', cls: 'mm-td-num' },
+                { label: 'text', w: '0 0 40px', cls: 'mm-td-num' },
+                { label: 'open', w: '0 0 44px', cls: 'mm-td-num' },
+                { label: 'on', w: '0 0 34px' },
+                { label: 'dim', w: '0 0 34px' }
+            ],
+            render: function (r) {
+                return [
+                    h('span', { class: 'mm-cell', text: r.kind + (r.message ? '  (message)' : '') }),
+                    r.readable ? String(r.opacity) : '—',
+                    r.readable ? String(r.backOpacity) : '—',
+                    r.readable ? String(r.contentsOpacity) : '—',
+                    String(r.openness),
+                    r.visible ? 'yes' : 'no',
+                    r.dimmed ? 'yes' : ''
+                ];
+            },
+            onRow: function (tr, r) {
+                if (!r.readable) tr.style.opacity = '.5';
+                tr.setAttribute('data-mm-tip', r.kind + '|' +
+                    (r.readable
+                        ? (r.held ? 'held by this override' : 'the game\'s own values') +
+                          ' · openness ' + r.openness
+                        : r.why));
+            }
+        });
+        table.mm.paint(rows);
+
+        /* Live, but not sixty times a second, and only when something actually
+           moved: a window animating its openness changes these numbers every
+           frame and repainting the table on each one would fight a scroll. */
+        var host = U.getHost();
+        if (host && host.fastHooks) {
+            var lastSig = rows.map(function (r) {
+                return r.kind + r.opacity + ',' + r.backOpacity + ',' + r.contentsOpacity + ',' +
+                    r.openness + ',' + r.visible + ',' + r.dimmed;
+            }).join('|');
+            host.fastHooks.push(function (n) {
+                if (n % 10) return;
+                if (!table.parentNode || table.mm.isScrolling()) return;
+                $.safe(function () {
+                    var next = WIN.list();
+                    var sig = next.map(function (r) {
+                        return r.kind + r.opacity + ',' + r.backOpacity + ',' + r.contentsOpacity + ',' +
+                            r.openness + ',' + r.visible + ',' + r.dimmed;
+                    }).join('|');
+                    if (sig === lastSig) return;
+                    lastSig = sig;
+                    table.mm.paint(next);
+                }, 'window list tick');
+            });
+        }
+
+        /* --------------------------------------------------- cannot reach */
+        var reachGroup = W.group('What this cannot reach', WIN.cannotReach().map(function (c) {
+            return h('div', { class: 'mm-sub', style: 'white-space:normal;padding:2px' },
+                h('b', { text: c.what + ' — ' }), c.why);
+        }));
+
+        return cols({ narrow: true, items: sidebar },
+            [hideGroup, clearGroup, presetGroup,
+                tableGroup('On screen now', [table], { grow: true, tag: rows.length + ' window(s)' }),
+                reachGroup]);
+    }
+
+    /* =====================================================================
+       PART 12 — REGISTRATION
+
+       All four panels register unconditionally: the module's marker has to
        appear in the boot report on every game, and a panel that vanishes is
        indistinguishable from a module that failed to load. The BODIES are
        what degrade, each naming what is missing.
@@ -2866,6 +3618,7 @@
     U.panel('game', 'Screen', function () { return buildScreen(); }, 60);
     U.panel('game', 'Pictures', function () { return buildPictures(); }, 65);
     U.panel('game', 'Screen log', function () { return buildLog(); }, 70);
+    U.panel('game', 'Windows', function () { return buildWindows(); }, 75);
 
     U.addHotkey({
         id: 'unstickScreen', label: 'Unstick the screen',
@@ -2875,6 +3628,18 @@
             U.toast(r.cleared.length
                 ? { title: 'SCREEN UNSTUCK', msg: r.cleared.join(', '), severity: 'ok' }
                 : { title: 'NOTHING CLEARED', msg: (r.skipped[0] && r.skipped[0].why) || 'nothing to clear', severity: 'warn' });
+            if (U.isOpen && U.isOpen()) U.rerender();
+        }
+    });
+
+    U.addHotkey({
+        id: 'hideGameWindows', label: 'Hide the game\'s windows',
+        help: 'Take the game\'s own window layer down for a look or a photograph, and put it back',
+        run: function () {
+            var st = WIN.hide(!WIN.state().hide);
+            U.toast(st.hide
+                ? { title: 'WINDOWS HIDDEN', msg: 'the game\'s own window layer is down', severity: 'ok' }
+                : { title: 'WINDOWS BACK', msg: 'the window layer is showing again', severity: 'ok' });
             if (U.isOpen && U.isOpen()) U.rerender();
         }
     });
@@ -2891,6 +3656,21 @@
     $.api.screenDiagnose = function () { return S.diagnose(); };
     $.api.screenLog = function (n) { return S.log().slice(0, n || 20); };
     $.api.erasePictures = function () { return S.eraseAllPictures(); };
+
+    /* The one a snippet wants before a shot: hide the game's interface, take
+       the picture, put it back. `hideUI()` with no argument toggles, so it is
+       one word either way; `windowsBack()` is the way out of anything this
+       module can leave on screen. */
+    $.api.hideUI = function (on) {
+        var want = on === undefined ? !WIN.state().hide : !!on;
+        var st = WIN.hide(want);
+        $.log('info', 'hideUI: the game\'s window layer is ' + (st.hide ? 'down' : 'showing'));
+        return st;
+    };
+    $.api.windows = function () { return WIN.list(); };
+    $.api.windowState = function () { return WIN.state(); };
+    $.api.windowPreset = function (id) { return WIN.preset(id); };
+    $.api.windowsBack = function () { return WIN.reset(); };
 
     /* -------------------------------------------------------- boot-unsafe
        A persisted hold is indistinguishable from a crash: a saved "hold the
@@ -2912,6 +3692,25 @@
         }
     }());
     U.setActive('screen hold', false);
+
+    /* The same rule, for the same reason, one step worse: a persisted "hide
+       the game's windows" comes back with no interface at all, on the title
+       screen, before anything the player could click exists. Both switches
+       are registered so a settings profile carrying one is scrubbed too. */
+    ['on', 'hide'].forEach(function (k) {
+        $.store.unsafeAtBoot('screen.win.' + k, WIN_UNSAFE);
+    });
+    (function scrubWindows() {
+        var left = [];
+        ['on', 'hide'].forEach(function (k) {
+            if (cfg('win.' + k, false)) { set('win.' + k, false); left.push(k); }
+        });
+        if (left.length) {
+            $.log('warn', 'the game\'s windows were left overridden (' + left.join(', ') + ') — switched ' +
+                'off, because ' + WIN_UNSAFE + '.');
+        }
+    }());
+    U.setActive('game windows', false);
 
     $.log('ok', 'screen ready — ' + S.hooksInstalled() + '/10 write hooks, ' +
         S.maxPictures().n + ' picture slot(s) (' + S.maxPictures().from + ')');

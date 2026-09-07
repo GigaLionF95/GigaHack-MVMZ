@@ -19,7 +19,7 @@ const fs = require('fs');
 const path = require('path');
 
 module.exports = async function (ctx) {
-  var check = ctx.check, ev = ctx.ev, page = ctx.page;
+  var check = ctx.check, ev = ctx.ev, page = ctx.page, shot = ctx.shot;
   var IS_MV = ctx.IS_MV, IS_MZ = ctx.IS_MZ;
 
   const MODULE = path.resolve(__dirname, '..', '..', 'gigahack', 'js', 'plugins', 'GigaHack_Screen.js');
@@ -1057,6 +1057,468 @@ module.exports = async function (ctx) {
     JSON.stringify(api.cleared));
 
   /* =======================================================================
+     THE GAME'S OWN WINDOWS
+
+     A different mechanism from everything above: not a field on $gameScreen
+     but four properties on every window the scene draws, which the GAME
+     writes itself every time a message page starts or a menu opens. The
+     checks below are about that — that the override is a per-frame hold and
+     not a write, that putting it back puts back what each window had rather
+     than a number, and that the one thing `opacity` cannot reach is named
+     rather than quietly left behind.
+     ==================================================================== */
+
+  /* Registered before anything here turns one on, so "off at boot" is
+     measured against the state the module left, not against a reset. */
+  const winUnsafe = await ev(() => {
+    const G = window.GigaHack;
+    const out = {};
+    out.registered = G.store.unsafeList()
+      .filter(e => e.path.indexOf('screen.win.') === 0)
+      .map(e => e.path).sort();
+    out.reason = (G.store.unsafeList().filter(e => e.path === 'screen.win.hide')[0] || {}).why;
+    out.atBoot = ['on', 'hide'].map(k => G.store.cfgGet('screen.win.' + k, false));
+    /* A settings profile is the second way one of these arrives switched on. */
+    ['on', 'hide'].forEach(k => G.store.cfgSet('screen.win.' + k, true));
+    G.store.scrubUnsafe();
+    out.afterScrub = ['on', 'hide'].map(k => G.store.cfgGet('screen.win.' + k, false));
+    return out;
+  });
+  check('both window switches are forced off at every launch, because a game found with its own interface ' +
+    'already invisible is indistinguishable from a broken one',
+    winUnsafe.registered.join(',') === 'screen.win.hide,screen.win.on' &&
+    /indistinguishable from a/.test(winUnsafe.reason || '') &&
+    winUnsafe.atBoot.every(v => v === false) && winUnsafe.afterScrub.every(v => v === false),
+    JSON.stringify(winUnsafe));
+
+  /* The layer the fixture built is ADOPTED as the scene's own, which is what
+     createWindowLayer does on both engines, and a mixed handful of windows is
+     added through the scene's own addWindow. */
+  const winSetup = await ev(() => {
+    const W = window.GigaHack.screen.windows;
+    const out = {};
+    const sc = SceneManager._scene;
+    /* A scene that has not built its layer yet is a real state — every scene
+       is in it for part of its own create() — and it must read as "cannot be
+       reached here" rather than as an interface with nothing on it. */
+    const keep = sc._windowLayer;
+    sc._windowLayer = null;
+    out.without = W.state().layer;
+    sc._windowLayer = keep;
+
+    window.__windowLayer();
+    window.__addWindows();
+    out.with = W.state().layer;
+    out.harness = window.__windowState().length;
+    out.kinds = W.list().map(r => r.kind);
+    return out;
+  });
+  check('a scene with no window layer says so rather than reporting an interface with nothing on it, and ' +
+    'with one the count is every window the harness sees on that same layer',
+    winSetup.without.available === false && winSetup.without.windows === 0 &&
+    /has no window layer/.test(winSetup.without.why) &&
+    winSetup.with.available === true && winSetup.with.windows === winSetup.harness &&
+    winSetup.with.windows >= 4 &&
+    winSetup.kinds.indexOf('Window_Message') > -1 && winSetup.kinds.indexOf('Window_ScrollText') > -1,
+    JSON.stringify({ without: winSetup.without.available, windows: winSetup.with.windows,
+      harness: winSetup.harness, kinds: winSetup.kinds.join(', ') }));
+
+  /* --- the mechanism: a hold, not a write ------------------------------- */
+  const reassert = await ev(() => {
+    const W = window.GigaHack.screen.windows;
+    const out = {};
+    const r = W.set({ on: true, scope: 'all', frame: 0, back: 0, contents: 255 });
+    out.verified = r.ok;
+    out.frames = window.__windowState().map(w => Math.round(w.opacity));
+    out.text = window.__windowState().map(w => Math.round(w.contentsOpacity));
+
+    /* The game writing its own back, which is exactly what a message window
+       does through setBackgroundType every page: the engine implements
+       "transparent" as `opacity = 0` and "normal" as `opacity = 255`, so a
+       mod's single write is gone by the next page. */
+    const kids = window.__windowLayer().children;
+    let win = null;
+    for (let i = 0; i < kids.length; i++) {
+      if (typeof kids[i].setBackgroundType === 'function') { win = kids[i]; break; }
+    }
+    out.found = !!win;
+    win.setBackgroundType(0);
+    out.gameWrote = Math.round(win.opacity);
+
+    window.__raf.flush();
+    out.afterOneFrame = Math.round(win.opacity);
+    out.textAfter = Math.round(win.contentsOpacity);
+    return out;
+  });
+  check('the window override is re-asserted after the game\'s own update, so the value the game writes back ' +
+    'every message page is taken again on the next frame',
+    reassert.verified === true && reassert.found === true &&
+    reassert.frames.every(v => v === 0) && reassert.text.every(v => v === 255) &&
+    reassert.gameWrote === 255 && reassert.afterOneFrame === 0 && reassert.textAfter === 255,
+    JSON.stringify({ set: reassert.frames.join(','), gameWrote: reassert.gameWrote,
+      afterFrame: reassert.afterOneFrame }));
+
+  const noBox = await ev(() => window.__windowState());
+  check('frame at 0 with the text left at 255 is dialogue with no box, and the two engines reach that ' +
+    'through differently named objects without the module asking which engine it is on',
+    noBox.length > 0 && noBox.every(w => Math.round(w.opacity) === 0 && Math.round(w.contentsOpacity) === 255) &&
+    noBox[0].parts.frame === (IS_MZ ? '_container' : '_windowSpriteContainer') &&
+    noBox[0].parts.contents === (IS_MZ ? '_contentsSprite' : '_windowContentsSprite') &&
+    noBox[0].parts.frame !== noBox[0].parts.contents,
+    JSON.stringify(noBox[0].parts));
+
+  /* The negative side of the same claim, asserted against the source: the
+     properties are the interface, and a module that named a part or asked
+     which engine this is would be right on one build and wrong on the next. */
+  const WINDOW_PARTS = ['_windowSpriteContainer', '_windowBackSprite', '_windowContentsSprite',
+    '_container', '_backSprite', '_contentsSprite', '_clientArea'];
+  const namesAPart = WINDOW_PARTS.filter(p => SRC.indexOf(p) > -1);
+  const asksTheEngine = /caps\.(isMV|isMZ|engine)/.test(SRC);
+  check('the window controls name no engine\'s window part and never ask which engine this is — the four ' +
+    'properties are the whole interface',
+    namesAPart.length === 0 && asksTheEngine === false,
+    'parts named: ' + (namesAPart.join(', ') || 'none') + ', asks the engine: ' + asksTheEngine);
+
+  /* --- putting it back -------------------------------------------------- */
+  const restoreExact = await ev(() => {
+    const W = window.GigaHack.screen.windows;
+    const out = {};
+    W.reset();
+    out.before = window.__windowState().map(w => Math.round(w.backOpacity));
+    W.set({ on: true, frame: 0, back: 0, contents: 0 });
+    out.during = window.__windowState().map(w => Math.round(w.backOpacity));
+    const r = W.reset();
+    out.restored = r.restored;
+    out.after = window.__windowState().map(w => Math.round(w.backOpacity));
+    out.state = W.state();
+    return out;
+  });
+  check('restoring writes back the plate each window actually had — which is not the same number on the ' +
+    'two engines, so a restore that wrote a default would be wrong on one of them every time',
+    restoreExact.before.length > 0 &&
+    restoreExact.before.every(v => v === (IS_MV ? 192 : 255)) &&
+    restoreExact.during.every(v => v === 0) &&
+    restoreExact.after.join(',') === restoreExact.before.join(',') &&
+    restoreExact.restored === restoreExact.before.length &&
+    restoreExact.state.on === false && restoreExact.state.held === 0,
+    JSON.stringify({ before: restoreExact.before[0], during: restoreExact.during[0],
+      after: restoreExact.after[0], restored: restoreExact.restored }));
+
+  const lateWindow = await ev(() => {
+    const W = window.GigaHack.screen.windows;
+    const out = {};
+    W.reset();
+    W.set({ on: true, frame: 0, back: 0, contents: 255 });
+    /* Built AFTER the override was already on, which is the case a one-shot
+       write cannot cover at all. */
+    const made = window.__addWindows(['Window_Help'])[0];
+    out.bornFrame = Math.round(made.opacity);
+    out.bornPlate = Math.round(made.backOpacity);
+    window.__raf.flush();
+    out.heldFrame = Math.round(made.opacity);
+    out.heldPlate = Math.round(made.backOpacity);
+    W.reset();
+    out.backFrame = Math.round(made.opacity);
+    out.backPlate = Math.round(made.backOpacity);
+    return out;
+  });
+  check('a window built while the override was already on is taken over on its first frame and handed back ' +
+    'its own birth values, not the ones the windows before it had',
+    lateWindow.bornFrame === 255 && lateWindow.bornPlate === (IS_MV ? 192 : 255) &&
+    lateWindow.heldFrame === 0 && lateWindow.heldPlate === 0 &&
+    lateWindow.backFrame === lateWindow.bornFrame && lateWindow.backPlate === lateWindow.bornPlate,
+    JSON.stringify(lateWindow));
+
+  /* --- scope ------------------------------------------------------------ */
+  const winScope = await ev(() => {
+    const W = window.GigaHack.screen.windows;
+    W.reset();
+    W.set({ on: true, scope: 'message', frame: 0, back: 0, contents: 255 });
+    window.__raf.flush();
+    const list = W.list();
+    const out = {
+      message: list.filter(r => r.message).map(r => r.kind + ':' + r.opacity),
+      others: list.filter(r => !r.message).map(r => r.opacity),
+      scroll: list.filter(r => r.kind === 'Window_ScrollText').map(r => r.message)
+    };
+    /* Widening the scope back has to take the windows it stops holding with
+       it, or they keep an override nothing is asserting any more. */
+    W.set({ scope: 'all' });
+    window.__raf.flush();
+    out.allHeld = W.state().held;
+    W.reset();
+    out.after = W.list().map(r => r.opacity);
+    return out;
+  });
+  check('the message-window scope reaches the message window and nothing else, and the scrolling-text ' +
+    'window is not it',
+    winScope.message.length === 1 && winScope.message[0] === 'Window_Message:0' &&
+    winScope.others.every(v => v === 255) &&
+    winScope.scroll.join(',') === 'false' &&
+    winScope.allHeld === winScope.others.length + 1 &&
+    winScope.after.every(v => v === 255),
+    JSON.stringify(winScope));
+
+  /* --- hide, which is the engine's own move ----------------------------- */
+  const winHide = await ev(() => {
+    const W = window.GigaHack.screen.windows;
+    const out = {};
+    W.reset();
+    const layer = window.__windowLayer();
+    out.before = layer.visible;
+    W.hide(true);
+    out.hidden = layer.visible;
+
+    /* The engine's own precedent for the whole feature: hide the window
+       layer, take the picture, put it back. */
+    window.__uiHiddenForSnap = 0;
+    SceneManager._scene.snapForBattleBackground();
+    out.snapSawItDown = window.__uiHiddenForSnap;
+    out.afterSnap = layer.visible;
+    window.__raf.flush();
+    out.afterFrame = layer.visible;
+
+    W.reset();
+    out.restored = layer.visible;
+    out.state = W.state();
+    return out;
+  });
+  check('hiding the game\'s windows takes the whole layer down, survives the engine putting it back up for ' +
+    'its own snapshot, and one reset restores it',
+    winHide.before === true && winHide.hidden === false &&
+    winHide.snapSawItDown === 1 && winHide.afterSnap === true && winHide.afterFrame === false &&
+    winHide.restored === true && winHide.state.hide === false,
+    JSON.stringify({ hidden: winHide.hidden, afterSnap: winHide.afterSnap,
+      afterFrame: winHide.afterFrame, restored: winHide.restored }));
+
+  /* --- the band opacity cannot reach ------------------------------------ */
+  const band = await ev(() => {
+    const W = window.GigaHack.screen.windows;
+    const out = {};
+    W.reset();
+    const kids = window.__windowLayer().children;
+    let win = null;
+    for (let i = 0; i < kids.length; i++) {
+      if (typeof kids[i].setBackgroundType === 'function') { win = kids[i]; break; }
+    }
+    /* The engine's own three-way switch: 0 opaque, 1 dim, 2 transparent. */
+    win.setBackgroundType(1);
+    out.dimmed = !!(win._dimmerSprite && win._dimmerSprite.visible);
+    out.bandAtStart = Math.round(win._dimmerSprite.opacity);
+
+    W.set({ on: true, frame: 0, back: 0, contents: 255, dimmer: false });
+    window.__raf.flush();
+    out.frameGone = Math.round(win.opacity);
+    out.bandWithSwitchOff = Math.round(win._dimmerSprite.opacity);
+
+    W.set({ dimmer: true });
+    window.__raf.flush();
+    out.bandWithSwitchOn = Math.round(win._dimmerSprite.opacity);
+
+    W.reset();
+    out.bandRestored = Math.round(win._dimmerSprite.opacity);
+    out.reach = W.cannotReach().filter(c => c.id === 'dimmer')[0] || null;
+    win.setBackgroundType(0);
+    return out;
+  });
+  const bandText = await panelText('Windows');
+  check('a dimmed window faded to nothing still lays its dark band over the scene, because the band is ' +
+    'outside the container opacity alphas — and the panel names it either way',
+    band.dimmed === true && band.bandAtStart === 255 &&
+    band.frameGone === 0 && band.bandWithSwitchOff === 255 &&
+    band.bandWithSwitchOn === 0 && band.bandRestored === 255 &&
+    !!band.reach && /outside the container opacity alphas/.test(band.reach.why) &&
+    /a window in dim background mode draws that band/.test(bandText),
+    JSON.stringify({ off: band.bandWithSwitchOff, on: band.bandWithSwitchOn,
+      restored: band.bandRestored }));
+
+  /* --- what it cannot reach, measured rather than asserted -------------- */
+  const reach = await ev(() => {
+    const W = window.GigaHack.screen.windows;
+    const out = {};
+    W.reset();
+    const layer = window.__windowLayer();
+
+    /* A plugin's sprite HUD, parked on the window layer. It is not a window,
+       so it has nothing for the opacity controls to write. */
+    const hud = new Sprite(new Bitmap(8, 8));
+    hud.visible = true; hud.alpha = 1; hud.children = [];
+    layer.addChild(hud);
+
+    /* And a window parented straight to the scene, which never reaches the
+       layer at all because addWindow is the only route onto it. */
+    const stray = window.__mkWindow('Window_OffTheLayer', 0, 0, 100, 40, function () { });
+    SceneManager._scene.children.push(stray);
+    window.__settleWindows([stray]);
+    out.strayBefore = Math.round(stray.opacity);
+
+    out.state = W.state();
+    W.set({ on: true, frame: 0, back: 0, contents: 0 });
+    window.__raf.flush();
+    out.hudAlpha = hud.alpha;
+    out.hudVisible = hud.visible;
+    out.strayAfter = Math.round(stray.opacity);
+    out.kinds = W.list().map(r => r.kind);
+
+    /* Hiding the layer DOES take the sprite down, because it is on the layer;
+       that is a different mechanism and a different answer. */
+    W.hide(true);
+    out.layerDown = layer.visible;
+    W.reset();
+
+    layer.removeChild(hud);
+    SceneManager._scene.children.splice(SceneManager._scene.children.indexOf(stray), 1);
+    out.reach = W.cannotReach().map(c => c.id).sort();
+    return out;
+  });
+  const reachText = await panelText('Windows');
+  check('a sprite on the window layer is counted as not a window and left alone, and a window parented ' +
+    'past the layer is counted as unreachable rather than silently missed',
+    reach.state.layer.others === 1 && reach.state.layer.offLayer === 1 &&
+    reach.hudAlpha === 1 && reach.hudVisible === true &&
+    reach.strayAfter === reach.strayBefore && reach.strayBefore === 255 &&
+    reach.kinds.indexOf('Window_OffTheLayer') < 0 && reach.layerDown === false &&
+    reach.reach.join(',') === 'dimmer,offLayer,openness,screen,sprites' &&
+    /a plugin that draws its interface as sprites rather than windows/.test(reachText),
+    JSON.stringify({ others: reach.state.layer.others, offLayer: reach.state.layer.offLayer,
+      hud: reach.hudAlpha, stray: reach.strayAfter }));
+
+  /* --- verify, and the control that says so ----------------------------- */
+  const winVerify = await ev(() => {
+    const G = window.GigaHack, W = G.screen.windows;
+    const out = {};
+    W.reset();
+    G.compat.clearDegraded();
+    const good = W.set({ on: true, frame: 0, back: 0, contents: 0 });
+    out.goodOk = good.ok;
+    out.goodDegraded = G.compat.isDegraded('screen.window');
+    W.reset();
+
+    /* A plugin that takes the write and keeps its own number — the shape a
+       same-tick verify exists to catch. Defined on the instance, over the
+       accessor the engine puts on the prototype. */
+    const win = window.__windowLayer().children[0];
+    Object.defineProperty(win, 'opacity', {
+      get: function () { return 255; }, set: function () { }, configurable: true
+    });
+    const bad = W.set({ on: true, frame: 0, back: 0, contents: 0 });
+    out.badOk = bad.ok;
+    out.badMessage = bad.message;
+    out.badDegraded = G.compat.isDegraded('screen.window');
+    out.why = G.compat.degradedWhy('screen.window');
+    delete win.opacity;
+    return out;
+  });
+  const winDegradeText = await panelText('Windows');
+  await ev(() => {
+    window.GigaHack.compat.clearDegraded('screen.window');
+    window.GigaHack.screen.windows.reset();
+  });
+  check('the window transparency control routes its write through $.compat.verify and greys itself with ' +
+    'the reason when a window keeps its own number',
+    winVerify.goodOk === true && winVerify.goodDegraded === false &&
+    winVerify.badOk === false && winVerify.badDegraded === true &&
+    /wrote .* to screen\.window and read back/.test(winVerify.why) &&
+    winDegradeText.indexOf('writes here are not sticking.') > -1,
+    JSON.stringify({ good: winVerify.goodOk, bad: winVerify.badOk, degraded: winVerify.badDegraded }));
+
+  /* --- presets and the console API -------------------------------------- */
+  const winApi = await ev(() => {
+    const G = window.GigaHack, W = G.screen.windows;
+    const out = {};
+    W.reset();
+    G.api.windowPreset('nobox');
+    window.__raf.flush();
+    out.nobox = window.__windowState().map(w => Math.round(w.opacity) + '/' + Math.round(w.contentsOpacity));
+
+    G.api.windowPreset('clear');
+    window.__raf.flush();
+    out.clear = window.__windowState().map(w => Math.round(w.contentsOpacity));
+
+    /* Transparent is not hidden: the window is still open, so the game is
+       still running its input over something nobody can see. */
+    out.stillOpen = window.__windowState().every(w => w.openness === 255);
+
+    out.hidden = G.api.hideUI(true).layer.visible;
+    out.shown = G.api.hideUI(false).layer.visible;
+    out.toggled = G.api.hideUI().layer.visible;
+    G.api.hideUI(false);
+
+    out.back = G.api.windowsBack().ok;
+    out.after = window.__windowState().map(w => Math.round(w.opacity));
+    out.list = G.api.windows().length;
+    out.state = G.api.windowState().on;
+    out.unknown = W.preset('no_such_preset');
+    return out;
+  });
+  check('the console API hides the interface for a shot, applies the screenshot preset and puts everything ' +
+    'back, and a preset nobody defined is refused by name',
+    winApi.nobox.every(v => v === '0/255') && winApi.clear.every(v => v === 0) &&
+    winApi.stillOpen === true &&
+    winApi.hidden === false && winApi.shown === true && winApi.toggled === false &&
+    winApi.back === true && winApi.after.every(v => v === 255) &&
+    winApi.list >= 4 && winApi.state === false &&
+    winApi.unknown.ok === false && /no preset is called "no_such_preset"/.test(winApi.unknown.why),
+    JSON.stringify({ nobox: winApi.nobox[0], clear: winApi.clear[0], after: winApi.after[0] }));
+
+  /* withHidden is the seam a screenshot uses: hide, snap, put back, in one
+     synchronous call that persists nothing — so a caller that throws still
+     leaves the interface on screen. */
+  const withHidden = await ev(() => {
+    const W = window.GigaHack.screen.windows;
+    const layer = window.__windowLayer();
+    const out = {};
+    out.during = W.withHidden(() => layer.visible);
+    out.after = layer.visible;
+    out.stored = W.state().hide;
+    try {
+      W.withHidden(() => { throw new Error('the shot failed'); });
+    } catch (e) { out.threw = e.message; }
+    out.afterThrow = layer.visible;
+    return out;
+  });
+  check('the hide-snap-restore seam a screenshot uses persists nothing and puts the layer back even when ' +
+    'the call it wrapped throws',
+    withHidden.during === false && withHidden.after === true && withHidden.stored === false &&
+    withHidden.threw === 'the shot failed' && withHidden.afterThrow === true,
+    JSON.stringify(withHidden));
+
+  /* For human review: the panel in the state the feature exists for — the
+     frame gone, the words kept, the live list saying so. */
+  await ev(() => {
+    window.GigaHack.screen.windows.set({ on: true, scope: 'all', frame: 0, back: 0, contents: 255 });
+  });
+  const winPanel = await panelText('Windows');
+  await shot('screen-windows');
+  const winFit = await ev(() => {
+    const out = { cols: [], rows: 0, tableRows: 0, kinds: [] };
+    document.querySelectorAll('#mm-root .mm-col').forEach(c => out.cols.push(c.scrollWidth - c.clientWidth));
+    document.querySelectorAll('#mm-root .mm-row').forEach(r => {
+      if (r.scrollWidth > r.clientWidth + 1) out.rows++;
+    });
+    document.querySelectorAll('#mm-root .mm-tr').forEach(tr => {
+      out.tableRows++;
+      const first = tr.firstChild;
+      if (first) out.kinds.push(first.textContent.trim().split('  ')[0]);
+    });
+    out.live = window.GigaHack.screen.windows.list().length;
+    return out;
+  });
+  check('the live list is on screen, one row per window with the kind it is, and nothing in the panel is ' +
+    'pushed sideways out of its column',
+    winFit.tableRows === winFit.live && winFit.live >= 4 &&
+    winFit.kinds.indexOf('Window_Message') > -1 &&
+    winFit.cols.every(w => w === 0) && winFit.rows === 0 &&
+    /no box, text kept/.test(winPanel) && /back to normal/.test(winPanel),
+    JSON.stringify({ rows: winFit.tableRows, live: winFit.live, cols: winFit.cols,
+      wide: winFit.rows, kinds: winFit.kinds.join(', ') }));
+
+  await ev(() => {
+    window.__clearWindows();
+    window.GigaHack.screen.windows.reset();
+  });
+
+  /* =======================================================================
      REGISTRATION
      ==================================================================== */
   const panels = await ev(() => window.GigaHack.ui.panelNames('game'));
@@ -1064,8 +1526,10 @@ module.exports = async function (ctx) {
   const iScreen = panels.indexOf('Screen');
   const iPictures = panels.indexOf('Pictures');
   const iLog = panels.indexOf('Screen log');
+  const iWindows = panels.indexOf('Windows');
   check('the screen panels sit after the message panels on the game tab, in their own order',
-    iScreen > iMessage && iPictures === iScreen + 1 && iLog === iPictures + 1,
+    iScreen > iMessage && iPictures === iScreen + 1 && iLog === iPictures + 1 &&
+    iWindows === iLog + 1,
     panels.join(', '));
 
   /* =======================================================================
@@ -1082,6 +1546,10 @@ module.exports = async function (ctx) {
     G.screen.clearDrift();
     G.compat.clearDegraded();
     ['tone', 'weather', 'zoom'].forEach(k => G.store.cfgSet('screen.hold.' + k, false));
+    /* AFTER the pops: an undo entry from the window panel writes the switches
+       back to what they were, so resetting them before the stack is drained
+       would leave the next frame re-asserting what was just undone. */
+    G.screen.windows.reset();
     G.store.cfgSet('screen.log.max', 200);
     G.store.cfgSet('screen.pictures.filter', 'in use');
     G.store.cfgSet('screen.duration', 0);
