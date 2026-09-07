@@ -74,7 +74,7 @@
             degradedWhy(control) + ' ',
             W.button({
                 label: 'try again', mini: true, _ungated: true,
-                tip: 'Try again|Clears the mark so the next write is re-tested.',
+                tip: 'Try again|Re-tests on the next write; nothing is rewritten now.',
                 onClick: function () {
                     if ($.compat && $.compat.clearDegraded) $.compat.clearDegraded(control);
                     U.rerender();
@@ -691,13 +691,13 @@
                         class: 'mm-sub mm-mono',
                         text: cap === null ? '?' : String(cap),
                         tip: cap === null
-                            ? 'Stack cap|maxItems did not return a number for this item.'
+                            ? 'Stack cap|maxItems returned no number for this item.'
                             : 'Stack cap|gainItem clamps this item to ' + cap + '. Ask for more and the panel ' +
                               'offers to raise it.'
                     }),
                     W.button({
                         label: I.isLocked(o) ? '■' : '□', mini: true,
-                        tip: 'Lock|The game stops being able to change this count. You still can.',
+                        tip: 'Lock|The game cannot change this count. You still can.',
                         onClick: function () { I.lock(o, !I.isLocked(o)); repaint(); U.rerender(); }
                     }),
                     h('div', { class: 'mm-cellbtns' },
@@ -706,7 +706,7 @@
                         W.button({ label: '+10', mini: true, mutates: true, onClick: function () { I.give(o, 10); settle(I.lastResult); } }),
                         W.button({
                             label: 'max', mini: true, mutates: true,
-                            tip: 'Max|Fills the stack to this game\'s own cap for this item.',
+                            tip: 'Max|Fills to this item\'s own cap.',
                             onClick: function () { settle(I.setCount(o, I.maxStack(o))); }
                         }))
                 ];
@@ -783,9 +783,8 @@
             W.button({
                 label: 'raise the cap to ' + o.want + ' and set it', wide: true, mutates: true,
                 disabled: !ok,
-                tip: 'Raise the cap|Writes the per-item stack field, turns on GigaHack\'s own maxItems raise, ' +
-                    'then writes the count again and reads it back. Session-only: the database is rebuilt ' +
-                    'from the project files at every launch.',
+                tip: 'Raise the cap|Session-only: the database reloads from the project files at ' +
+                    'every launch.',
                 onClick: function () {
                     var raised = I.raiseStackCap(o.item, o.want);
                     // force:true is the last resort, and only reachable here —
@@ -824,8 +823,8 @@
             W.button({
                 label: 'raise the cap to ' + o.want + ' and set it', wide: true, mutates: true,
                 disabled: !ok,
-                tip: 'Raise the cap|Turns on GigaHack\'s own maxGold raise, writes the gold again and reads ' +
-                    'it back. Session-only, and stored in GigaHack\'s settings rather than in the save.',
+                tip: 'Raise the cap|Session-only, and stored in GigaHack\'s settings, not in the ' +
+                    'save.',
                 onClick: function () {
                     var raised = I.raiseGoldCap(o.want);
                     var set = I.setGold(o.want, true);
@@ -858,8 +857,8 @@
             h('div', { class: 'mm-row' },
                 h('div', { class: 'mm-lab', text: 'Current' }),
                 h('div', { class: 'mm-edge mm-mono mm-hi', text: String(I.gold()) })),
-            h('div', { class: 'mm-row', 'data-mm-tip': 'Cap|gainGold clamps to maxGold on both engines. ' +
-                'This is read live: a framework plugin commonly replaces maxGold with its own parameter.' },
+            h('div', { class: 'mm-row', 'data-mm-tip': 'Cap|gainGold clamps to maxGold, ' +
+                'read live — a plugin may replace it.' },
                 h('div', { class: 'mm-lab', text: 'This game\'s cap' }),
                 h('div', {
                     class: 'mm-edge mm-mono mm-sub',
@@ -892,8 +891,7 @@
         out.push(W.group('Gold', goldRows(1000).concat([
             W.toggleRow('Lock the gold', {
                 value: I.goldLocked(), keybind: false,
-                tip: 'Lock|The game stops being able to change it — shops, rewards and events all bounce off. ' +
-                    'You can still set it here.',
+                tip: 'Lock|Shops, rewards and events bounce off. You can still set it here.',
                 onChange: function (v) { I.lockGold(v); U.rerender(); }
             })
         ]), { tag: I.goldLocked() ? 'locked' : 'cap ' + (goldCap === null ? '?' : goldCap) }));
@@ -908,7 +906,6 @@
                 onClick: function () { I.clearLocks(); U.rerender(); }
             }),
             h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
-                'A lock refuses the engine’s own gainItem, so a consumable cannot be used up and a shop cannot take it. ' +
                 'Locks last for the session — they are not written into the save.')
         ], { tag: I.lockedCount() ? 'active' : 'none', collapsed: !I.lockedCount() }));
 
@@ -921,8 +918,7 @@
             W.toggleRow('Raise maxItems', {
                 value: !!($.cfg.inv || {}).maxItemsOverride,
                 _ungated: true,
-                tip: 'maxItems|The ceiling gainItem clamps to. Raising it is what makes a stack above the ' +
-                    'game\'s own cap possible at all.',
+                tip: 'maxItems|The ceiling gainItem clamps to.',
                 onChange: function (v) { $.store.cfgSet('inv.maxItemsOverride', v); U.rerender(); }
             }),
             W.row('Limit', W.number({
@@ -942,8 +938,6 @@
             W.button({
                 label: 'fill every ' + kind + ' to its own cap', wide: true, variant: 'danger', mutates: true,
                 confirmLabel: 'fill inventory?',
-                tip: 'Fill|Each entry goes to ITS OWN maxItems, read per item — one number for all of them ' +
-                    'would be clamped differently by every item on a game that caps them individually.',
                 onClick: function () {
                     if (!$.allowWrite('Bulk filling the inventory')) return;
                     // Infinity, deliberately: giveAll clamps each entry to
@@ -986,9 +980,7 @@
                 h('div', { class: 'mm-inline', style: 'padding:2px' },
                     W.button({ label: 'zero', variant: 'danger', mutates: true, onClick: function () { I.setGold(0); U.rerender(); } })),
                 h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
-                    'Gold is stored in one field and clamped to maxGold on every gain. Anything above the ' +
-                    'cap does not stick until the cap is raised, so the panel offers that rather than ' +
-                    'letting the number quietly land somewhere else.')
+                    'Anything above the cap does not stick until the cap is raised.')
             ]), { tag: 'cap ' + (cap === null ? '?' : cap) })
         ], [
             W.group('Totals', [

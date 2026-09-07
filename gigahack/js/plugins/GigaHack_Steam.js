@@ -779,19 +779,18 @@
                 'rather than shown doing nothing.'),
             h('div', { class: 'mm-row' },
                 h('div', { class: 'mm-lab', text: 'Reason' }),
-                h('div', { class: 'mm-edge mm-sub', style: 'white-space:normal', text: e.why }))
+                h('div', { class: 'mm-edge mm-edge--shrink mm-edge--wrap mm-sub', text: e.why }))
         ];
         e.tried.forEach(function (t) {
             rows.push(h('div', { class: 'mm-row' },
                 h('div', { class: 'mm-lab mm-mono', text: t.name }),
                 h('div', {
-                    class: 'mm-edge mm-sub', style: 'white-space:normal',
+                    class: 'mm-edge mm-edge--shrink mm-edge--wrap mm-sub',
                     text: t.api ? 'ready' : (t.found ? 'present — ' + t.why : t.why)
                 })));
         });
         rows.push(h('div', { class: 'mm-sub', style: 'white-space:normal;padding:2px' },
-            'The list is still worth reading: it is what this session has discovered, so it says what ' +
-            'exists. Where Steam is reachable, every row also gets unlock and clear buttons.'));
+            'This is what the session discovered. Unlock and clear appear only where Steam is reachable.'));
         return W.group('Steam is not reachable right now', rows, { tag: 'read-only' });
     }
 
@@ -837,7 +836,7 @@
             },
             onRow: function (tr, a) {
                 var tip = a.how ? a.how : (a.source === 'event'
-                    ? 'the name an event command in this project passes to Steam'
+                    ? 'the name an event command passes to Steam'
                     : a.source === 'steam' ? 'enumerated from the Steam API' : 'named by the game profile');
                 tr.setAttribute('data-mm-tip', a.title + '|' + tip);
             }
@@ -877,24 +876,27 @@
                 })),
             h('div', { class: 'mm-row' },
                 h('div', { class: 'mm-lab', text: 'read from' }),
+                // The "why" sentence names the folder it looked in, so it holds
+                // a path and cannot be left in a non-shrinking edge.
                 h('div', {
-                    class: 'mm-edge mm-sub', style: 'white-space:normal',
+                    class: 'mm-edge mm-edge--shrink mm-edge--wrap mm-sub',
                     text: e.appId.id ? e.appId.from : e.appId.why
                 })),
             h('div', { class: 'mm-row' },
                 h('div', { class: 'mm-lab', text: 'Binding' }),
-                h('div', { class: 'mm-edge mm-mono mm-sub', text: e.usable ? e.name : 'none in use' })),
+                h('div', {
+                    class: 'mm-edge mm-edge--shrink mm-path mm-mono mm-sub',
+                    text: e.usable ? e.name : 'none in use', title: e.usable ? e.name : null
+                })),
             h('div', { class: 'mm-row' },
                 h('div', { class: 'mm-lab', text: 'Discovered' }),
                 h('div', { class: 'mm-edge mm-mono mm-sub', text: list.length + ' achievements' })),
             h('div', { class: 'mm-sub', style: 'white-space:normal;padding:2px' }, S.discoveryText()),
             S.discovery().event ? h('div', { class: 'mm-sub', style: 'white-space:normal;padding:2px' },
-                'An event scan sees only the data that is loaded — the common events, the troops and the ' +
-                'map you are standing on — so rows marked “event” accumulate as you play, and the name is ' +
-                'read off the command that fires it rather than from Steam.') : null,
+                'An event scan sees only loaded data, so “event” rows accumulate as you play.') : null,
             W.button({
                 label: 'look again', wide: true, _ungated: true,
-                tip: 'Rescan|Re-probes for a Steam binding and re-reads the event data that is loaded now.',
+                tip: 'Rescan|Re-probes for a binding and re-reads the loaded event data.',
                 onClick: function () { S.recheck('asked from the panel'); S.list(true); S.refresh(); U.rerender(); }
             })
         ], { tag: 'info', collapsed: true }));
@@ -903,13 +905,13 @@
             right.push(W.group('All at once', [
                 e.can.unlock ? W.button({
                     label: 'unlock every achievement', wide: true, variant: 'danger',
-                    tip: 'Unlock all|Fires all ' + list.length + ' at Steam. This is visible on your public ' +
-                        'profile, and Steam has no undo beyond clearing them again.',
+                    tip: 'Unlock all|Fires all ' + list.length + ' at Steam. Visible on your public Steam ' +
+                        'profile; the only undo is clearing them again.',
                     onClick: function () { S.setAll(true); U.rerender(); }
                 }) : null,
                 e.can.clear ? W.button({
                     label: 'clear every achievement', wide: true, variant: 'danger',
-                    tip: 'Clear all|Removes all ' + list.length + ' from your Steam profile.',
+                    tip: 'Clear all|Removes all ' + list.length + ' from your Steam profile, not just here.',
                     onClick: function () { S.setAll(false); U.rerender(); }
                 }) : null,
                 e.can.read ? W.button({
@@ -927,7 +929,7 @@
                 return W.row(s.id, W.number({
                     value: S.stat(s.id), min: 0, max: 999999, width: '96px',
                     tip: s.id + '|' + (s.of ? 'Counts toward ' + s.of + (s.goal ? ' at ' + s.goal : '') + '. ' : '') +
-                        'The game reads this stat and unlocks when it passes its threshold.',
+                        'Unlocks when it passes its threshold.',
                     onChange: function (v) { S.setStat(s.id, v); }
                 }), { sub: s.goal ? '/ ' + s.goal : '' });
             }), { tag: st.length + ' declared' }));

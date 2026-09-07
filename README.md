@@ -79,36 +79,61 @@ by panel and control by control.
 position mark and recall, game speed with frame stepping, per-actor level, EXP,
 HP/MP/TP, a decomposed parameter editor, skills, states, equipment, name,
 nickname, profile and the three image slots, plus god mode, free skill costs
-and a damage multiplier. Random encounters get their own panel on games that
-have them.
+and a damage multiplier. A whole kit — class, level, skills, parameter bonuses
+and every equipment slot — saves under a name and goes back in one click, as one
+undo entry rather than eight. Splits driven by the game's own state turn a run
+timer into something that knows what the game is doing. Random encounters get
+their own panel on games that have them.
 
 **World** — variables and switches with a live change monitor, freeze, pinning
 and a snapshot diff; a value scanner that narrows by "increased"/"decreased"
 across rounds; bulk range writes; self-switches per event; a map tree with
 safe-landing teleport and named bookmarks; an in-scene event overlay with an
 inspector and command-list decoder; and a cross-map search for every event in
-the game that touches a given switch, variable or self-switch. Games whose
-switch names use a section-header convention also get a Gallery panel for bulk
-unlocks by collection.
+the game that touches a given switch, variable or self-switch. Watchpoints go
+one step further and name the map and the event that made a write, which the
+engine keeps no record of. A save-anchored baseline answers "what did that
+cutscene actually do to my state". For a stuck game there is Blocked, which
+lists every unmet page condition on an event and names every event anywhere
+that could set it; the project's own common events, readable and runnable; and
+a searchable dump of every line of text the game can show. Games whose switch
+names use a section-header convention also get a Gallery panel for bulk unlocks
+by collection, and objectives reconstructed from the project's own flag naming.
 
 **Items** — items, weapons and armors with live per-item stack caps, gold with
 its live cap, per-entry locks that refuse the game's own `gainItem`, and the
 Forge: an editor that writes custom rows into ten `$data*` arrays at computed,
-stable ids.
+stable ids. A shop opener builds a goods list from anything in the database and
+pushes the game's own shop scene with it.
 
 **Game** — a live enemy inspector with editable HP and parameters, weaknesses,
 state rates and drops; instant win and instant lose that go through the game's
 own end-of-battle handling; a troop picker; HP/MP bars over enemies;
 auto-advance, hold-to-turbo and message injection; font and text-colour
-overrides. Games with a message backlog or a Steam binding get panels for
-those.
+overrides; a searchable history of everything that has been said, recorded by
+GigaHack itself so it works on any game, with the choices made and where each
+line was said. Games with a backlog of their own can show that instead, and
+games with a Steam binding get an achievements panel. Everything `$gameScreen`
+holds — tint, weather, zoom, shake, brightness and all hundred picture slots —
+is visible and writable, which is how a screen a crashed cutscene left black
+gets unstuck. The audio the project ships can be auditioned folder by folder,
+and its image folders browsed, previewed and animated frame by frame.
 
-**Debug** — environment and capability report, installed hooks, loaded plugins,
-compatibility, index status, save slots, save file transfer, backups, an
-embedded JavaScript console and the log.
+**Debug** — environment and capability report, installed hooks, loaded plugins
+and their parameters, compatibility, index status, save slots, save file
+transfer and a read-only diff between two of them, backups, an embedded
+JavaScript console and the log. Plus what the engine will not tell you itself:
+every running interpreter and the five named reasons a game freezes; a
+chronological journal of every change the mod made, with whether it stuck and
+undo-back-to-here; every random roll with the caller that asked for it, and a
+seeded generator so a drop can be rolled again; triggers that run a saved
+snippet when the game reaches a state; clean screenshots with the overlay
+hidden; and what this build costs to run, per frame hook.
 
 **Settings** — appearance, read-only mode, confirmation and backup guards,
-hotkeys, and named settings profiles that can be exported and imported as JSON.
+GigaHack's own hotkeys, the game's own key map — editable for games that ship no
+rebinding, and refusing any edit that would leave no way back to a menu — and
+named settings profiles that can be exported and imported as JSON.
 
 ---
 
@@ -210,15 +235,15 @@ There is no build step. The plugin files are the deliverable.
 cd gigahack-test
 npm install                # playwright, once
 
-npm run lint               # build lint, 26 modules + 1 shipped profile
-npm test                   # stock MZ 1.9.0        — 357 checks
-npm run test:mv            # stock MV 1.6.1        — 368 checks
-npm run test:mv-modded     # MV + modelled plugins — 397 checks
+npm run lint               # build lint, 35 modules + 1 shipped profile
+npm test                   # stock MZ 1.9.0        — 970 checks
+npm run test:mv            # stock MV 1.6.1        — 981 checks
+npm run test:mv-modded     # MV + modelled plugins — 1010 checks
 npm run test:all           # lint plus all three
 ```
 
 ```sh
-./test-installers.sh       # 101 installer checks
+./test-installers.sh       # 113 installer checks
 ```
 
 Exit code is the contract: 0 clean, 1 any failure. The three engine runs share
@@ -240,7 +265,8 @@ silently absent.
 Verified live against two real games:
 
 - **A New Dawn 5.3.2** (MV 1.6.1, 66 plugin entries, 56 enabled) — all six
-  engine files load, 26/26 modules, 52/53 hooks install. The one skip is
+  engine files load, 26/26 modules, 52/53 hooks install (measured before the
+  nine modules added after 2.0; both games are due a re-run). The one skip is
   `Scene_File.isSavefileEnabled`, which does not exist on MV; the mod records
   it as skipped with that reason, and the Saves panel says the per-slot
   restriction is not something this build has.

@@ -661,8 +661,19 @@ function Game_Map() { this._mapId = 12; this._tilesetId = 1; this._events = []; 
 Game_Map.prototype.mapId = function () { return this._mapId; };
 Game_Map.prototype.isEventRunning = function () { return !!window.__eventRunning; };
 Game_Map.prototype.requestRefresh = function () { window.__refreshes = (window.__refreshes || 0) + 1; };
-Game_Map.prototype.events = function () { return this._events; };
-Game_Map.prototype.eventsXy = function (x, y) { return this._events.filter(function (e) { return e.pos(x, y); }); };
+/* _events is SPARSE and indexed by EVENT ID — the engine builds it that way in
+   setupEvents (`this._events[event.id] = new Game_Event(...)`, MV
+   rpg_objects.js:5548 / MZ rmmz_objects.js:6228) and every reader compensates.
+   A dense array here made $gameMap.event(1) return the SECOND event, so
+   anything resolving a writer's _eventId back to an event resolved the wrong
+   one — and only in the harness. */
+Game_Map.prototype.events = function () {
+  return this._events.filter(function (e) { return !!e; });
+};
+Game_Map.prototype.event = function (eventId) { return this._events[eventId]; };
+Game_Map.prototype.eventsXy = function (x, y) {
+  return this.events().filter(function (e) { return e.pos(x, y); });
+};
 Game_Map.prototype.tileWidth = function () { return ('tileSize' in $dataSystem) ? $dataSystem.tileSize : 48; };
 Game_Map.prototype.tileHeight = function () { return this.tileWidth(); };
 Game_Map.prototype.width = function () { return $dataMap.width; };
@@ -915,7 +926,13 @@ Game_Actor.prototype.stateRate = function () { return 1; };
 Game_Actor.prototype.setMp = function (v) { this._mp = v; this.refresh(); };
 Game_Actor.prototype.setTp = function (v) { this._tp = v; this.refresh(); };
 Game_Actor.prototype.maxTp = function () { return 100; };
-Game_Actor.prototype.maxLevel = function () { return 99; };
+/* From the actor's own row, not a constant: both engines read
+   this.actor().maxLevel (MV :3554 / MZ :4196), and a project that caps one
+   actor lower is the case a level restore has to clamp against. */
+Game_Actor.prototype.maxLevel = function () {
+  var row = this.actor();
+  return (row && row.maxLevel) || 99;
+};
 Game_Actor.prototype.isMaxLevel = function () { return this._level >= 99; };
 Game_Actor.prototype.currentExp = function () { return this._exp[this._classId] || 0; };
 Game_Actor.prototype.nextLevelExp = function () { return (this._level + 1) * 100; };
@@ -1032,6 +1049,39 @@ Game_Message.prototype.clear = function () { this._texts = []; this._speakerName
 Game_Message.prototype.setFaceImage = function (n, i) { this._faceName = n; this._faceIndex = i; };
 Game_Message.prototype.setBackground = function (n) { this._background = n; };
 Game_Message.prototype.setPositionType = function (n) { this._positionType = n; };
+/* allText joins with a newline and appends one — verbatim, trailing newline
+   included, because a recorder that splits on \n sees an empty last line and a
+   stub that trimmed would hide that. MV rpg_objects.js:466 / MZ :621. */
+Game_Message.prototype.allText = function () {
+  return this._texts.reduce(function (r, text) { return r + text + '\n'; }, '');
+};
+Game_Message.prototype.faceName = function () { return this._faceName || ''; };
+Game_Message.prototype.setChoices = function (choices, defaultType, cancelType) {
+  this._choices = choices; this._choiceDefaultType = defaultType; this._choiceCancelType = cancelType;
+};
+Game_Message.prototype.setChoiceCallback = function (cb) { this._choiceCallback = cb; };
+/* onChoice fires for a cancel too, with the cancel type as the index — which
+   is why the recorder cannot assume the index is inside the list. */
+Game_Message.prototype.onChoice = function (n) {
+  if (this._choiceCallback) { this._choiceCallback(n); this._choiceCallback = null; }
+  window.__lastChoice = n;
+};
+/* The other two prompts, identical on both engines. onItemChoice is handed 0
+   for a cancel, which is why an id is never indexed without a test. */
+Game_Message.prototype.setNumberInput = function (variableId, maxDigits) {
+  this._numInputVariableId = variableId; this._numInputMaxDigits = maxDigits;
+};
+Game_Message.prototype.onNumberInput = function (n) {
+  if (this._numberInputCallback) { this._numberInputCallback(n); this._numberInputCallback = null; }
+  window.__lastNumber = n;
+};
+Game_Message.prototype.setItemChoice = function (variableId, itemType) {
+  this._itemChoiceVariableId = variableId; this._itemChoiceItypeId = itemType;
+};
+Game_Message.prototype.onItemChoice = function (id) {
+  if (this._itemChoiceCallback) { this._itemChoiceCallback(id); this._itemChoiceCallback = null; }
+  window.__lastItem = id;
+};
 var $gameMessage = new Game_Message();
 
 /* Game_Timer — present on both engines and in the createGameObjects list. */
@@ -1048,6 +1098,19 @@ Game_Timer.prototype.isWorking = function () { return this._working; };
    MZ rmmz_windows.js:5173 for startPause; the other three at
    MV :4361/:4472/:4457 and MZ :4915/:5067/:5044. */
 function Window_Message() { this.pause = false; this._showFast = false; this._textState = null; }
+/* startMessage is the seam the history recorder listens on: it is the one point
+   on both engines where the page has been assembled out of $gameMessage and has
+   not yet been drawn. MV rpg_windows.js:4361 / MZ rmmz_windows.js:4915. The two
+   differ in how they build the text state and not at all in what they read. */
+Window_Message.prototype.startMessage = function () {
+  this._textState = { index: 0, text: this.convertEscapeCharacters($gameMessage.allText()) };
+  window.__messagesStarted = (window.__messagesStarted || 0) + 1;
+};
+Window_Message.prototype.terminateMessage = function () {
+  this.close();
+  $gameMessage.clear();
+};
+Window_Message.prototype.close = function () { this._closing = true; };
 Window_Message.prototype.startWait = function (n) { this._waitCount = n; };
 Window_Message.prototype.startPause = function () {
   this.startWait(10); this.pause = true;
@@ -1066,6 +1129,34 @@ Window_Message.prototype.updateInput = function () {
   }
   return false;
 };
+
+/* Window_ScrollText. Present on both engines and, like Window_Message, it reads
+   the page straight off $gameMessage. MV rpg_windows.js:4700 / MZ :5300. */
+function Window_ScrollText() { this._text = ''; }
+Window_ScrollText.prototype.startMessage = function () {
+  this._text = $gameMessage.allText();
+  window.__scrollsStarted = (window.__scrollsStarted || 0) + 1;
+};
+
+/* convertEscapeCharacters, on Window_Base and inherited by both message
+   windows. Only the parts that matter to anything reading the result back are
+   modelled — the backslash becomes ESC and \V[n] is substituted from the LIVE
+   variable — because the whole reason a recorder must read the window's own
+   output is that this substitution happens exactly once and cannot be redone
+   later. On the engines it is Window_Base.prototype.convertEscapeCharacters —
+   MV rpg_windows.js:1114 / MZ rmmz_windows.js:1345. */
+function convertEscapeCharacters(text) {
+  text = String(text == null ? '' : text).replace(/\\/g, '\x1b');
+  text = text.replace(/\x1b\x1b/g, '\\');
+  text = text.replace(/\x1bV\[(\d+)\]/gi, function (_, n) {
+    return $gameVariables.value(parseInt(n, 10));
+  });
+  return text;
+}
+/* On the real engines this lives on Window_Base and both windows inherit it;
+   the stub windows do not share a base, so both are given it directly. */
+Window_Message.prototype.convertEscapeCharacters = convertEscapeCharacters;
+Window_ScrollText.prototype.convertEscapeCharacters = convertEscapeCharacters;
 
 /* Game_Screen — copied from the engine, awkward parts included: startTint
    calls tone.clone() (the engine's own Array extension) and sets a TARGET
@@ -1219,7 +1310,14 @@ Game_Enemy.prototype.refresh = function () {
   if (this._hp === 0) this.addNewState(this.deathStateId());
   else { var i = this._states.indexOf(this.deathStateId()); if (i > -1) this._states.splice(i, 1); }
 };
+/* releaseUnequippableItems FIRST — it is the literal first line on both engines
+   (MV rpg_objects.js:3755 / MZ rmmz_objects.js:4393) and it is the entire
+   mechanism behind "a class change silently strips gear the new class cannot
+   hold and trades it back into the party". A refresh that skipped it left the
+   actor wearing equipment the engine would have taken off, so the one thing a
+   loadout has to warn about could not happen in the harness. */
 Game_Actor.prototype.refresh = function () {
+  if (typeof this.releaseUnequippableItems === 'function') this.releaseUnequippableItems(false);
   Game_BattlerBase.prototype.refresh.call(this);
   window.__refreshCount = (window.__refreshCount || 0) + 1;
   if (this._hp === 0) this.addNewState(this.deathStateId());
@@ -1354,31 +1452,54 @@ var JsonEx = {
   stringify: function (o) { return JSON.stringify(this._encode(o, 0)); },
   parse: function (s) { return this._decode(JSON.parse(s)); },
   makeDeepCopy: function (o) { return this.parse(this.stringify(o)); },
+  /* IN PLACE, on the object the caller handed over. Both engines write
+     `value['@'] = constructorName` onto the LIVE object and walk its own keys
+     in place (MV rpg_core.js:8955 / MZ rmmz_core.js:6458). MV's stringify then
+     calls _cleanMetadata and takes the marks off again; MZ's does not, so on MZ
+     a single JsonEx.stringify($gameSystem) leaves '@' on the live object for
+     good. engine-mv.js supplies the cleanup half.
+
+     A copying _encode hid all of that: it left the world spotless on both
+     engines, so a panel that walks a $game* object and reports its own keys
+     looked identical on MV and MZ and is not. */
   _encode: function (value, depth) {
     if (depth > this.maxDepth) throw new Error('Object too deep');
     if (value === null || typeof value !== 'object') return value;
-    var out = Array.isArray(value) ? [] : {};
     if (!Array.isArray(value)) {
       var name = value.constructor ? value.constructor.name : 'Object';
-      if (name !== 'Object') out['@'] = name;
+      if (name !== 'Object') value['@'] = name;
     }
-    for (var k in value) {
-      if (Object.prototype.hasOwnProperty.call(value, k)) out[k] = this._encode(value[k], depth + 1);
+    var keys = Object.keys(value);
+    for (var i = 0; i < keys.length; i++) {
+      value[keys[i]] = this._encode(value[keys[i]], depth + 1);
     }
-    return out;
+    return value;
   },
+  /* IN PLACE, and the '@' key STAYS. Both engines reset the prototype on the
+     object they were handed — MZ with Object.setPrototypeOf (rmmz_core.js:6483),
+     MV through _resetPrototype which does the same where the platform allows
+     (rpg_core.js:9131) — and where window[name] does NOT resolve they leave the
+     object completely alone. So on a real game an unrecognised section arrives
+     as a plain object still carrying its own '@' naming the class this build
+     does not have, and that key is the only evidence of what it was.
+
+     The earlier stub built a fresh object and stripped '@' on both branches,
+     which made an unknown class indistinguishable from a plain object and hid
+     the one thing a save reader has to be honest about. */
   _decode: function (value) {
     if (value === null || typeof value !== 'object') return value;
-    if (Array.isArray(value)) return value.map(this._decode, this);
-    var out = value;
+    if (Array.isArray(value)) {
+      for (var i = 0; i < value.length; i++) value[i] = this._decode(value[i]);
+      return value;
+    }
     if (value['@']) {
       var cls = window[value['@']];
-      if (typeof cls === 'function') { out = Object.create(cls.prototype); }
-      else out = {};
-      for (var k in value) if (k !== '@') out[k] = value[k];
+      if (typeof cls === 'function') Object.setPrototypeOf(value, cls.prototype);
     }
-    for (var j in out) if (Object.prototype.hasOwnProperty.call(out, j)) out[j] = this._decode(out[j]);
-    return out;
+    for (var j in value) {
+      if (Object.prototype.hasOwnProperty.call(value, j)) value[j] = this._decode(value[j]);
+    }
+    return value;
   }
 };
 

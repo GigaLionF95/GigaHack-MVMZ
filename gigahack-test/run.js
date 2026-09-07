@@ -26,6 +26,14 @@ if (!ENGINES[ENGINE]) {
   console.error('unknown engine "' + ENGINE + '" — expected one of: ' + Object.keys(ENGINES).join(', '));
   process.exit(2);
 }
+/* The module count is read from the manifest the installer also reads, so a
+   module added to the mod is never a suite that has to be edited to notice. It
+   was 26 in three files and a shell script, and every one of them was a place
+   the next module could be silently missing from. */
+const MANIFEST = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../gigahack/manifest.json'), 'utf8'));
+const MODULES = MANIFEST.modules.map(m => m.name);
+const N_MODULES = MODULES.length;
+
 const CFG = ENGINES[ENGINE];
 const IS_MV = CFG.name === 'MV';
 const IS_MZ = CFG.name === 'MZ';
@@ -64,7 +72,7 @@ const SHOTS = path.resolve(__dirname, 'shots-' + ENGINE);
      LOAD
      ==================================================================== */
   const loaded = await ev(() => !!window.GigaHack && !!window.GigaHack.ui && !!window.GigaHack.ui.mount);
-  check('all 26 plugin files evaluated and the overlay controller exists', loaded);
+  check('all ' + N_MODULES + ' plugin files evaluated and the overlay controller exists', loaded);
 
   const modules = await ev(() => {
     const r = window.GigaHack.moduleReport();
@@ -76,9 +84,13 @@ const SHOTS = path.resolve(__dirname, 'shots-' + ENGINE);
     };
   });
   check('every module in the manifest registered its marker', modules.missing.length === 0, modules.missing.join(', '));
-  check('the module report covers all 26 modules', modules.rows.length === 26, modules.rows.length);
+  check('the module report covers every module in the manifest',
+    modules.rows.length === N_MODULES, modules.rows.length + '/' + N_MODULES);
+  check('and the harness loads exactly the manifest\'s list, in its order',
+    modules.rows.map(m => m.n).join(',') === MODULES.join(','),
+    modules.rows.map(m => m.n).join(','));
   check('every module the report expects actually ran',
-    modules.ran.length === 26, modules.ran.length + '/' + modules.expected.length);
+    modules.ran.length === N_MODULES, modules.ran.length + '/' + modules.expected.length);
   check('GigaHack_Inspect is gone from the manifest',
     modules.rows.every(m => m.n !== 'GigaHack_Inspect'));
   check('every module is listed as enabled in the game plugin list',
@@ -1473,7 +1485,8 @@ const SHOTS = path.resolve(__dirname, 'shots-' + ENGINE);
     return out;
   });
   check('with no duplicates the name check passes and counts our modules',
-    collision.cleanTest.state === 'pass' && /26 GigaHack modules registered/.test(collision.cleanTest.detail),
+    collision.cleanTest.state === 'pass' &&
+    new RegExp(N_MODULES + ' GigaHack modules registered').test(collision.cleanTest.detail),
     JSON.stringify(collision.cleanTest));
   check('the name-collision check catches a duplicate under MV\'s full-name dedup rule',
     collision.exact.state === 'fail' && /GigaHack_Vars/.test(collision.exact.detail),
@@ -1944,6 +1957,32 @@ const SHOTS = path.resolve(__dirname, 'shots-' + ENGINE);
     return out;
   });
   check('the event panel lists the events on the loaded map', events.list === 3, events.list);
+
+  /* Harness fidelity, pinned because getting it wrong is invisible from inside
+     the mod: the engine's _events is SPARSE and indexed by event id, and
+     events() filters the holes. A dense fixture made event(1) the second
+     event, so anything resolving an id back to an event resolved the wrong one
+     — and only here.
+
+     Slot 0 is tested as EMPTY rather than as a hole: a save round-trip runs the
+     array through JsonEx and comes back with null in the hole, which is what
+     the engine does too. events() filters on !!e, so both forms behave alike,
+     and asserting the stricter one would fail after any load. */
+  const eventShape = await ev(() => ({
+    len: $gameMap._events.length,
+    zeroEmpty: !$gameMap._events[0],
+    listed: $gameMap.events().length,
+    byId: [1, 2, 3].map(i => {
+      const e = $gameMap.event(i);
+      return e ? e.eventId() : null;
+    })
+  }));
+  check('the map indexes its events by id, with a hole at zero, as the engine does',
+    eventShape.zeroEmpty === true && eventShape.len === 4, JSON.stringify(eventShape));
+  check('and events() filters the holes, so every count is unchanged',
+    eventShape.listed === 3, eventShape.listed);
+  check('so looking an event up by its id returns that event',
+    eventShape.byId.join(',') === '1,2,3', eventShape.byId.join(','));
   check('an event can be described without throwing',
     events.info !== null && events.info !== undefined, JSON.stringify(events.info).slice(0, 120));
   check('an event command list can be decoded',
@@ -2004,7 +2043,7 @@ const SHOTS = path.resolve(__dirname, 'shots-' + ENGINE);
     text.nameBox === IS_MZ, String(text.nameBox));
   check('the message-skip option is known exactly on the engine that has one',
     text.skipKnown === IS_MZ, String(text.skipKnown));
-  check('a backlog is only offered when a profile adapter supplies one',
+  check('the game\'s own backlog is offered only where a profile adapter supplies one',
     text.backlog === false && text.backlogDeclared === false, JSON.stringify(text));
   if (MODDED) {
     check('the game\'s own message options are discovered, not assumed',
@@ -2013,6 +2052,359 @@ const SHOTS = path.resolve(__dirname, 'shots-' + ENGINE);
     check('a stock game has no third-party message options to offer',
       text.gameOptions.length === 0, JSON.stringify(text.gameOptions));
   }
+
+  /* --- the recorded dialogue history ------------------------------------- */
+  const hist = await ev(() => {
+    const T = window.GigaHack.text, H = T.history;
+    const out = { installed: H.installed(), source: H.source(), why: H.why() };
+    H.clear();
+
+    const win = new Window_Message();
+
+    /* One page, said the way the interpreter says it: clear, then a line per
+       add(), then the window starts. */
+    $gameMessage.clear();
+    $gameMessage.add('Hello there, traveller.');
+    if ($gameMessage.setSpeakerName) $gameMessage.setSpeakerName('Aurora');
+    win.startMessage();
+    out.afterOne = H.count();
+    out.firstSpeaker = H.lines()[0].speaker;
+    out.firstText = H.lines()[0].text;
+
+    /* The same page started twice in the same frame is one page, not two —
+       a message plugin that restarts the window is common. */
+    win.startMessage();
+    out.afterRestart = H.count();
+
+    /* A single colon-terminated opener is a label, not a convention: 'Warning:'
+       above 'the bridge is out' must stay in the line, or the history has
+       quietly deleted a word. */
+    const say = (...lines) => {
+      $gameMessage.clear();
+      lines.forEach(l => $gameMessage.add(l));
+      win.startMessage();
+      return H.lines()[H.lines().length - 1];
+    };
+    const once = say('Warning:', 'the bridge is out.');
+    out.oneOffSpeaker = once.speaker;
+    out.oneOffText = once.text;
+
+    /* Said often enough, it IS the convention, and the split turns on for the
+       whole log at once — including the pages recorded before it was clear. */
+    say('Innkeeper:', 'A room is thirty gold.');
+    say('Innkeeper:', 'Breakfast is extra.');
+    say('Guard:', 'Move along.');
+    const second = say('Innkeeper:', 'Mind the step.');
+    out.conventionSpeaker = second.speaker;
+    out.conventionText = second.text;
+
+    /* A line that merely ends in a colon is still dialogue, convention or not. */
+    out.longOpenerSpeaker = say(
+      'And then she said the only thing that mattered to anyone:', 'run.').speaker;
+
+    /* add() must not record a second copy while the window hook is live. */
+    out.noDoubleCapture = H.count();
+
+    /* Escape codes are stored raw and stripped only on the way out. */
+    const esc = say('\x1bC[14]Guard\x1bC[0]: halt!');
+    out.escStripped = esc.text;
+    out.escRawKept = esc.raw.indexOf('\x1b') > -1;
+
+    /* The choice made is the half of a conversation no message log holds. */
+    $gameMessage.setChoices(['Pay up', 'Walk away'], 0, 1);
+    $gameMessage.onChoice(1);
+    const pick = H.lines()[H.lines().length - 1];
+    out.choiceKind = pick.kind;
+    out.choiceText = pick.text;
+
+    /* And a cancel is recorded as one, not as a picked option. */
+    $gameMessage.setChoices(['Yes', 'No'], 0, 1);
+    $gameMessage.onChoice(-1);
+    out.cancelText = H.lines()[H.lines().length - 1].text;
+
+    /* The other two prompts the engine can raise. */
+    $gameMessage.onNumberInput(42);
+    out.numberText = H.lines()[H.lines().length - 1].text;
+    $gameMessage.onItemChoice(1);
+    const item = H.lines()[H.lines().length - 1];
+    out.itemKind = item.kind;
+    out.itemNamed = /^chose \S/.test(item.text) && !/^chose item /.test(item.text);
+    $gameMessage.onItemChoice(0);
+    out.itemCancel = H.lines()[H.lines().length - 1].text;
+
+    /* Scrolling text is a different window reading the same object. */
+    if (typeof Window_ScrollText !== 'undefined') {
+      $gameMessage.clear();
+      $gameMessage.add('Long ago, in a kingdom far away…');
+      new Window_ScrollText().startMessage();
+      out.scrollKind = H.lines()[H.lines().length - 1].kind;
+    }
+
+    /* Every hole is named, not left as an absence. */
+    out.blindSpots = H.blindSpots();
+
+    /* THE ONE THAT MATTERS. \V[n] is resolved by the window, once, and the
+       variable moves on afterwards — so a recorder that captures before the
+       original stores the reference and the number is gone for good. */
+    $gameVariables.setValue(9, 270);
+    const conv = say('You have \\V[9] gold.');
+    $gameVariables.setValue(9, 5);
+    out.resolvedAtCapture = conv.text;
+    out.stillResolved = H.lines()[H.lines().length - 1].text;
+
+    /* A new game or a load rebuilds every $game object; the history keeps what
+       came before and marks the seam. */
+    /* The signal, not the whole world rebuild: DataManager.createGameObjects
+       emits this, and firing it directly leaves every other $game object alone
+       for the checks that come after. */
+    const before = H.count();
+    window.GigaHack.emit('gameobjects');
+    out.breakAdded = H.count() === before + 1;
+    out.breakKind = H.lines()[H.lines().length - 1].kind;
+
+    out.filterable = H.lines().filter(r => r.kind === 'choice').length;
+    out.text = H.asText().indexOf('Hello there, traveller.') > -1;
+
+    /* The buffer is bounded, and says how much rolled off rather than quietly
+       losing it. */
+    const keptBefore = H.max();
+    H.setMax(50);
+    for (let i = 0; i < 70; i++) say('filler line ' + i);
+    out.bounded = H.count();
+    out.dropped = H.dropped() > 0;
+    H.setMax(keptBefore);
+
+    /* Off means off, and what is already recorded stays. */
+    H.setOn(false);
+    const held = H.count();
+    $gameMessage.clear();
+    $gameMessage.add('this should not be recorded');
+    win.startMessage();
+    out.offHolds = H.count() === held;
+    H.setOn(true);
+
+    H.clear();
+    out.cleared = H.count();
+    out.undoRestores = (window.GigaHack.undo.pop(), H.count() > 0);
+    H.clear();
+    return out;
+  });
+  check('the history recorder installs on both engines', hist.installed === true, hist.why);
+  check('it listens on the message window, not the fallback',
+    hist.source === 'the message window', hist.source);
+  check('one message page is recorded once', hist.afterOne === 1, hist.afterOne);
+  check('the same page restarted in the same frame is still one page',
+    hist.afterRestart === 1, hist.afterRestart);
+  check('the speaker comes from the name box exactly where the engine has one',
+    IS_MZ ? hist.firstSpeaker === 'Aurora' : hist.firstSpeaker === '',
+    hist.firstSpeaker);
+  check('the page text is recorded whole', /Hello there, traveller\./.test(hist.firstText), hist.firstText);
+  check('one colon-terminated opener is a label, not a speaker convention',
+    hist.oneOffSpeaker === '' && /^Warning:/.test(hist.oneOffText), hist.oneOffText);
+  check('a "Name:" opener seen often enough IS read as a speaker',
+    hist.conventionSpeaker === 'Innkeeper', hist.conventionSpeaker);
+  check('and that opener is not left in the line as well',
+    hist.conventionText === 'Mind the step.', hist.conventionText);
+  check('a long line that merely ends in a colon is not mistaken for a name',
+    hist.longOpenerSpeaker === '', hist.longOpenerSpeaker);
+  check('Game_Message.add does not record a second copy while the window hook is live',
+    hist.noDoubleCapture === 7, hist.noDoubleCapture);
+  check('escape codes are stripped for display', hist.escStripped === 'Guard: halt!', hist.escStripped);
+  check('and kept on the record, because stripping is not reversible',
+    hist.escRawKept === true, String(hist.escRawKept));
+  check('the choice the player made is recorded', hist.choiceKind === 'choice', hist.choiceKind);
+  check('with the option they picked, not the index',
+    /Walk away/.test(hist.choiceText), hist.choiceText);
+  check('a cancelled choice is recorded as cancelled',
+    /cancelled/.test(hist.cancelText), hist.cancelText);
+  check('a number prompt records what was entered', /entered 42/.test(hist.numberText), hist.numberText);
+  check('an item prompt records the item by name, not by id',
+    hist.itemKind === 'item' && hist.itemNamed === true, JSON.stringify([hist.itemKind, hist.itemNamed]));
+  check('and choosing no item is recorded as that', /no item/.test(hist.itemCancel), hist.itemCancel);
+  check('scrolling text is recorded too', hist.scrollKind === 'scroll', hist.scrollKind);
+  check('a variable reference is recorded as the value it showed, not as the reference',
+    hist.resolvedAtCapture === 'You have 270 gold.', hist.resolvedAtCapture);
+  check('and it stays that value after the variable moves on',
+    hist.stillResolved === 'You have 270 gold.', hist.stillResolved);
+  check('the recorder names every hole in its own coverage',
+    hist.blindSpots.length >= 2 && hist.blindSpots.some(b => /battle log/.test(b)),
+    JSON.stringify(hist.blindSpots));
+  check('a new game or a load marks a break rather than wiping the history',
+    hist.breakAdded === true && hist.breakKind === 'break', hist.breakKind);
+  check('the history can be filtered to the answers alone', hist.filterable === 2, hist.filterable);
+  check('it exports as plain text with the speaker attached', hist.text === true, String(hist.text));
+  check('the buffer holds to its limit', hist.bounded === 50, hist.bounded);
+  check('and says how much rolled off rather than losing it quietly',
+    hist.dropped === true, String(hist.dropped));
+  check('turning recording off stops it and keeps what is already there',
+    hist.offHolds === true, String(hist.offHolds));
+  check('clearing empties it', hist.cleared === 0, hist.cleared);
+  check('and clearing is undoable', hist.undoRestores === true, String(hist.undoRestores));
+
+  /* --- the recorder's own failure modes ---------------------------------- */
+  const histEdge = await ev(() => {
+    const G = window.GigaHack, T = G.text, H = T.history;
+    const out = {};
+    H.clear();
+    const win = new Window_Message();
+    const say = (...lines) => {
+      $gameMessage.clear();
+      lines.forEach(l => $gameMessage.add(l));
+      win.startMessage();
+      return H.lines()[H.lines().length - 1];
+    };
+
+    /* Scrolling text keeps the page UNCONVERTED on both engines, so a recorder
+       that reads it as converted presents a live reference as a resolved value. */
+    $gameVariables.setValue(9, 700);
+    $gameMessage.clear();
+    $gameMessage.add('The treasury held \\V[9] coins.');
+    new Window_ScrollText().startMessage();
+    const scroll = H.lines()[H.lines().length - 1];
+    out.scrollNotFaked = scroll.text.indexOf('700') === -1;
+    out.scrollBlindSpot = H.blindSpots().some(b => /scrolling text/.test(b));
+
+    /* Play time is the ENGINE's clock. GigaHack's own counter starts at zero when
+       the mod loads and keeps ticking while the mod holds the game. */
+    Graphics.frameCount = 3600 * 5;
+    const timed = say('Five hours in.');
+    out.playIsEngineClock = timed.play >= 3600 * 5;
+    out.playIsNotModClock = timed.play !== timed.frame;
+
+    /* A page that strips to nothing is still a page: dropping the row would make
+       the list disagree with the count, with no gap to notice. */
+    const before = H.count();
+    const iconOnly = say('\\I[87]');
+    out.codeOnlyKept = H.count() === before + 1 && !!iconOnly.text;
+    out.codeOnlySaysSo = /control codes/.test(iconOnly.text);
+    out.listMatchesCount = H.lines().length === H.count();
+
+    /* The row number identifies the record, so a filtered view cannot make two
+       different lines look like the same one. Clearing does NOT restart the
+       numbering, by design, so it is the run that is checked, not the first value. */
+    const ns = H.lines().map(r => r.n);
+    out.stableNumbers = ns.length > 1 && ns.every((n, k) => k === 0 || n === ns[k - 1] + 1);
+
+    /* Once the ring is full its length never changes again, so a cache keyed on
+       length freezes the speaker detection at whatever it concluded then. */
+    H.setMax(50);
+    for (let i = 0; i < 60; i++) say('filler ' + i);       // saturate, no convention
+    out.beforeConvention = H.speakerMode();
+    for (let i = 0; i < 20; i++) say('Guard ' + i + ':', 'Move along.');
+    out.afterConvention = H.speakerMode();
+
+    /* And turning the convention off must un-split rows that were already read
+       back once, not just future ones. */
+    const splitRow = H.lines()[H.lines().length - 1];
+    out.splitWhileOn = splitRow.speaker;
+    G.store.cfgSet('text.history.splitFirstLine', false);
+    out.splitWhileOff = H.lines()[H.lines().length - 1].speaker;
+    G.store.cfgSet('text.history.splitFirstLine', true);
+
+    H.clear();
+    H.setMax(500);
+    return out;
+  });
+  check('a scrolling line never shows a value the window did not resolve',
+    histEdge.scrollNotFaked === true, String(histEdge.scrollNotFaked));
+  check('and the recorder names that limit rather than leaving it as a gap',
+    histEdge.scrollBlindSpot === true, String(histEdge.scrollBlindSpot));
+  check('the time beside a line is the engine\'s clock, not the mod\'s own counter',
+    histEdge.playIsEngineClock === true && histEdge.playIsNotModClock === true,
+    JSON.stringify([histEdge.playIsEngineClock, histEdge.playIsNotModClock]));
+  check('a page that is nothing but control codes is kept, and says what it was',
+    histEdge.codeOnlyKept === true && histEdge.codeOnlySaysSo === true,
+    JSON.stringify([histEdge.codeOnlyKept, histEdge.codeOnlySaysSo]));
+  check('so the list and the "pages kept" count agree',
+    histEdge.listMatchesCount === true, String(histEdge.listMatchesCount));
+  check('the number beside a line identifies the record, not its position',
+    histEdge.stableNumbers === true, String(histEdge.stableNumbers));
+  check('the speaker convention is still detected after the buffer is full',
+    histEdge.beforeConvention === 'none found' &&
+    histEdge.afterConvention === 'a "Name:" opener',
+    JSON.stringify([histEdge.beforeConvention, histEdge.afterConvention]));
+  check('and turning it off un-splits rows that were already read back',
+    histEdge.splitWhileOn !== '' && histEdge.splitWhileOff === '',
+    JSON.stringify([histEdge.splitWhileOn, histEdge.splitWhileOff]));
+
+  /* A remembered filter must not follow a source switch. The two logs are
+     different shapes — only the recorder's rows carry a kind — so a filter left
+     on "answers" emptied the game's own backlog with the control that caused it
+     not even on screen. Needs an adapter, so one is installed for the test. */
+  const twoSources = await ev(() => {
+    const G = window.GigaHack, T = G.text;
+    const lines = ['\x1bC[3]Aria:', 'The gate is shut.', 'Try the east wall.'];
+    const real = G.profile.adapter;
+    G.profile.adapter = function (slot) {
+      if (slot === 'backlog') {
+        return {
+          available: function () { return true; },
+          read: function () { return lines.slice(); },
+          max: function () { return 100; }
+        };
+      }
+      return real.call(G.profile, slot);
+    };
+    const out = {};
+    try {
+      out.declared = T.backlogDeclared();
+      G.ui.setOpen(true);
+      G.cfg.ui.tab = 'game';
+      G.cfg.ui.sub = G.cfg.ui.sub || {};
+      G.cfg.ui.sub.game = 'History';
+      G.store.cfgSet('text.history.source', 'recorded here');
+      G.ui.rerender();
+
+      // Set the kind filter to one only the recorder's rows can satisfy.
+      const dd = document.querySelector('#mm-root .mm-toolbar .mm-dd');
+      dd.querySelector('.mm-dd-btn').click();
+      Array.prototype.slice.call(dd.querySelectorAll('.mm-opt'))
+        .filter(o => o.getAttribute('data-mm-v') === 'answers')[0].click();
+
+      // Now switch to the game's own log, whose rows carry no kind at all.
+      G.store.cfgSet('text.history.source', "the game's own");
+      G.ui.rerender();
+      const body = document.querySelector('#mm-root .mm-body');
+      out.rows = body.querySelectorAll('.mm-tr').length;
+      out.empty = /nothing said yet/.test(body.textContent);
+    } finally {
+      G.profile.adapter = real;
+      G.store.cfgSet('text.history.source', 'recorded here');
+      G.ui.rerender();
+    }
+    return out;
+  });
+  check('a kind filter set on one source does not empty the other',
+    twoSources.declared === true && twoSources.rows > 0 && twoSources.empty === false,
+    JSON.stringify(twoSources));
+
+  /* The panel itself, not just the API behind it: every control is clicked,
+     because a builder that throws leaves an empty panel and nothing else says
+     so. This caught a helper that a refactor had renamed out from under the
+     export button. */
+  const histPanel = await ev(() => {
+    const G = window.GigaHack;
+    G.ui.setOpen(true);
+    G.cfg.ui.tab = 'game';
+    G.cfg.ui.sub = G.cfg.ui.sub || {};
+    G.cfg.ui.sub.game = 'History';
+    G.ui.rerender();
+    const body = document.querySelector('#mm-root .mm-body');
+    const out = { rendered: !!body && body.textContent.length > 20, clicked: 0, threw: [] };
+    const before = window.__errors.length;
+    body.querySelectorAll('button').forEach(b => {
+      const label = (b.textContent || '').trim();
+      if (/clear/i.test(label)) return;      // tested through the API already
+      try { b.click(); out.clicked++; } catch (e) { out.threw.push(label + ': ' + e.message); }
+    });
+    out.newErrors = window.__errors.slice(before);
+    return out;
+  });
+  check('the History panel renders and every control on it survives a click',
+    histPanel.rendered === true && histPanel.clicked > 0 &&
+    histPanel.threw.length === 0 && histPanel.newErrors.length === 0,
+    JSON.stringify({ n: histPanel.clicked, threw: histPanel.threw, errs: histPanel.newErrors }));
+  await ev(() => { window.GigaHack.text.history.clear(); });
 
   /* --- Forge: computed and PERSISTED id bases, membership-based isCustom -- */
   const forge = await ev(() => {
@@ -2469,6 +2861,30 @@ const SHOTS = path.resolve(__dirname, 'shots-' + ENGINE);
   }
 
   /* =======================================================================
+     PER-FEATURE CHECK FILES
+
+     One file per feature module in checks/, so a module's checks live beside
+     the module rather than in the middle of a 3000-line file that everything
+     else also edits. Each exports a function taking the same context this file
+     builds, so a check written there is indistinguishable from one written
+     here — same check(), same ev(), same engine flags.
+
+     A file that throws fails ONE check rather than taking the run down: a
+     broken new feature must not hide the state of everything else.
+     ==================================================================== */
+  const CHECK_DIR = path.resolve(__dirname, 'checks');
+  if (fs.existsSync(CHECK_DIR)) {
+    const ctx = { check, ev, page, shot, CFG, ENGINE, IS_MV, IS_MZ, MODDED, N_MODULES, MODULES };
+    for (const f of fs.readdirSync(CHECK_DIR).filter(n => /\.js$/.test(n)).sort()) {
+      try {
+        await require(path.join(CHECK_DIR, f))(ctx);
+      } catch (e) {
+        check('the checks in ' + f + ' ran without throwing', false, (e && e.message) || String(e));
+      }
+    }
+  }
+
+  /* =======================================================================
      SCREENSHOTS — how the port is checked against the design, and how the
      panels get reviewed. Engine-scoped so an MV run never overwrites MZ's.
      ==================================================================== */
@@ -2483,6 +2899,132 @@ const SHOTS = path.resolve(__dirname, 'shots-' + ENGINE);
     await page.waitForTimeout(90);
     await shot('tab-' + t);
   }
+  /* "Disabled" has to mean one thing on every path. The CSS carries
+     pointer-events:none, which stops a pointer and nothing else — el.click(),
+     a dispatched event and mm.toggle() all ignore it, and mm.disable() can add
+     the class long after the handler was attached. A control the panel greyed
+     WITH A REASON must not still run when something asks it to. */
+  const disabledPaths = await ev(() => {
+    const W = window.GigaHack.ui.w;
+    let ran = 0;
+    const btn = W.button({ label: 'x', disabled: true, _ungated: true, onClick: () => { ran++; } });
+    document.querySelector('#mm-root').appendChild(btn);
+    btn.click();
+    const afterClick = ran;
+
+    let changed = 0;
+    const cb = W.checkbox({ value: false, disabled: true, _ungated: true, onChange: () => { changed++; } });
+    document.querySelector('#mm-root').appendChild(cb);
+    cb.click();
+    cb.mm.toggle();
+    const afterCb = changed;
+
+    // And a control disabled AFTER it was built, which is the mm.disable path.
+    let late = 0;
+    const b2 = W.button({ label: 'y', _ungated: true, onClick: () => { late++; } });
+    document.querySelector('#mm-root').appendChild(b2);
+    b2.mm.disable(true);
+    b2.click();
+    const afterLate = late;
+    b2.mm.disable(false);
+    b2.click();
+
+    btn.remove(); cb.remove(); b2.remove();
+    return { afterClick, afterCb, afterLate, enabledAgain: late };
+  });
+  check('a disabled button does not run its handler when something clicks it in code',
+    disabledPaths.afterClick === 0, disabledPaths.afterClick);
+  check('nor does a disabled checkbox, through a click or through toggle()',
+    disabledPaths.afterCb === 0, disabledPaths.afterCb);
+  check('a control disabled after it was built is disabled too, and enabling it works',
+    disabledPaths.afterLate === 0 && disabledPaths.enabledAgain === 1,
+    JSON.stringify([disabledPaths.afterLate, disabledPaths.enabledAgain]));
+
+  /* ui.sub is keyed by TAB id. 'vars' was a 1.x tab name, so the Variables
+     panel's "show diff" had been switching a sub-tab that does not exist. */
+  const subKeys = await ev(() => {
+    const G = window.GigaHack;
+    const tabs = G.ui.tabIds();
+    return Object.keys(G.cfg.ui.sub || {}).filter(k => tabs.indexOf(k) === -1);
+  });
+  check('every remembered sub-tab is stored under a tab that exists',
+    subKeys.length === 0, subKeys.join(', '));
+
+  /* JsonEx marks the LIVE object it serialises — `value['@'] = constructorName`
+     — on both engines, and only MV deletes the marks again afterwards. Anything
+     walking a $game* object and reporting what it found meets an own key no
+     engine field list contains on MZ, and does not on MV. */
+  const jsonExMarks = await ev(() => {
+    /* The ENGINE's pair, not the live one: the modelled plugin stack replaces
+       JsonEx with a circular-reference encoder whose parse only accepts its own
+       array format, which is the trap that stack exists to model. Asserting
+       engine behaviour through somebody else's serialiser would assert theirs. */
+    const J = window.__stockJsonEx || JsonEx;
+    const replaced = !!window.__stockJsonEx;
+    const probe = new Game_System();
+    J.stringify.call(JsonEx, probe);
+    const marked = Object.prototype.hasOwnProperty.call(probe, '@');
+    const round = J.parse.call(JsonEx, J.stringify.call(JsonEx, new Game_System()));
+    return {
+      replaced: replaced,
+      marked: marked,
+      revived: round instanceof Game_System,
+      keepsTag: Object.prototype.hasOwnProperty.call(round, '@'),
+      unknown: (function () {
+        const o = J.parse.call(JsonEx, '{"@":"No_Such_Class_Here","a":1}');
+        return { tag: o['@'] || null, plain: Object.getPrototypeOf(o) === Object.prototype };
+      }()),
+      liveTakesStock: (function () {
+        // A save written by the engine must still be readable by whatever is
+        // live. Where a plugin has taken the pair over, it is theirs to answer.
+        try { return JsonEx.parse('{"a":1}').a === 1; } catch (e) { return 'threw'; }
+      }())
+    };
+  });
+  check('serialising marks the live object exactly on the engine that does not clean up after itself',
+    jsonExMarks.marked === IS_MZ, String(jsonExMarks.marked));
+  check('a revived object gets its class back and keeps the tag that named it',
+    jsonExMarks.revived === true && jsonExMarks.keepsTag === true, JSON.stringify(jsonExMarks));
+  check('a section naming a class this build does not have arrives plain, still carrying its name',
+    jsonExMarks.unknown.tag === 'No_Such_Class_Here' && jsonExMarks.unknown.plain === true,
+    JSON.stringify(jsonExMarks.unknown));
+  check('a serialiser plugin is detected as having replaced the pair exactly where one is loaded',
+    jsonExMarks.replaced === !!MODDED, String(jsonExMarks.replaced));
+
+  /* THE LABEL SIDE OF THE SAME BUG. A row's right edge is flex:0 0 auto, so a
+     control or a value that is too wide takes what it wants and .mm-lab is left
+     ellipsising itself into nothing — "Fires on" rendered as "Fir...". It stays
+     inside its box, so nothing overflows and nothing looks broken; the row just
+     stops saying what it is for. Measured across every panel on every tab,
+     because it arrives one panel at a time and only in the narrow column. */
+  const squeezed = await ev(() => {
+    const G = window.GigaHack, out = [];
+    const tab0 = G.cfg.ui.tab, sub0 = JSON.stringify(G.cfg.ui.sub || {}), open0 = G.ui.isOpen();
+    G.ui.setOpen(true);
+    G.ui.tabIds().forEach(tab => {
+      G.cfg.ui.tab = tab;
+      (G.ui.panelNames ? G.ui.panelNames(tab) : []).forEach(name => {
+        G.cfg.ui.sub = G.cfg.ui.sub || {};
+        G.cfg.ui.sub[tab] = name;
+        G.ui.rerender();
+        document.querySelectorAll('#mm-root .mm-col-narrow .mm-lab').forEach(el => {
+          // Trimmed is fine; squeezed under about nine characters is not.
+          if (el.scrollWidth > el.clientWidth + 1 && el.clientWidth < 60) {
+            out.push(tab + '/' + name + ' "' + el.textContent.trim().slice(0, 28) + '" ' +
+              el.clientWidth + '/' + el.scrollWidth);
+          }
+        });
+      });
+    });
+    G.cfg.ui.tab = tab0;
+    G.cfg.ui.sub = JSON.parse(sub0);
+    G.ui.setOpen(open0);
+    G.ui.rerender();
+    return out;
+  });
+  check('no row label in a sidebar is squeezed to nothing by the control beside it',
+    squeezed.length === 0, JSON.stringify(squeezed.slice(0, 6)));
+
   check('every tab renders without emptying the body',
     await ev(() => {
       const G = window.GigaHack;
@@ -2492,6 +3034,119 @@ const SHOTS = path.resolve(__dirname, 'shots-' + ENGINE);
         return body && body.textContent.trim().length > 20;
       });
     }));
+  /* --- long values do not break the layout -------------------------------
+     Measured, not eyeballed. A path is one unbreakable token far longer than
+     the column it lands in, so every rule that is supposed to contain it —
+     the shrinkable edge, the wrapping edge, the middle-ellipsis widget, the
+     tooltip and the toast — is checked by comparing scrollWidth against the
+     box that is meant to hold it. */
+  const LONG_PATH =
+    '/Users/somebody/Library/Application Support/Steam/steamapps/common/' +
+    'A Very Long Game Title 5.3.2/Game.app/Contents/Resources/app.nw/js/plugins';
+
+  await ev(p => {
+    const G = window.GigaHack;
+    window.__realPaths = { plugins: G.paths.pluginsDir, data: G.paths.dataDir };
+    G.paths.pluginsDir = p;
+    G.paths.dataDir = p + '/gigahack-userdata';
+    G.ui.setOpen(true);
+    G.cfg.ui.tab = 'debug';
+    G.cfg.ui.sub = G.cfg.ui.sub || {};
+    G.cfg.ui.sub.debug = 'Plugins';
+    G.ui.rerender();
+  }, LONG_PATH);
+  await page.waitForTimeout(140);
+  // The footer rows that hold the paths are below the fold in this panel.
+  await ev(() => {
+    document.querySelectorAll('#mm-root .mm-col').forEach(c => { c.scrollTop = c.scrollHeight; });
+  });
+  await page.waitForTimeout(60);
+  await shot('long-path');
+
+  const overflow = await ev(() => {
+    const out = { cols: [], worst: 0, rows: 0, paths: 0, elided: 0 };
+    document.querySelectorAll('#mm-root .mm-col').forEach(c => {
+      // A column that scrolls sideways is a column whose content did not fit.
+      out.cols.push(c.scrollWidth - c.clientWidth);
+      if (c.scrollWidth - c.clientWidth > out.worst) out.worst = c.scrollWidth - c.clientWidth;
+    });
+    document.querySelectorAll('#mm-root .mm-row').forEach(r => {
+      if (r.scrollWidth > r.clientWidth + 1) out.rows++;
+    });
+    document.querySelectorAll('#mm-root .mm-path').forEach(el => {
+      out.paths++;
+      // The widget keeps the whole value on title= and shows a shortened form.
+      const full = el.getAttribute('title') || '';
+      if (full && el.textContent !== full && el.textContent.indexOf('…') > -1) out.elided++;
+    });
+    return out;
+  });
+  check('no panel column is pushed sideways by a long path',
+    overflow.worst === 0, JSON.stringify(overflow.cols));
+  check('and no row inside one is either', overflow.rows === 0, overflow.rows);
+
+  const pathWidget = await ev(() => {
+    const el = document.querySelector('#mm-root .mm-path');
+    if (!el) return { found: false };
+    const full = el.getAttribute('title') || '';
+    return {
+      found: true, full: full, shown: el.textContent,
+      elided: el.textContent !== full,
+      middle: el.textContent.indexOf('…') > 0 && el.textContent.indexOf('…') < el.textContent.length - 1,
+      keepsTail: full.slice(-10) === el.textContent.slice(-10),
+      fits: el.scrollWidth <= el.clientWidth + 1,
+      copyable: getComputedStyle(el).userSelect === 'text' ||
+        getComputedStyle(el).webkitUserSelect === 'text'
+    };
+  });
+  check('a path too long for its row is shortened rather than clipped',
+    pathWidget.found === true && pathWidget.elided === true && pathWidget.fits === true,
+    JSON.stringify(pathWidget).slice(0, 200));
+  check('it is shortened in the MIDDLE, so the tail that identifies it survives',
+    pathWidget.middle === true && pathWidget.keepsTail === true, pathWidget.shown);
+  check('the whole value is still on the element, for the tooltip and the clipboard',
+    pathWidget.full === LONG_PATH, pathWidget.full);
+  check('and it is selectable, which MV turns off for the whole document',
+    pathWidget.copyable === true, String(pathWidget.copyable));
+
+  /* The tooltip is delegated on pointerover with a 400ms delay, so the probe
+     is hovered, waited on, then measured. */
+  await ev(p => {
+    const probe = document.createElement('div');
+    probe.className = 'mm-row';
+    probe.id = 'mm-tip-probe';
+    probe.setAttribute('data-mm-tip', 'Path|' + p);
+    document.querySelector('#mm-root').appendChild(probe);
+    probe.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }));
+  }, LONG_PATH);
+  await page.waitForTimeout(550);
+  const tipBox = await ev(() => {
+    const tip = document.querySelector('#mm-root .mm-tip');
+    const r = tip ? { w: tip.clientWidth, s: tip.scrollWidth, h: tip.clientHeight } : null;
+    const probe = document.getElementById('mm-tip-probe');
+    if (probe) probe.remove();
+    if (tip) tip.remove();
+    return r;
+  });
+  check('a tooltip holding a path stays inside its own box',
+    tipBox && tipBox.s <= tipBox.w + 1, JSON.stringify(tipBox));
+
+  const toastBox = await ev(p => {
+    window.GigaHack.ui.toast({ title: 'WROTE', msg: p, severity: 'ok', ms: 200 });
+    const t = document.querySelector('#mm-root .mm-toast');
+    const r = t ? { w: t.clientWidth, s: t.scrollWidth } : null;
+    if (t) t.remove();
+    return r;
+  }, LONG_PATH);
+  check('and so does a toast', toastBox && toastBox.s <= toastBox.w + 1, JSON.stringify(toastBox));
+
+  await ev(() => {
+    const G = window.GigaHack;
+    G.paths.pluginsDir = window.__realPaths.plugins;
+    G.paths.dataDir = window.__realPaths.data;
+    G.ui.rerender();
+  });
+
   await ev(() => { window.GigaHack.cfg.ui.tab = 'vars'; window.GigaHack.ui.rerender(); });
 
   /* =======================================================================

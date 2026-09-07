@@ -16,6 +16,14 @@ INSTALLER="$HERE/install/gigahack-install.sh"
 BED="${TMPDIR:-/tmp}/gigahack-installer-tests.$$"
 PASS=0; FAIL=0
 
+# The number of modules is the manifest's business, not this script's. It was a
+# literal 26 in seven places here and three more in the browser suite, and every
+# one of them was somewhere a newly added module could be quietly missing from
+# without a single check going red. Counted with grep rather than a JSON parser,
+# because macOS ships neither jq nor python by default.
+N_MODULES="$(grep -c '"name": *"GigaHack_' "$HERE/gigahack/manifest.json")"
+[ "${N_MODULES:-0}" -gt 0 ] || { echo "cannot read the module list from gigahack/manifest.json" >&2; exit 2; }
+
 pass() { PASS=$((PASS+1)); printf '  PASS  %s\n' "$1"; }
 fail() { FAIL=$((FAIL+1)); printf '  FAIL  %s\n' "$1"; [ $# -gt 1 ] && printf '        %s\n' "$2"; }
 check(){ if [ "$1" = 1 ]; then pass "$2"; else fail "$2" "${3:-}"; fi; }
@@ -129,12 +137,12 @@ for g in pretty-mz empty-mv trailing-comma minified crlf no-final-newline \
 	else
 		fail "$label: the rewritten plugins.js does NOT parse" "$(head -c 300 "$d/js/plugins.js")"
 	fi
-	check "$([ "$(count_gh "$d/js/plugins.js")" = 26 ] && echo 1 || echo 0)" "$label: all 26 modules are listed"
+	check "$([ "$(count_gh "$d/js/plugins.js")" = "$N_MODULES" ] && echo 1 || echo 0)" "$label: all $N_MODULES modules are listed"
 	check "$(last_is_gh "$d/js/plugins.js")" "$label: GigaHack is last, so its hooks are outermost"
 	check "$(order_ok "$d/js/plugins.js")" "$label: Core is first and Boot is last within the block"
 	check "$([ -f "$d/js/plugins.js.gigahack-backup" ] && echo 1 || echo 0)" "$label: the original plugins.js was backed up"
 	n=$(ls "$d/js/plugins"/GigaHack_*.js 2>/dev/null | wc -l | tr -d ' ')
-	check "$([ "$n" = 26 ] && echo 1 || echo 0)" "$label: 26 module files were copied"
+	check "$([ "$n" = "$N_MODULES" ] && echo 1 || echo 0)" "$label: $N_MODULES module files were copied"
 	bad=$(find "$d/js/plugins" -name 'GigaHack_*.js' ! -perm -044 2>/dev/null | wc -l | tr -d ' ')
 	check "$([ "$bad" = 0 ] && echo 1 || echo 0)" "$label: every module is world-readable (a file the game cannot read is invisible, not broken)"
 done
@@ -151,7 +159,7 @@ echo
 echo "-- idempotence: installing twice must not duplicate"
 "$INSTALLER" "$BED/pretty-mz" >/dev/null 2>&1
 "$INSTALLER" "$BED/pretty-mz" >/dev/null 2>&1
-check "$([ "$(count_gh "$BED/pretty-mz/js/plugins.js")" = 26 ] && echo 1 || echo 0)" "three installs still leave exactly 26 entries"
+check "$([ "$(count_gh "$BED/pretty-mz/js/plugins.js")" = "$N_MODULES" ] && echo 1 || echo 0)" "three installs still leave exactly $N_MODULES entries"
 check "$(last_is_gh "$BED/pretty-mz/js/plugins.js")" "still last after reinstalling"
 orig=$(parse "$BED/pretty-mz/js/plugins.js" | node -e '
 	var d=""; process.stdin.on("data",function(c){d+=c}).on("end",function(){
@@ -311,7 +319,7 @@ mkgame "$BED/My Game 1.2 mac" MV 'var $plugins = [
 '
 out=$("$INSTALLER" "$BED/My Game 1.2 mac" 2>&1); rc=$?
 check "$([ $rc -eq 0 ] && echo 1 || echo 0)" "a path with spaces installs" "$out"
-check "$([ "$(count_gh "$BED/My Game 1.2 mac/js/plugins.js")" = 26 ] && echo 1 || echo 0)" "...with all 26 modules"
+check "$([ "$(count_gh "$BED/My Game 1.2 mac/js/plugins.js")" = "$N_MODULES" ] && echo 1 || echo 0)" "...with all $N_MODULES modules"
 check "$(echo "$out" | grep -qc 'not an RPG Maker' && echo 0 || echo 1)" "...and is not reported as three separate non-games"
 out=$("$INSTALLER" --verify "$BED/My Game 1.2 mac" 2>&1); rc=$?
 check "$([ $rc -eq 0 ] && echo 1 || echo 0)" "...and verifies clean"
@@ -330,6 +338,96 @@ echo
 # machine actually has. On a Mac that is BSD awk, which is the one that
 # matters; on a Linux box it is usually gawk plus whatever else is installed.
 # Nothing is skipped silently — each implementation found is named.
+# The Windows installer shipped once without ever being executed, and the first
+# person to run it hit two defects in one go. It is a separate implementation of
+# the same contract, so it gets the same checks — wherever a PowerShell exists
+# to run them. Where none does, the suite says so rather than passing silently
+# over an untested file.
+echo "-- the Windows installer (PowerShell)"
+PS_INSTALLER="$HERE/install/gigahack-install.ps1"
+PS=""
+for cand in pwsh powershell pwsh-preview; do
+	command -v "$cand" >/dev/null 2>&1 && { PS="$cand"; break; }
+done
+
+if [ -z "$PS" ]; then
+	printf '  SKIP  no PowerShell on this machine, so gigahack-install.ps1 was not run.\n'
+	printf '        It is a separate implementation of the same contract and it HAS\n'
+	printf '        shipped broken before. Install one to cover it:\n'
+	printf '            https://github.com/PowerShell/PowerShell/releases\n'
+else
+	printf '  using %s\n' "$($PS --version 2>&1 | head -1)"
+	build_bed
+	PSBED="$BED/psrelease"
+	mkdir -p "$PSBED/js"
+	cp -R "$HERE/gigahack/js/plugins" "$PSBED/js/plugins"
+	cp "$HERE/gigahack/manifest.json" "$PSBED/"
+	cp -R "$HERE/gigahack/profiles" "$PSBED/profiles"
+	cp "$PS_INSTALLER" "$PSBED/"
+
+	out="$("$PS" -NoProfile -File "$PSBED/gigahack-install.ps1" -Path "$BED/pretty-mz" 2>&1)"; rc=$?
+	check "$([ $rc -eq 0 ] && echo 1 || echo 0)" "ps: the installer completes" "$out"
+	if parse "$BED/pretty-mz/js/plugins.js" >/dev/null 2>&1; then
+		pass "ps: the rewritten plugins.js still parses as JavaScript"
+	else
+		fail "ps: the rewritten plugins.js does NOT parse" "$(head -c 200 "$BED/pretty-mz/js/plugins.js")"
+	fi
+	check "$([ "$(count_gh "$BED/pretty-mz/js/plugins.js")" = "$N_MODULES" ] && echo 1 || echo 0)" "ps: all $N_MODULES modules are listed"
+	check "$(last_is_gh "$BED/pretty-mz/js/plugins.js")" "ps: GigaHack is last"
+	check "$(order_ok "$BED/pretty-mz/js/plugins.js")" "ps: Core is first and Boot is last within the block"
+	holes=$(parse "$BED/pretty-mz/js/plugins.js" | node -e '
+		var d=""; process.stdin.on("data",function(c){d+=c}).on("end",function(){
+			console.log(JSON.parse(d).filter(function(p){ return !p || !p.name }).length); });')
+	check "$([ "$holes" = 0 ] && echo 1 || echo 0)" "ps: no holes in the array"
+
+	"$PS" -NoProfile -File "$PSBED/gigahack-install.ps1" -Path "$BED/pretty-mz" >/dev/null 2>&1
+	check "$([ "$(count_gh "$BED/pretty-mz/js/plugins.js")" = "$N_MODULES" ] && echo 1 || echo 0)" "ps: installing twice does not duplicate"
+
+	out="$("$PS" -NoProfile -File "$PSBED/gigahack-install.ps1" -Path "$BED/pretty-mz" -Verify 2>&1)"; rc=$?
+	check "$([ $rc -eq 0 ] && echo 1 || echo 0)" "ps: a good install verifies clean" "$out"
+
+	"$PS" -NoProfile -File "$PSBED/gigahack-install.ps1" -Path "$BED/pretty-mz" -Uninstall >/dev/null 2>&1
+	check "$([ "$(count_gh "$BED/pretty-mz/js/plugins.js")" = 0 ] && echo 1 || echo 0)" "ps: uninstall removes every entry"
+	n=$(ls "$BED/pretty-mz/js/plugins"/GigaHack_*.js 2>/dev/null | wc -l | tr -d ' ')
+	check "$([ "$n" = 0 ] && echo 1 || echo 0)" "ps: uninstall removes every module file"
+
+	# The defect that reached a user: an installer copied INTO a game folder
+	# adopted the GAME's own js/plugins as its payload and began backing up
+	# plugins.js before finding out it had nothing to install.
+	build_bed
+	cp "$PS_INSTALLER" "$BED/pretty-mz/"
+	before=$(cksum < "$BED/pretty-mz/js/plugins.js")
+	# Run it FROM the game folder. Double-clicking sets the working directory to
+	# the script's own folder, and the installer discovers games relative to the
+	# working directory — so testing from anywhere else makes the check vacuous:
+	# discovery looks somewhere harmless and the game is never touched for a
+	# reason that has nothing to do with the fix.
+	out=$(cd "$BED/pretty-mz" && "$PS" -NoProfile -File ./gigahack-install.ps1 2>&1); rc=$?
+	after=$(cksum < "$BED/pretty-mz/js/plugins.js")
+	check "$([ $rc -ne 0 ] && echo 1 || echo 0)" "ps: refuses when copied into a game folder"
+	check "$([ "$before" = "$after" ] && echo 1 || echo 0)" "ps: ...without touching plugins.js first"
+	check "$([ ! -f "$BED/pretty-mz/js/plugins.js.gigahack-backup" ] && echo 1 || echo 0)" "ps: ...and leaves no stray backup"
+	check "$(echo "$out" | grep -qi 'looks like the GAME' && echo 1 || echo 0)" "ps: ...and names the mistake"
+fi
+
+# The shell installer had the identical flaw, so it gets the identical check.
+build_bed
+cp "$INSTALLER" "$BED/empty-mv/"
+before=$(cksum < "$BED/empty-mv/js/plugins.js")
+out=$(cd "$BED/empty-mv" && ./gigahack-install.sh 2>&1); rc=$?
+after=$(cksum < "$BED/empty-mv/js/plugins.js")
+check "$([ ! -f "$BED/empty-mv/js/plugins.js.gigahack-backup" ] && echo 1 || echo 0)" "sh: ...and leaves no stray backup"
+check "$([ $rc -ne 0 ] && echo 1 || echo 0)" "sh: refuses when copied into a game folder"
+check "$([ "$before" = "$after" ] && echo 1 || echo 0)" "sh: ...without touching plugins.js first"
+check "$(echo "$out" | grep -qi 'looks like the GAME' && echo 1 || echo 0)" "sh: ...and names the mistake"
+
+# A UNC working directory is what a Parallels or VMware share of a host drive
+# looks like from Windows, and cmd.exe cannot cd into one.
+check "$(grep -q 'pushd' "$HERE/install/gigahack-install.bat" && echo 1 || echo 0)" "bat: pushd, so a UNC share does not drop cmd into C:\\Windows"
+check "$(file "$HERE/install/gigahack-install.bat" | grep -q CRLF && echo 1 || echo 0)" "bat: CRLF line endings, as Windows requires"
+
+echo
+#-----------------------------------------------------------------------------
 echo "-- portability across awk implementations"
 
 # Static first, because it holds even where only one awk exists: multi-line
@@ -372,7 +470,7 @@ for a in $AWKS; do
 	fi
 	check "$ok" "$a: the installer completes"
 	if [ "$ok" = 1 ]; then
-		check "$([ "$(count_gh "$BED/pretty-mz/js/plugins.js")" = 26 ] && echo 1 || echo 0)" "$a: all 26 modules are listed"
+		check "$([ "$(count_gh "$BED/pretty-mz/js/plugins.js")" = "$N_MODULES" ] && echo 1 || echo 0)" "$a: all $N_MODULES modules are listed"
 		check "$(last_is_gh "$BED/pretty-mz/js/plugins.js")" "$a: GigaHack is last"
 		holes=$(parse "$BED/pretty-mz/js/plugins.js" | node -e '
 			var d=""; process.stdin.on("data",function(c){d+=c}).on("end",function(){

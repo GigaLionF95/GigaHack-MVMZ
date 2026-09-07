@@ -1110,8 +1110,8 @@
                 value: i.hp, min: 0, max: i.mhp, wide: true, label: 'Enemy HP',
                 disabled: i.hidden,
                 onChange: function (v) { B.setEnemyHp(e, v); refresh(); }
-            }), { tip: 'Set HP|Undoable while this battle lasts. Setting it to 0 is a kill, not an edit — ' +
-                'it takes a save backup and cannot be undone, because it can end the fight.' })
+            }), { tip: 'Set HP|Undoable while this battle lasts. 0 is a kill: backed up, and not ' +
+                      'undoable.' })
         ], { tag: 'live' }));
 
         var p = i.params;
@@ -1147,8 +1147,7 @@
                     text: B.capText(cap)
                 })
             ], { tip: B.paramName(n) + '|Recomputed and re-clamped on every read. The second column is this ' +
-                    'build\'s live ceiling for this parameter — a value above it is thrown away before you ' +
-                    'see it, so it is shown rather than discovered.' });
+                    'build\'s live ceiling; anything above it is thrown away.' });
         });
 
         paramRows.push(capOffer(e, refresh));
@@ -1174,8 +1173,7 @@
             })) : h('div', { class: 'mm-empty', text: 'no skills in the database' }),
             W.button({
                 label: 'make it act now', wide: true, mutates: true, disabled: !!forceWhy,
-                tip: 'Force|The engine picks the target. A fixed index into a troop that has since lost ' +
-                    'members points at nothing and the action is silently dropped.',
+                tip: 'Force|The engine picks the target; you cannot choose one.',
                 onClick: function () { B.forceAction(e, pick.id, -1); U.rerender(); }
             }),
             forceWhy ? unavailable(forceWhy) : null
@@ -1231,13 +1229,12 @@
         var why = B.capWhy();
         return h('div', { class: 'mm-sub', style: 'white-space:normal;padding:2px;color:var(--mm-warn)' },
             h('b', { text: 'the ceiling stopped that. ' }),
-            B.paramName(r.id) + ' is capped at ' + r.cap + ' on this build, and the value is recomputed and ' +
-            're-clamped on every read — so no write puts ' + r.want + ' there until the ceiling moves. ',
+            B.paramName(r.id) + ' is capped at ' + r.cap + ' on this build, so no write puts ' +
+            r.want + ' there until the ceiling moves. ',
             W.button({
                 label: 'raise the ceiling to ' + r.want + ' and set it', wide: true, mutates: true,
                 disabled: !can,
-                tip: 'Raise|Session-only, and it never lowers anything: the raise returns the larger of the ' +
-                    'game\'s own ceiling and this one. The value is then written again and read back.',
+                tip: 'Raise|Session-only, and it never lowers the game\'s own ceiling.',
                 onClick: function () {
                     var raised = B.raiseParamCap(r.want);
                     var ok = B.setEnemyParam(enemy, r.id, r.want);
@@ -1262,9 +1259,13 @@
     function kv(label, value, colour) {
         return h('div', { class: 'mm-row' },
             h('div', { class: 'mm-lab', text: String(label) }),
+            // The value is unbounded — a path, a project's own name for
+            // something, a joined list — so the edge is allowed to shrink and
+            // wrap. Without that it pushes the label out and is then clipped
+            // by the column, and neither half can be read.
             h('div', {
-                class: 'mm-edge mm-mono mm-sub',
-                style: 'white-space:normal;text-align:right' + (colour ? ';color:' + colour : ''),
+                class: 'mm-edge mm-edge--shrink mm-edge--wrap mm-mono mm-sub mm-breakall',
+                style: colour ? 'color:' + colour : null,
                 text: String(value)
             }));
     }
@@ -1283,12 +1284,8 @@
         return W.group('Survival', [
             W.toggleRow('God mode', W.ungated({
                 value: !!cfg().god, disabled: !!godWhy,
-                tip: 'God mode|Party HP never drops below 1 and instant-death is ignored. Two hooks, ' +
-                    'because HP reaches zero by two routes — ordinary damage and a death state applied ' +
-                    'directly — but a plugin that writes HP without going through either would still get ' +
-                    'past it. A toggle, not a guarantee. ' +
-                    'Turn it OFF for scripted fights you are meant to lose — with it on they can be ' +
-                    'neither won nor lost.',
+                tip: 'God mode|A toggle, not a guarantee: a plugin that writes HP another way gets ' +
+                    'past it. Turn it off for fights you are meant to lose.',
                 onChange: function (v) {
                     $.store.cfgSet('battle.god', v);
                     U.setActive('god mode', v);
@@ -1297,9 +1294,8 @@
             godWhy ? unavailable(godWhy) : null,
             W.toggleRow('Free skill costs', W.ungated({
                 value: !!cfg().freeCost, disabled: !!freeWhy,
-                tip: 'Free skill costs|Skills cost no MP or TP, and none are greyed out for being ' +
-                    'unaffordable. Party only. A cost a plugin charges outside the engine\'s own ' +
-                    'pay-cost path is not covered — a toggle, not a guarantee.',
+                tip: 'Free skill costs|Party only. A toggle, not a guarantee — a plugin with its ' +
+                    'own cost path still charges.',
                 onChange: function (v) {
                     $.store.cfgSet('battle.freeCost', v);
                     U.setActive('free costs', v);
@@ -1309,8 +1305,7 @@
             h('div', { class: 'mm-sep' }),
             W.toggleRow('Multiply the damage you deal', W.ungated({
                 value: B.damageMultiplierOn(),
-                tip: 'Damage ×|Only what the party deals, and only when the number is damage — a heal comes out ' +
-                    'of the same call as a negative, and scaling that would make every potion a full restore.',
+                tip: 'Damage ×|Only what the party deals, and only damage — healing is left alone.',
                 onChange: function (v) {
                     $.store.cfgSet('battle.damageMultOn', v);
                     U.setActive('damage ×', v);
@@ -1324,7 +1319,7 @@
             }), { sub: '×' }),
             W.button({
                 label: 'heal party to full', wide: true, mutates: true,
-                tip: 'Heal|Full HP, MP and states cleared, for every party member.',
+                tip: 'Heal|MP too, and every state cleared.',
                 onClick: function () {
                     var n = B.healParty();
                     if (n) U.toast({ title: 'HEALED', msg: n + ' party members', severity: 'ok' });
@@ -1356,13 +1351,15 @@
             W.button({
                 label: 'instant win', wide: true, variant: 'danger', mutates: true,
                 disabled: !inBattle, confirmLabel: 'end it? (irreversible)',
-                tip: 'Instant win|Kills every enemy and lets the game end the battle itself, so EXP, gold, drops and the victory autosave all still happen. The save is backed up first.',
+                tip: 'Instant win|Kills the troop and lets the game end the fight, so EXP, gold ' +
+                    'and drops still happen. Backed up first.',
                 onClick: function () { if (B.instantWin()) U.setOpen(false); }
             }),
             W.button({
                 label: 'instant lose', wide: true, variant: 'danger', mutates: true,
                 disabled: !inBattle, confirmLabel: 'lose on purpose?',
-                tip: 'Instant lose|Drops the party and lets the game\'s own defeat handling decide what that means — it may be a game over, or a scripted revive. Backed up first.',
+                tip: 'Instant lose|The game\'s own defeat handling decides what follows — game ' +
+                    'over, or a scripted revive. Backed up first.',
                 onClick: function () { if (B.instantLose()) U.setOpen(false); }
             }),
         ], { tag: inBattle ? 'live' : 'no battle' });
@@ -1372,10 +1369,11 @@
 
     /* ------------------------------------------------------------ bar panel */
     var BAR_SLIDERS = [
-        ['back', 'backdrop', 'Backdrop|The dark plate behind each bar. This is what keeps a bar readable over a bright battleback.'],
+        ['back', 'backdrop', 'Backdrop|The dark plate behind each bar — raise it over a ' +
+                                 'bright battleback.'],
         ['hp', 'HP bar', 'HP bar|Green above 50%, amber above 25%, red below.'],
-        ['mp', 'MP bar', 'MP bar|Only drawn for enemies that actually have MP.'],
-        ['text', 'numbers', 'Numbers|The name and HP text above each bar. It has a black outline, so it stays readable well below full strength.']
+        ['mp', 'MP bar', 'MP bar|Only drawn for enemies that have MP.'],
+        ['text', 'numbers', 'Numbers|The name and HP text above each bar.']
     ];
 
     function barsPanel() {
@@ -1384,7 +1382,7 @@
         var rows = [
             W.toggleRow('HP/MP bars over enemies', W.ungated({
                 value: barOn(), disabled: !!why,
-                tip: 'Enemy bars|Drawn into the battle scene above each enemy, below the HUD.',
+                tip: 'Enemy bars|Drawn into the battle scene, below the HUD.',
                 onChange: function (v) {
                     $.store.cfgSet('battle.bars.on', v);
                     U.setActive('enemy bars', v);
@@ -1434,12 +1432,14 @@
                 value: barNum('offset', 8, 0, 120), min: 0, max: 120, step: 1, unit: 'px',
                 width: '104px', label: 'lift', _ungated: true,
                 onChange: function (v) { $.store.cfgSet('battle.bars.offset', v); }
-            }), { tip: 'Lift|How far above the top of the enemy graphic the bars sit. Raise it if a tall sprite\'s bars overlap the HUD.' }));
+            }), { tip: 'Lift|How far above the enemy graphic the bars sit. Raise it if a tall ' +
+                      'sprite overlaps the HUD.' }));
             rows.push(W.row('width', W.slider({
                 value: barNum('width', 0, 0, 400), min: 0, max: 400, step: 10, unit: 'px',
                 width: '104px', label: 'width', _ungated: true,
                 onChange: function (v) { $.store.cfgSet('battle.bars.width', v); }
-            }), { tip: 'Width|0 follows each enemy\'s own sprite width, which is usually what you want. Anything else is a fixed width for every enemy.' }));
+            }), { tip: 'Width|0 follows each enemy\'s sprite width. Anything else is fixed for ' +
+                      'every enemy.' }));
             rows.push(W.button({
                 label: 'reset to defaults', wide: true, _ungated: true,
                 onClick: function () {
@@ -1476,9 +1476,8 @@
                     h('div', { class: 'mm-cellbtns' },
                         W.button({
                             label: 'start', mini: true, variant: 'danger', mutates: true,
-                            tip: 'Start|Begins this fight the way the engine\'s own Battle Processing ' +
-                                'command does — no preemptive or surprise roll. Only from the map, and ' +
-                                'not while an event or message is running.',
+                            tip: 'Start|No preemptive or surprise roll. Only from the map, and not ' +
+                                'while an event or message is running.',
                             onClick: function () { B.forceTroop(t.id, escape_.mm.get(), lose_.mm.get()); }
                         }))
                 ];

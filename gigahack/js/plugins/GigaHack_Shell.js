@@ -307,6 +307,7 @@
                 $.cfg.ui.win.height = Math.round(parseFloat(win.style.height));
                 $.store.saveSettings();
                 if (HOST.renderTab) HOST.renderTab();  // let virtual tables re-measure
+                if (U.refitPaths) U.refitPaths();      // and elided paths re-fit
             }
             grip.addEventListener('pointermove', mv);
             grip.addEventListener('pointerup', up);

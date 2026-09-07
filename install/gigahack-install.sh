@@ -36,17 +36,58 @@ ANY_BEGIN="// >>> GigaHack"
 BACKUP_SUFFIX=".gigahack-backup"
 
 SRC="$(cd "$(dirname "$0")" && pwd)"
-# The payload sits either beside this script (a release archive) or one level
-# up in gigahack/js/plugins (a source checkout).
-if [ -d "$SRC/js/plugins" ]; then
-	PAYLOAD="$SRC/js/plugins"
-	MANIFEST="$SRC/manifest.json"
-elif [ -d "$SRC/../gigahack/js/plugins" ]; then
-	PAYLOAD="$(cd "$SRC/../gigahack/js/plugins" && pwd)"
-	MANIFEST="$(cd "$SRC/../gigahack" && pwd)/manifest.json"
-else
-	echo "error: cannot find the GigaHack plugin files." >&2
-	echo "       Looked in $SRC/js/plugins and $SRC/../gigahack/js/plugins." >&2
+
+# Find the payload by MANIFEST, never by the presence of js/plugins.
+#
+# Every RPG Maker game has a js/plugins folder, so testing for one cannot tell
+# "the GigaHack release folder" from "the game somebody copied this script
+# into". It used to, and the consequence was worse than a wrong guess: on a
+# flat-layout game the installer adopted the GAME's own plugins folder as its
+# payload and began backing up plugins.js before discovering it had nothing to
+# install. manifest.json beside js/plugins/GigaHack_Core.js is unambiguous, and
+# requiring both catches a half-extracted archive here instead of halfway
+# through an install.
+payload_at() {
+	[ -f "$1/manifest.json" ] && [ -f "$1/js/plugins/GigaHack_Core.js" ]
+}
+
+PAYLOAD=""; MANIFEST=""
+for cand in "$SRC" "$SRC/.." "$SRC/gigahack" "$SRC/../gigahack"; do
+	if payload_at "$cand"; then
+		root="$(cd "$cand" && pwd)"
+		PAYLOAD="$root/js/plugins"
+		MANIFEST="$root/manifest.json"
+		break
+	fi
+done
+
+if [ -z "$PAYLOAD" ]; then
+	echo "" >&2
+	echo "The GigaHack files are not next to this installer." >&2
+	echo "" >&2
+	echo "  This script is in:  $SRC" >&2
+	echo "  It needs manifest.json and js/plugins/GigaHack_Core.js beside it." >&2
+	echo "" >&2
+	# Name the specific mistake. Anyone reaching this has almost certainly
+	# copied the installer INTO their game, which is the one place it cannot
+	# be — it has to keep its own files to copy FROM.
+	if [ -f "$SRC/index.html" ] || [ -f "$SRC/js/plugins.js" ] || [ -f "$SRC/www/index.html" ]; then
+		echo "  This folder looks like the GAME, not the GigaHack folder." >&2
+		echo "  The installer does not go inside the game. Leave it where you unpacked" >&2
+		echo "  it and run it from there — it will find this game on its own, or you" >&2
+		echo "  can point it straight at one:" >&2
+		echo "" >&2
+		echo "      ./gigahack-install.sh \"$SRC\"" >&2
+		echo "" >&2
+	fi
+	echo "  The unpacked folder should contain:" >&2
+	echo "" >&2
+	echo "      GigaHack-2.0.0/" >&2
+	echo "        manifest.json" >&2
+	echo "        js/plugins/GigaHack_Core.js   (and 25 more)" >&2
+	echo "        profiles/" >&2
+	echo "        gigahack-install.sh" >&2
+	echo "" >&2
 	exit 1
 fi
 

@@ -2408,7 +2408,8 @@
                             })
                             : W.button({
                                 label: 'remove', mini: true, mutates: true,
-                                tip: 'Remove|The id keeps resolving, to a stub, so an old save that holds it still loads.',
+                                tip: 'Remove|The id still resolves, to a stub, so old saves still ' +
+                                    'load.',
                                 onClick: function () { if (F.retire(kind, r.id)) U.rerender(); }
                             }))
                 ];
@@ -2440,8 +2441,8 @@
             table,
             unplaced ? h('div', {
                 class: 'mm-sub', style: 'color:var(--mm-warn);white-space:normal;padding:2px',
-                text: unplaced + ' of these are in the library but not in the database. They are kept, not ' +
-                    'discarded — Id ranges, below, says which ids and why, and can migrate the range.'
+                text: unplaced + ' of these are in the library but not in the database. Kept, ' +
+                    'not discarded — Id ranges, below, says which and why.'
             }) : null
         ], { tag: F.live(kind).length + ' live' + (unplaced ? ' · ' + unplaced + ' unplaced' : '') });
         group.mm.refreshLibrary = refresh;
@@ -2520,8 +2521,8 @@
                 label: d.id == null ? 'forge it' : 'save changes',
                 variant: 'prime', wide: true, mutates: true,
                 tip: d.id == null
-                    ? 'Forge|Allocates the next custom id and writes the definition into the live database.'
-                    : 'Save|Rewrites this id in place. The id never changes, so saves holding it stay valid.',
+                    ? 'Forge|Takes the next custom id and writes into the live database.'
+                    : 'Save|Rewrites this id in place, so saves holding it stay valid.',
                 onClick: function () {
                     var wasNew = d.id == null;
                     var rec = F.commit(kind, d.data, d.id);
@@ -2555,7 +2556,7 @@
                 }),
                 W.button({
                     label: 'revert', wide: true, _ungated: true,
-                    tip: 'Revert|Reload this entry from the library, discarding unsaved edits.',
+                    tip: 'Revert|Discards unsaved edits and reloads from the library.',
                     onClick: function () {
                         var rec = F.record(kind, d.id);
                         if (rec) drafts[kind] = { id: rec.id, data: $.clone(rec.data) };
@@ -2595,7 +2596,8 @@
         } else if (kind === 'enemy') {
             kids.push(h('div', {
                 class: 'mm-sub', style: 'padding:2px;white-space:normal',
-                text: 'An enemy is fought through a troop. Forge one on the Enemy tab’s troop side and put this id in it.'
+                text: 'An enemy is fought through a troop. Switch Kind to "troop" and put this ' +
+                    'id in a member.'
             }));
         } else if (!actors.length) {
             kids.push(h('div', {
@@ -2646,7 +2648,8 @@
             kids.push(W.button({
                 label: 'purge id ' + d.id + ' completely', wide: true, variant: 'danger',
                 confirmLabel: 'purge — saves may break?',
-                tip: 'Purge|Frees the slot instead of leaving a stub. Any save that still holds this id has the reference dropped when it loads.',
+                tip: 'Purge|Frees the slot instead of leaving a stub. Saves holding this id lose ' +
+                    'the reference.',
                 onClick: function () {
                     var used = F.usage(kind, d.id);
                     if (F.purge(kind, d.id)) {
@@ -3074,8 +3077,8 @@
             g.push(W.group('Identity', [
                 rText(d, 'name', 'Name'),
                 rEnum(d, 'trigger', 'Trigger', TRIGGERS, { rebuild: true,
-                    tip: 'Trigger|"none" means it only runs when something calls it, which is what you want ' +
-                        'for one you run from here. Autorun and parallel need the switch below.' }),
+                    tip: 'Trigger|"none" runs only when called. Autorun and parallel need the ' +
+                        'switch below.' }),
                 d.data.trigger ? rNum(d, 'switchId', 'Switch', { min: 1, max: 9999 }) : null
             ], { tag: '$dataCommonEvents' }));
             g.push(commandBuilder(d));
@@ -3175,7 +3178,7 @@
                 h('div', { class: 'mm-edge mm-mono mm-sub', text: n.live + ' live · ' + n.dead + ' retired' })),
             h('div', { class: 'mm-row' },
                 h('div', { class: 'mm-lab', text: 'File' }),
-                h('div', { class: 'mm-edge mm-mono mm-sub mm-selectable', text: $.store.path(FILE) || FILE })),
+                W.path($.store.path(FILE), { fallback: FILE })),
             W.row('Paste', box = W.text({
                 mono: true, width: '154px', placeholder: 'paste exported JSON here'
             })),
@@ -3216,9 +3219,8 @@
                     }
                 })),
             h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
-                'Imported ids are kept as they are, so saves that reference them stay valid. An id this ' +
-                'install cannot allocate is kept too, and listed under Id ranges — it is never renumbered ' +
-                'and never dropped.')
+                'Imported ids are kept as they are, never renumbered. Ones this install cannot ' +
+                'allocate are listed under Id ranges.')
         ], { tag: FILE, collapsed: true });
     }
 
@@ -3256,11 +3258,10 @@
         kids.push(kv('Base from', F.baseSource() === 'recorded'
             ? 'the library file'
             : 'this database',
-            'Base|A base is recorded in the library the first time anything is forged, and the recorded ' +
-            'value wins from then on — that is what keeps an id meaning the same thing after the game is ' +
-            'patched and grows.'));
+            'Base|Recorded on the first forge and wins from then on, so ids survive a ' +
+            'game patch.'));
         kids.push(kv('Next id', String(F.nextId(kind) || 0),
-            'Next|The next id this kind would hand out. 0 means the range is spent.'));
+            'Next|0 means the range is spent.'));
 
         if (mine) {
             kids.push(h('div', {
@@ -3277,8 +3278,8 @@
                 label: 'migrate ' + KINDS[kind].plural + ' to ' + mine.computed,
                 wide: true, variant: 'danger',
                 confirmLabel: 'move every id — saves may break?',
-                tip: 'Migrate|Moves every record of this kind to the new base, keeping its offset. IDS CHANGE: ' +
-                    'a save that still holds an old id loses that reference when it loads. Every move is logged.',
+                tip: 'Migrate|IDS CHANGE: a save holding an old id loses that reference. Every ' +
+                    'move is logged.',
                 onClick: function () {
                     var r = F.migrateBases([kind]);
                     if (!r) return;
@@ -3413,8 +3414,8 @@
                     h('div', { class: 'mm-cellbtns' },
                         W.button({
                             label: 'copy', mini: true, _ungated: true,
-                            tip: 'Copy|Loads this row into the editor as a NEW draft. Nothing is written until ' +
-                                'you forge it, and it gets an id of its own — the original is untouched.',
+                            tip: 'Copy|A new draft with an id of its own. The original is ' +
+                                'untouched.',
                             onClick: function () { load(row); }
                         }))
                 ];
@@ -3501,8 +3502,8 @@
         left.push(W.group('Forging', [
             W.row('Kind', W.dropdown({
                 options: labels, value: current, width: '124px', _ungated: true,
-                tip: 'Kind|Which of the ten database arrays this entry goes into. Each keeps its own draft, ' +
-                    'so switching away and back does not lose what you were editing.',
+                tip: 'Kind|Each kind keeps its own draft, so switching away and back loses ' +
+                    'nothing.',
                 onChange: function (v) {
                     PICK.forEach(function (p) { if (p[1] === v) subKind[sub] = p[0]; });
                     U.rerender();

@@ -80,7 +80,7 @@
             degradedWhy(control) + ' ',
             W.button({
                 label: 'try again', mini: true, _ungated: true,
-                tip: 'Try again|Clears the mark so the next write is re-tested.',
+                tip: 'Try again|Clears the mark; the next write is re-tested.',
                 onClick: function () {
                     if ($.compat && $.compat.clearDegraded) $.compat.clearDegraded(control);
                     U.rerender();
@@ -1057,7 +1057,7 @@
                     class: 'mm-chip' + (focused ? ' mm-on' : ''),
                     style: 'height:12px;padding:0 3px;min-width:14px;justify-content:center',
                     text: '⌕',
-                    tip: 'Where is it used|Every event on every map that reads or writes this, from the index.',
+                    tip: 'Where is it used|Every event on every map that touches it, from the index.',
                     onclick: function (e) {
                         e.stopPropagation();
                         usesFocus = focused ? null : { kind: kind, id: id };
@@ -1166,7 +1166,8 @@
         // list is filtered is worse than not remembering at all.
         var chips = h('div', { class: 'mm-inline' },
             W.chip({
-                label: 'named', value: filter.named, tip: 'Named only|Hide variables the project never named',
+                label: 'named', value: filter.named,
+                tip: 'Named only|Hides rows the project never named',
                 onChange: function (v) { filter.named = v; remember(); repaint(true); }
             }),
             W.chip({
@@ -1174,7 +1175,8 @@
                 onChange: function (v) { filter.active = v; remember(); repaint(true); }
             }),
             W.chip({
-                label: 'changed', value: filter.changed, tip: 'Changed|Only rows the monitor has seen change this session',
+                label: 'changed', value: filter.changed,
+                tip: 'Changed|Only rows the monitor saw change this session',
                 onChange: function (v) { filter.changed = v; remember(); repaint(true); }
             }),
             W.chip({
@@ -1193,7 +1195,7 @@
             chips,
             W.button({
                 label: 'clear filters', _ungated: true,
-                tip: 'Clear|Filters are remembered between sessions, so this is how you get back to everything.',
+                tip: 'Clear|Filters are remembered between sessions.',
                 onClick: function () {
                     filter.q = ''; filter.named = filter.active = filter.changed = filter.pinned = false;
                     remember(); U.rerender();
@@ -1217,11 +1219,10 @@
            types it. All three of these are silent in the engine. */
         var rules = h('div', { class: 'mm-sub', style: 'padding:4px 6px;white-space:normal' },
             kind === 'var'
-                ? 'Numbers are floored on the way in, so a fraction truncates. Text and lists are stored ' +
-                  'exactly as typed — nothing in the engine requires a variable to hold a number. Ids ' +
-                  'outside 1–' + V.varCount() + ' are ignored by the engine, silently.'
-                : 'Anything truthy reads back as ON. Ids outside 1–' + V.switchCount() + ' are ignored ' +
-                  'by the engine, silently.');
+                ? 'Numbers are floored. Text and lists are stored as typed. Ids outside 1–' +
+                  V.varCount() + ' are ignored, silently.'
+                : 'Anything truthy reads back as ON. Ids outside 1–' + V.switchCount() +
+                  ' are ignored, silently.');
 
         var main = W.group(kind === 'var' ? 'Variables' : 'Switches',
             [toolbar, degradeHost, whyEl, table, rules], { grow: true });
@@ -1248,13 +1249,12 @@
                 degradeMark(box, 'vars.set');
                 return W.row(a.name, box, {
                     tip: a.name + '|V' + a.id + ' — ' + (a.from === 'profile'
-                        ? 'named by this game\'s profile, resolved by name'
-                        : a.from === 'frozen' ? 'here because you froze it' : 'here because you pinned it') +
-                        '. Fractions are floored on the way in.'
+                        ? 'named by this game\'s profile'
+                        : a.from === 'frozen' ? 'you froze it' : 'you pinned it')
                 });
             }) : [h('div', {
                 class: 'mm-empty',
-                text: 'pin a row with ★ or freeze one with ❄ and it appears here'
+                text: 'pin a row with ★ or freeze one with ❄'
             })]).concat([degradeNote('vars.set')]), { tag: V.quickTag() }));
         }
 
@@ -1292,7 +1292,10 @@
                 label: 'show diff', wide: true, _ungated: true,
                 disabled: !V.hasSnapshot(),
                 onClick: function () {
-                    $.cfg.ui.sub.vars = 'Recent';
+                    // Keyed by TAB id, and Recent is on the world tab. 'vars'
+                    // was the 1.x tab name, so this switch had been a silent
+                    // no-op since the eleven tabs became six.
+                    $.cfg.ui.sub.world = 'Recent';
                     $.store.saveSettings();
                     recentMode = 'diff';
                     U.rerender();
@@ -1316,7 +1319,7 @@
             return W.group('Where it is used', [
                 h('div', {
                     class: 'mm-empty',
-                    text: 'press ⌕ on a row to list every event that reads or writes it'
+                    text: 'press ⌕ on a row to list the events that touch it'
                 })
             ], { tag: 'index', collapsed: true });
         }
@@ -1328,7 +1331,9 @@
         var body = [
             h('div', { class: 'mm-row' },
                 h('div', { class: 'mm-lab', text: label }),
-                h('div', { class: 'mm-edge mm-mono mm-sub', text: name }))
+                // The project's own name for the variable, and there is no
+                // bound on how long a project makes one.
+                h('div', { class: 'mm-edge mm-edge--shrink mm-path mm-mono mm-sub', text: name, title: name }))
         ];
 
         if (!r.candidates.length && !r.complete) {
@@ -1347,7 +1352,7 @@
                     sub: u.eventName || ('event ' + u.eventId),
                     tip: u.mapName + '|map ' + u.mapId + ', event ' + u.eventId +
                         ' "' + (u.eventName || '') + '" at ' + u.x + ',' + u.y +
-                        (u.stale ? ' — this map is no longer in the database, so the index is out of date. '
+                        (u.stale ? ' — this map is no longer in the database; the index is stale. '
                                  + 'Rebuild it in Debug → Index.' : '')
                 }));
             });
@@ -1390,7 +1395,7 @@
             ],
             empty: mode === 'diff'
                 ? 'nothing differs from the snapshot'
-                : 'nothing has changed yet — go do something in the game',
+                : 'nothing has changed yet',
             render: function (e) {
                 var name = (e.kind === 'var' ? V.varName(e.id) : V.switchName(e.id)) || '—';
                 return [
@@ -1454,8 +1459,8 @@
 
         var help = h('div', { class: 'mm-sub', style: 'padding:4px 6px;white-space:normal' },
             mode === 'diff'
-                ? 'Everything that differs from the snapshot you took.'
-                : 'Newest first, one per variable. The monitor runs with the menu closed too.');
+                ? ''
+                : 'Newest first, one per id. The monitor runs with the menu closed.');
 
         return cols([
             W.group(mode === 'diff' ? 'Snapshot diff' : 'Recently changed',
@@ -1518,7 +1523,7 @@
                     boxes,
                     W.button({
                         label: 'reset', variant: 'danger', mini: true, mutates: true,
-                        tip: 'Reset|Clear A-D for this event — re-opens a used chest',
+                        tip: 'Reset|Clears A–D on this event — re-opens a used chest',
                         onClick: function () {
                             LETTERS.forEach(function (L) {
                                 if ($gameSelfSwitches.value([mapId, e.id, L])) V.setSelfSwitch(mapId, e.id, L, false);
@@ -1549,7 +1554,7 @@
                 grow: true, tag: '$gameSelfSwitches'
             }),
             h('div', { class: 'mm-sub', style: 'padding:0 2px;white-space:normal' },
-                'Only the current map — it is the only one whose events exist right now.')
+                'Only this map — no other map\'s events exist right now.')
         ]);
     }
 
@@ -1592,7 +1597,7 @@
                         : h('span', { class: V.switchValue(id) ? 'mm-hi' : 'mm-sub', text: V.switchValue(id) ? 'ON' : 'off' }),
                     W.button({
                         label: V.isMarked(kind, id) ? '★' : '☆', mini: true, _ungated: true,
-                        tip: 'Pin|Send this to the watch panel',
+                        tip: 'Pin|Show in the watch panel',
                         onClick: function () { V.mark(kind, id, !V.isMarked(kind, id)); U.rerender(); }
                     })
                 ];
@@ -1626,9 +1631,9 @@
                     options: ['variables', 'switches'], value: isVar ? 'variables' : 'switches',
                     width: '116px', _ungated: true,
                     onChange: function (v) { V.scanKind(v === 'variables' ? 'var' : 'switch'); U.rerender(); }
-                }), { tip: 'What|Changing this starts a new search.' }),
+                }), { tip: 'Looking at|Changing this starts a new search.' }),
                 W.row('Test', W.dropdown({
-                    options: tests, value: scanTest, width: '116px', _ungated: true,
+                    options: tests, value: scanTest, width: '96px', _ungated: true,
                     onChange: function (v) { scanTest = v; U.rerender(); }
                 }), { sub: st.started ? 'narrowing' : 'first pass' })
             ].concat(operands).concat([
@@ -1646,7 +1651,7 @@
             W.group('How this works', [
                 h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal;line-height:1.7' },
                     'Scan for what you know, play until the number moves, then scan for how it moved. ' +
-                    'Two or three rounds of "increased" and "decreased" usually leaves one id.')
+                    'Two or three rounds usually leaves one id.')
             ], { collapsed: true })
         ];
 
@@ -1718,9 +1723,9 @@
                     }
                 }),
                 h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
-                    'The whole batch is one entry on the undo stack, so it comes back in one step. ' +
-                    'Ids outside 1–' + max + ' are skipped: the engine ignores those writes. ' +
-                    (isVar ? 'Fractions are floored on the way in.' : '')),
+                    'One undo entry for the whole batch. Ids outside 1–' + max +
+                    ' are skipped — the engine ignores those writes. ' +
+                    (isVar ? 'Fractions are floored.' : '')),
                 degradeNote(isVar ? 'vars.set' : 'switches.set')
             ], { tag: ids.length + ' in range' })
         ];

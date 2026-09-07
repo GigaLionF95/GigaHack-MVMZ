@@ -70,7 +70,18 @@ window.GigaHack = window.GigaHack || {};
        ------------------------------------------------------------------ */
     var LEVELS = { info: 1, ok: 1, warn: 1, err: 1 };
     var buffer = [];
-    var MAX_BUFFER = 400;
+
+    /* The log is a DELIVERABLE — it is what a bug report pastes, and the boot
+       report at the front of it is the half that says which build, which game
+       and which layout. At 400 the ring was small enough that a long session
+       pushed those lines out, and it did so SILENTLY, which is the one thing
+       this project does not do to itself.
+
+       Two changes. The ring is large enough that a real session does not reach
+       it, and when it does roll it says how much it dropped instead of leaving
+       a log that merely starts in the middle. */
+    var MAX_BUFFER = 4000;
+    var dropped = 0;
 
     $.logSink = null; // set by the shell once the drawer exists
 
@@ -79,7 +90,7 @@ window.GigaHack = window.GigaHack || {};
         var text = String(msg);
         var entry = { level: level, msg: text, t: Date.now() };
         buffer.push(entry);
-        if (buffer.length > MAX_BUFFER) buffer.shift();
+        if (buffer.length > MAX_BUFFER) { buffer.shift(); dropped++; }
         try {
             var tag = '[GigaHack]';
             if (level === 'err') console.error(tag, text);
@@ -91,6 +102,10 @@ window.GigaHack = window.GigaHack || {};
     };
 
     $.logHistory = function () { return buffer.slice(); };
+
+    /** How many lines have rolled off the front, and how many the ring holds. */
+    $.logDropped = function () { return dropped; };
+    $.logCapacity = function () { return MAX_BUFFER; };
 
     /* ---------------------------------------------------------------------
        safe() — never let a feature crash the game.

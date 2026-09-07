@@ -490,3 +490,35 @@ Window.prototype.refresh = function () {
 };
 Object.setPrototypeOf(Window_Base.prototype, Window.prototype);
 Window_Base.prototype.constructor = Window_Base;
+
+/* ---------------------------------------------------------------------------
+   JsonEx.stringify LEAVES THE OBJECT CLEAN ON MV AND DIRTY ON MZ.
+
+   _encode marks in place on both engines — `value['@'] = constructorName` —
+   but MV's stringify then calls _cleanMetadata(object) and deletes the marks
+   back off (rpg_core.js:8944 / :8988). MZ's stringify is two lines and does
+   not (rmmz_core.js:6434), so on MZ a single JsonEx.stringify($gameSystem)
+   leaves '@': 'Game_System' on the LIVE object, permanently.
+
+   That matters to anything that walks a $game* object and reports what it
+   found: on MZ it will meet an own key no engine field list contains, and on
+   MV it will not. Modelled here rather than flattened, because a stub that
+   cleaned on both engines would hide it and a stub that cleaned on neither
+   would invent it on MV.
+   ------------------------------------------------------------------------ */
+JsonEx._cleanMetadata = function (object) {                /* rpg_core.js:8988 */
+  if (!object) return;
+  delete object['@'];
+  delete object['@c'];
+  if (typeof object === 'object') {
+    Object.keys(object).forEach(function (key) {
+      var value = object[key];
+      if (typeof value === 'object') JsonEx._cleanMetadata(value);
+    });
+  }
+};
+JsonEx.stringify = function (object) {                     /* rpg_core.js:8940 */
+  var json = JSON.stringify(this._encode(object, 0));
+  this._cleanMetadata(object);
+  return json;
+};

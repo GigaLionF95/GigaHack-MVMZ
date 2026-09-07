@@ -92,7 +92,14 @@ $.compat.selfTest([ids])
 
 **Every mutating control routes its write through `$.compat.verify`.** Control
 keys currently in use: `vars.set`, `switches.set`, `inv.gold`, `inv.items`,
-`party.param`, `party.exp`, `battle.states`, `battle.params`, `forge.write`.
+`party.param`, `party.exp`, `party.equip`, `party.class`, `party.skills`,
+`battle.states`, `battle.params`, `forge.write`, `shop.open`, `media.volume`,
+`media.play`, `media.master`, `keys.map`, `keys.pad`, `screen.tone`,
+`screen.brightness`, `screen.flash`, `screen.shake`, `screen.zoom`,
+`screen.weather`, `screen.picture`, `plugin.param`, `build.frameHook`.
+A key no quirk in `$.compat`'s table claims gets the honest "no loaded plugin is
+known to touch this" rather than a guess, which is the right answer until
+somebody has actually watched a suite break it.
 When `isDegraded(control)` is true, the panel greys the control and shows
 `degradedWhy(control)` as the reason — it does not hide it, and it does not
 pretend it worked.
@@ -256,7 +263,8 @@ Order matters; later files depend on earlier ones.
 14 Map        teleport and maps
 15 Events     event overlay and inspector
 16 Battle     battle tools
-17 Text       message speed, auto-advance, backlog (profile adapter)
+17 Text       message speed, auto-advance, dialogue history (recorded, plus
+              the game's own backlog where a profile adapter supplies one)
 18 Forge      custom items, skills, states
 19 Player     movement, game speed
 20 Encounters random encounter control — ENABLED, probes for encounters at boot
@@ -265,8 +273,26 @@ Order matters; later files depend on earlier ones.
 22 Steam      achievements, driven by the greenworks API, no table
 23 Save       save anywhere, quick save/load
 24 Console    JS console, snippets, log inspector
-25 Boot       bootstrap, boot report, index kick-off, self-test
+25 Trace      watchpoints, the change journal, running interpreters, RNG
+              — publishes $.watch, $.journal, $.interp, $.rng
+26 Snapshot   what changed since the save, and between two saves
+              — publishes $.snap
+27 Quest      why an event is locked, common events, objectives, script dump
+28 Media      the audio the game ships, its image folders, screenshots
+29 Screen     tint, weather, zoom, shake, the picture slots
+30 Auto       run something when the game reaches a state; run splits
+              — consumes $.watch
+31 Kit        equipment loadouts, an ad-hoc shop
+32 Keys       the key map the game itself reads
+33 Build      what this build costs to run, how its plugins are configured
+34 Boot       bootstrap, boot report, index kick-off, self-test
 ```
+
+The count is not written down anywhere it could go stale: `gigahack/manifest.json`
+is the one list, the installer reads it, the browser suite reads it, and
+`test-installers.sh` counts it. It used to be a literal 26 in ten places, every
+one of which was somewhere a newly added module could be missing from without a
+single check going red.
 
 `Inspect` is deleted. It shipped disabled in 1.x with "did not work as
 intended", and its MZ-only window-internals dependency (`_innerChildren`,

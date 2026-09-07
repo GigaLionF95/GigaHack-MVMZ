@@ -225,10 +225,20 @@
        place to see the cost.
        ------------------------------------------------------------------ */
     var frameHooks = [];
-    $.onFrame = function (name, fn) { frameHooks.push({ name: name, fn: fn }); return fn; };
+    /* `orig` is the function the CALLER handed over, kept beside the one that
+       actually runs. Nothing here wraps fn — but the performance panel does, to
+       time each hook by name, and offFrame is given the original rather than
+       the wrapper. Without a record of what was registered, removing a timed
+       hook would silently fail and the hook would keep running for the rest of
+       the session. */
+    $.onFrame = function (name, fn) { frameHooks.push({ name: name, fn: fn, orig: fn }); return fn; };
     $.offFrame = function (fn) {
-        for (var i = frameHooks.length - 1; i >= 0; i--) if (frameHooks[i].fn === fn) frameHooks.splice(i, 1);
+        for (var i = frameHooks.length - 1; i >= 0; i--) {
+            if (frameHooks[i].fn === fn || frameHooks[i].orig === fn) frameHooks.splice(i, 1);
+        }
     };
+    /** The registry itself, for the one panel that reports what each hook costs. */
+    $.frameHooks = function () { return frameHooks; };
     $.frameCount = 0;
     $.frame = function () {
         $.frameCount++;
@@ -451,6 +461,15 @@
         { name: 'GigaHack_Steam', marker: 'steam' },
         { name: 'GigaHack_Save', marker: 'saveTools' },
         { name: 'GigaHack_Console', marker: 'console' },
+        { name: 'GigaHack_Trace', marker: 'trace' },
+        { name: 'GigaHack_Snapshot', marker: 'snap' },
+        { name: 'GigaHack_Quest', marker: 'quest' },
+        { name: 'GigaHack_Media', marker: 'media' },
+        { name: 'GigaHack_Screen', marker: 'screen' },
+        { name: 'GigaHack_Auto', marker: 'auto' },
+        { name: 'GigaHack_Kit', marker: 'kit' },
+        { name: 'GigaHack_Keys', marker: 'keys' },
+        { name: 'GigaHack_Build', marker: 'build' },
         { name: 'GigaHack_Boot', marker: 'api.open' }
     ];
 

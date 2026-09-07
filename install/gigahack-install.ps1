@@ -41,14 +41,76 @@ $EndMark      = '// <<< GigaHack END'
 $BackupSuffix = '.gigahack-backup'
 
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
-if (Test-Path (Join-Path $Here 'js\plugins')) {
-    $Payload  = Join-Path $Here 'js\plugins'
-    $Manifest = Join-Path $Here 'manifest.json'
-} elseif (Test-Path (Join-Path $Here '..\gigahack\js\plugins')) {
-    $Payload  = (Resolve-Path (Join-Path $Here '..\gigahack\js\plugins')).Path
-    $Manifest = (Resolve-Path (Join-Path $Here '..\gigahack')).Path + '\manifest.json'
-} else {
-    Write-Error "Cannot find the GigaHack plugin files. Looked in $Here\js\plugins and $Here\..\gigahack\js\plugins."
+
+# Find the payload by MANIFEST, never by the presence of js\plugins.
+#
+# Every RPG Maker game has a js\plugins folder, so testing for one cannot tell
+# "the GigaHack release folder" from "the game the user dropped this script
+# into". It used to, and the consequence was worse than a wrong guess: on a
+# flat-layout game the installer adopted the GAME's own plugins folder as its
+# payload, backed up plugins.js — actually modifying the game — and only then
+# failed on the missing manifest, leaving a stray backup behind.
+#
+# manifest.json sitting next to js\plugins\GigaHack_Core.js is unambiguous.
+# Both are required, so a half-copied folder is caught here rather than
+# halfway through an install.
+function Test-Payload ($dir) {
+    if (-not $dir) { return $false }
+    return (Test-Path (Join-Path $dir 'manifest.json')) -and
+           (Test-Path (Join-Path $dir 'js\plugins\GigaHack_Core.js'))
+}
+
+$Payload = $null; $Manifest = $null
+foreach ($cand in @(
+    $Here,                                  # the release folder, script beside the payload
+    (Join-Path $Here '..'),                 # one level up
+    (Join-Path $Here 'gigahack'),           # a source checkout, run from the repo root
+    (Join-Path $Here '..\gigahack')         # a source checkout, run from install\
+)) {
+    if (Test-Payload $cand) {
+        $root     = (Resolve-Path $cand).Path
+        $Payload  = Join-Path $root 'js\plugins'
+        $Manifest = Join-Path $root 'manifest.json'
+        break
+    }
+}
+
+if (-not $Payload) {
+    Write-Host ''
+    Write-Host 'The GigaHack files are not next to this installer.'
+    Write-Host ''
+    Write-Host "  This script is in:  $Here"
+    Write-Host '  It needs manifest.json and js\plugins\GigaHack_Core.js beside it.'
+    Write-Host ''
+
+    # The specific mistake, named. Anyone who lands here has almost certainly
+    # copied the installer INTO their game, which is the one place it must not
+    # be — the installer has to keep its own files to copy FROM.
+    $looksLikeGame = (Test-Path (Join-Path $Here 'index.html')) -or
+                     (Test-Path (Join-Path $Here 'js\plugins.js')) -or
+                     (Test-Path (Join-Path $Here 'www\index.html'))
+    if ($looksLikeGame) {
+        Write-Host '  This folder looks like the GAME, not the GigaHack folder.'
+        Write-Host '  The installer does not go inside the game. Leave it in the folder'
+        Write-Host '  you unzipped, and run it from there — it will find this game on its'
+        Write-Host '  own, or you can point it straight at one:'
+        Write-Host ''
+        Write-Host "      .\gigahack-install.ps1 -Path `"$Here`""
+        Write-Host ''
+    }
+
+    Write-Host '  The unzipped folder should contain:'
+    Write-Host ''
+    Write-Host '      GigaHack-2.0.0\'
+    Write-Host '        manifest.json'
+    Write-Host '        js\plugins\GigaHack_Core.js   (and 25 more)'
+    Write-Host '        profiles\'
+    Write-Host '        gigahack-install.bat'
+    Write-Host '        gigahack-install.ps1'
+    Write-Host ''
+    Write-Host '  If those are missing, the zip did not unpack fully — some tools extract'
+    Write-Host '  only the top-level files. Unzip it again with Windows Explorer or 7-Zip.'
+    Write-Host ''
     exit 1
 }
 
@@ -190,9 +252,9 @@ function Add-Block ($text, $entries) {
 #-----------------------------------------------------------------------------
 # Operations
 #-----------------------------------------------------------------------------
-function Invoke-Verify ($root) {
+function Invoke-Verify ($root, $quiet) {
     $eng = Get-Engine $root
-    Say "$root  [$eng]"
+    if (-not $quiet) { Say "$root  [$eng]" }
     $mods = Get-Modules
     $missing = @(); $n = 0
     foreach ($m in $mods) {
@@ -225,7 +287,7 @@ function Invoke-Verify ($root) {
         Bad 'Plugins after it wrap our hooks and can undo what the menu does. Re-run this installer.'
     }
     if (-not $missing.Count -and $listed -and $last) {
-        Step "ok - $n modules present and readable, listed last in js\plugins.js"
+        if (-not $quiet) { Step "ok - $n modules present and readable, listed last in js\plugins.js" }
         return $true
     }
     return $false
@@ -290,7 +352,7 @@ function Invoke-Install ($root, $dry) {
         # some NW.js builds, and the file looks perfectly normal in an editor.
         [System.IO.File]::WriteAllText($pj, $new, (New-Object System.Text.UTF8Encoding $false))
         Step "js\plugins.js updated - $($mods.Count) entries, appended last"
-        if (Invoke-Verify $root) { Step 'verified' }
+        if (Invoke-Verify $root $true) { Step 'verified' }
         else { Bad 'verification failed after install - run with -Verify for detail'; $script:Failed++; return }
     }
     $script:Ok++

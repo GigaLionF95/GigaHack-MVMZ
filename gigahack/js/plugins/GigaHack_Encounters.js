@@ -294,7 +294,14 @@
     function kv(label, value, tip) {
         return h('div', { class: 'mm-row', tip: tip || null },
             h('div', { class: 'mm-lab', text: label }),
-            h('div', { class: 'mm-edge mm-mono mm-sub', text: String(value) }));
+            // The value is unbounded — a path, a project's own name for
+            // something, a joined list — so the edge is allowed to shrink and
+            // wrap. Without that it pushes the label out and is then clipped
+            // by the column, and neither half can be read.
+            h('div', {
+                class: 'mm-edge mm-edge--shrink mm-edge--wrap mm-mono mm-sub mm-breakall',
+                text: String(value)
+            }));
     }
 
     function buildEncounters() {
@@ -341,7 +348,7 @@
         var left = [
             has ? null : W.group('Nothing to control here', [
                 h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
-                    'This map has an empty encounter table, so nothing below can start a fight on it.'),
+                    'This map\'s encounter table is empty.'),
                 h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
                     E.describeProbe())
             ], { tag: probe.scope === 'index' ? 'whole game' : 'this map only' }),
@@ -350,8 +357,7 @@
                 W.toggleRow('Turn them off', {
                     value: !!cfg('noEncounters', false), keybind: false, _ungated: true,
                     sub: bind('noEncounters'),
-                    tip: 'No encounters|Game_Player.canEncounter returns false, which is the same lever the ' +
-                        '"Change Encounter" event command pulls.',
+                    tip: 'No encounters|The same lever the "Change Encounter" event command pulls.',
                     onChange: function (v) { setSync('noEncounters', v); U.rerender(); }
                 }),
                 h('div', { class: 'mm-sep' }),
@@ -365,8 +371,7 @@
                     _ungated: true, disabled: !cfg('rateOverride', false) || !!cfg('noEncounters', false),
                     onChange: function (v) { set('rate', v); }
                 }), {
-                    tip: 'Rate|Scales how fast the step counter runs down. 200% is twice as often; 0% never ' +
-                        'arrives, though the toggle above is the honest way to say that.'
+                    tip: 'Rate|Scales the step counter: 200% is twice as often, 0% never arrives.'
                 }),
                 h('div', { class: 'mm-sep' }),
                 stepsRow,
@@ -385,8 +390,7 @@
             W.group('Force a troop', [
                 W.row('Troop id', W.number({
                     value: troopId, min: 0, max: 9999, wide: true, _ungated: true,
-                    tip: 'Troop|0 leaves the map\'s own encounter table alone. Anything else replaces every ' +
-                        'random encounter on every map with that troop.',
+                    tip: 'Troop|0 leaves the map\'s own table alone.',
                     onChange: function (v) { setSync('troopId', v); U.rerender(); }
                 })),
                 kv('Which is', troopName),
@@ -417,8 +421,8 @@
                     return ($.map ? $.map.mapName($gameMap.mapId()) : '') + ' · ' + $gameMap.mapId();
                 }, 'map', '—')),
                 kv('Encounter step', $.safe(function () { return $gameMap.encounterStep(); }, 'step', '—'),
-                    'Encounter step|The engine rolls two random numbers up to this and adds one, so the real ' +
-                    'gap between fights averages about this many steps.'),
+                    'Encounter step|Two rolls up to this, so the real gap averages about this ' +
+                    'many steps.'),
                 kv('Encounters enabled', $.safe(function () { return $gameSystem.isEncounterEnabled(); }, 'enabled', '?')),
                 kv('Party blocks them', $.safe(function () { return $gameParty.hasEncounterNone(); }, 'none', '?')),
                 kv('Elsewhere',

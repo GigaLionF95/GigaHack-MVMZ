@@ -79,7 +79,7 @@
             degradedWhy(control) + ' ',
             W.button({
                 label: 'try again', mini: true, _ungated: true,
-                tip: 'Try again|Clears the mark so the next write is re-tested.',
+                tip: 'Try again|Clears the mark; the next write is re-tested.',
                 onClick: function () {
                     if ($.compat && $.compat.clearDegraded) $.compat.clearDegraded(control);
                     U.rerender();
@@ -816,11 +816,12 @@
             // Proof the change reached the map: the follower line-up is read
             // back through the adapter, whichever shape this engine's
             // Game_Followers has.
-            h('div', { class: 'mm-row', 'data-mm-tip': 'Followers|Read back from Game_Followers after every ' +
-                'membership change, so a line-up that did not update is visible here rather than only on the map.' },
+            h('div', { class: 'mm-row', 'data-mm-tip': 'Followers|Read back from Game_Followers ' +
+                'after every membership change.' },
                 h('div', { class: 'mm-lab', text: 'On the map' }),
+                // Four actor names joined, and a project names its own actors.
                 h('div', {
-                    class: 'mm-edge mm-mono mm-sub',
+                    class: 'mm-edge mm-edge--shrink mm-edge--wrap mm-mono mm-sub',
                     text: (function () {
                         var f = P.followerReport();
                         if (!f.length) return 'no followers';
@@ -997,8 +998,8 @@
         return h('div', { class: 'mm-sub', style: 'white-space:normal;padding:2px;color:var(--mm-warn)' },
             h('b', { text: 'the ceiling stopped that. ' }),
             isParam
-                ? what + ' is capped at ' + o.cap + ' on this game, and param() is recomputed and ' +
-                  're-clamped on every read — so no write puts ' + o.want + ' there until the ceiling moves. '
+                ? what + ' is capped at ' + o.cap + ' here — no write puts ' + o.want +
+                  ' there until the ceiling moves. '
                 // The level path writes its own explanation, because "capped at
                 // 0" needs more words than "capped at 99" does.
                 : (o.why || (o.actor.name() + ' is capped at level ' + o.cap + ' on this game.')) + ' ',
@@ -1006,10 +1007,8 @@
                 label: 'raise the ceiling to ' + o.want + ' and set it', wide: true, mutates: true,
                 disabled: !can,
                 tip: 'Raise|Session-only. ' + (isParam
-                    ? 'Turns on GigaHack\'s own paramMax raise, which never lowers anything, then writes the ' +
-                      'value again and reads it back.'
-                    : 'Writes the level cap on the actor\'s database row, which maxLevel() reads live, then ' +
-                      'sets the level again and reads it back.'),
+                    ? 'GigaHack\'s own paramMax raise — it never lowers anything.'
+                    : 'Writes the level cap on the actor\'s database row.'),
                 onClick: function () {
                     var raised = isParam ? P.raiseParamCap(o.want) : P.raiseLevelCap(o.actor, o.want);
                     var set = isParam ? P.setTarget(o.actor, o.id, o.want) : P.setLevel(o.actor, o.want);
@@ -1108,8 +1107,8 @@
                     ' + other ' + d.other + ')' +
                     (Math.abs(d.rate - 1) > 0.001 ? ' × ' + d.rate.toFixed(2) : '') +
                     ' = ' + d.uncapped + ', clamped to ' + capText + ' = ' + d.final +
-                    (d.atCap ? '. At the ceiling: every further point is discarded on the next read, ' +
-                        'because param() is recomputed and re-clamped every time it is read.' : '')
+                    (d.atCap ? '. At the ceiling — every further point is discarded, because ' +
+                        'param() is re-clamped on every read.' : '')
             },
                 h('div', { class: 'mm-lab', text: P.paramName(id) }),
                 h('div', { class: 'mm-edge' },
@@ -1139,11 +1138,10 @@
                 W.row('Level', lvl, {
                     sub: ml.uncapped ? 'no cap' : 'max ' + ml.cap,
                     tip: 'Level|' + (ml.uncapped
-                        ? 'maxLevel() reports ' + ml.raw + ' on this game, which its own setup treats as ' +
-                          '"no cap". The engine\'s changeLevel clamps to maxLevel, so it would clamp every ' +
-                          'level to that number — GigaHack writes the exp for the level instead.'
-                        : 'maxLevel() is ' + ml.cap + ' here, read from the actor rather than assumed. ' +
-                          'changeLevel clamps to it, so a higher level cannot be written at all.')
+                        ? 'maxLevel() reports ' + ml.raw + ' — no cap. changeLevel would ' +
+                          'clamp every level to that, so the exp for the level is written instead.'
+                        : 'maxLevel() is ' + ml.cap + ' here, and changeLevel clamps to it — ' +
+                          'a higher level cannot be written.')
                 }),
                 W.row('EXP', [
                     exp,
@@ -1151,8 +1149,7 @@
                         class: 'mm-sub mm-mono',
                         text: '→ ' + $.safe(function () { return a.isMaxLevel() ? 'max' : a.nextLevelExp(); }, 'next', '?')
                     })
-                ], { tip: 'EXP|Written with changeExp, which moves the level to match. Writing the exp field ' +
-                        'directly would leave level and exp disagreeing.' }),
+                ], { tip: 'EXP|Written with changeExp, so the level moves to match.' }),
                 degradeNote('party.exp'),
                 offerNote('level'),
                 h('div', { class: 'mm-sep' })
@@ -1170,8 +1167,8 @@
                 W.button({
                     label: 'reset params to base', wide: true, variant: 'danger', mutates: true,
                     confirmLabel: 'clear manual bonuses?',
-                    tip: 'Reset|Clears _paramPlus only. Equipment and anything else contributing through ' +
-                        'paramPlus stays — see the "other" column.',
+                    tip: 'Reset|Clears the manual column only. Equipment and anything else in ' +
+                        '"other" stays.',
                     onClick: function () { P.resetParams(a); U.rerender(); }
                 }),
                 W.toggleRow('Raise the ceiling', {
@@ -1182,10 +1179,8 @@
                         var d0 = P.decompose(a, 2);
                         return d0.max === null ? 'unreadable' : 'now ' + d0.max;
                     }()),
-                    tip: 'paramMax|param() re-clamps on every read, so a value above the ceiling is thrown ' +
-                        'away no matter how it was written. This raise never lowers anything: it returns the ' +
-                        'larger of the game\'s own ceiling and the limit below. Session-only — it lives in ' +
-                        'GigaHack\'s settings, not in the save.',
+                    tip: 'paramMax|Never lowers anything — the larger of this and the game\'s own ' +
+                        'ceiling wins. Session-only, not saved.',
                     onChange: function (v) { $.store.cfgSet('party.paramMaxOverride', v); U.rerender(); }
                 }),
                 W.row('Ceiling', W.number({
@@ -1200,9 +1195,8 @@
                 }),
                 h('div', {
                     class: 'mm-sub', style: 'padding:2px;white-space:normal',
-                    tip: 'Decomposition|"other" is equipment plus anything else that alters paramPlus. ' +
-                        'Nothing here can tell you which plugin contributed which part of it — only that ' +
-                        'the engine added it and that clearing the manual column will not remove it.'
+                    tip: 'Decomposition|"other" is equipment plus anything else that alters ' +
+                        'paramPlus. Which plugin added which part cannot be told apart here.'
                 }, 'final = clamp((base + manual + other) × rate, clamp)')
             ]), { tag: '_paramPlus + clamp' })
         ]);
@@ -1277,7 +1271,8 @@
                 W.button({
                     label: 'change class', wide: true, variant: 'danger', mutates: true,
                     confirmLabel: 'irreversible — sure?',
-                    tip: 'Class change|Rebuilds level and skills from the new class curve. Not undoable — back up the save first.',
+                    tip: 'Class change|Rebuilds level and skills from the new class curve. No undo ' +
+                        '— back up the save first.',
                     onClick: function () {
                         var v = pickClass || classes[0];
                         if (!v) return;
@@ -1364,7 +1359,7 @@
                     W.search({ placeholder: 'search states…', onInput: function (v) { q = v.trim(); repaint(); } })),
                 table,
                 h('div', { class: 'mm-sub', style: 'padding:4px 6px;white-space:normal' },
-                    'A state the actor resists or has sealed will refuse to apply, with a toast saying so.')
+                    'A state the actor resists or has sealed will refuse to apply.')
             ], { grow: true })
         ]);
     }
@@ -1505,8 +1500,7 @@
                 W.row('Name', W.text({
                     value: id.name || '', width: '150px', label: 'actor name',
                     onEnter: function (v) { P.setName(a, v); U.rerender(); }
-                }), { sub: dbTag('name', id.name), tip: 'Name|Enter commits. This is the same call the engine’s own ' +
-                        '"Change Name" command makes, and it is saved with the game.' }),
+                }), { sub: dbTag('name', id.name), tip: 'Name|Enter commits. Saved with the game.' }),
                 W.row('Nickname', W.text({
                     value: id.nickname || '', width: '150px', label: 'actor nickname',
                     onEnter: function (v) { P.setNickname(a, v); U.rerender(); }
@@ -1522,7 +1516,8 @@
                     onCommit: function (v) { P.setProfile(a, v); }
                 }),
                 h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
-                    'Committed when the box loses focus. The status window draws two lines; more are stored but not shown.')
+                    'Committed on blur. The status window draws two lines; more are stored ' +
+                        'but not shown.')
             ], { tag: dbTag('profile', id.profile) || 'database' })
         ];
 
@@ -1534,7 +1529,7 @@
                 W.row('Index', W.number({
                     value: id.faceIndex || 0, min: 0, max: 7, label: 'face index',
                     onChange: function (v) { P.setFace(a, id.faceName || '', v); }
-                }), { tip: 'Index|A face sheet is 4 across and 2 down, so 0-7 picks one of the eight.' })
+                }), { tip: 'Index|4 across, 2 down — 0-7 picks one of the eight.' })
             ], { tag: 'img/faces' }),
 
             W.group('Map sprite', [
@@ -1554,7 +1549,7 @@
                     P.setBattler(a, v); U.rerender();
                 }), { sub: dbTag('battlerName', id.battlerName) }),
                 h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
-                    'Side-view only. A front-view battle never draws it.')
+                    'Side-view battles only.')
             ], { tag: 'img/sv_actors', collapsed: true }),
 
             W.group('Reset', [

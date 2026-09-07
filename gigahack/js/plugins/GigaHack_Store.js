@@ -213,7 +213,7 @@
        Settings
        ===================================================================== */
     var DEFAULTS = {
-        _schema: 4,
+        _schema: 5,
 
         ui: {
             accent: '#6c7ae0',
@@ -292,6 +292,15 @@
             turbo: true,           // hold a key to fast-forward
             turboKey: 'ControlLeft',
 
+            // The recorded dialogue history. On by default: it costs one string
+            // copy per message page, and a history that was not running when
+            // the line went past is worth nothing.
+            history: {
+                on: true,
+                max: 500,            // pages kept; the buffer is memory-only
+                splitFirstLine: true // treat a short "Name:" opener as a speaker
+            },
+
             // M18 appearance. Every one is off by default and every one is a
             // pure override of a value the engine already computes, so turning
             // it off restores exactly what the game shipped with.
@@ -365,6 +374,183 @@
         console: {
             captureLog: true,      // route console.* into the output while code runs
             historyMax: 100
+        },
+
+        /* ------------------------------------------------------------------
+           The nine modules added after 2.0.
+
+           Each owns one node, and each module reads its own keys through a
+           local helper that supplies the default when the key is absent — so a
+           module works before this block exists and this block is what makes
+           "reset to defaults" and the profile export cover it. A key missing
+           here is not a broken module; it is a setting a reset cannot clear.
+           ------------------------------------------------------------------ */
+
+        // M25 watchpoints, the change journal, interpreters and RNG.
+        // pauseOnHit and rng.seedOn are both registered unsafeAtBoot by the
+        // module: a watchpoint that held the game before the overlay exists,
+        // and a seeded generator carried across a launch, are each
+        // indistinguishable from the game being broken.
+        trace: {
+            watch: {
+                enabled: true,
+                pauseOnHit: false,
+                logHits: true,
+                captureStack: false,
+                maxHits: 300,
+                points: []          // the persisted watchpoint specs
+            },
+            journal: { max: 500, recordUnanchored: true },
+            interp: { autoRefresh: true, refreshEvery: 6 },
+            rng: {
+                watch: false,
+                sample: 1,
+                maxRolls: 400,
+                maxPerFrame: 2000,
+                captureStack: false,
+                seedOn: false,
+                seed: 1
+            }
+        },
+
+        // M26 what changed since the save, and between two saves.
+        snapshot: {
+            autoAnchor: true,
+            anchorOnAutosave: false,
+            namedOnly: false,
+            selfMax: 20000,
+            actorMax: 200,
+            sort: 'by id',
+            show: {
+                vars: true, switches: true, self: true, gold: true, items: true,
+                party: true, actors: true, map: true, system: true
+            },
+            diff: { a: 0, b: 0 }
+        },
+
+        // M27 why an event is locked, common events, objectives, script dump.
+        quest: {
+            blocked: { onlyUnmet: true, showMetPages: false, refreshFrames: 15 },
+            common: {
+                filter: '', trigger: 'any', gatedOnly: false,
+                hideEmpty: true, selected: 0
+            },
+            // Grouping is INFERENCE over the project's own flag names, so every
+            // threshold here is a knob rather than a constant: a game that
+            // names nothing gets no quests, and that is the correct answer.
+            quests: {
+                groupBy: 'both', minMembers: 3, minNamed: 0.05,
+                minStemTokens: 2, bulkShare: 0.25, showDone: true, filter: ''
+            },
+            script: {
+                q: '',
+                kinds: {
+                    messages: true, choices: true, scrolling: true,
+                    descriptions: true, terms: true, comments: false
+                },
+                scope: 'everything', strip: true, max: 5000, maxChars: 4000
+            }
+        },
+
+        // M28 the audio the game ships, its image folders, screenshots.
+        media: {
+            audio: {
+                recent: 200, logSe: true, restoreOnLeave: true,
+                folder: 'audio/bgm', subfolders: true
+            },
+            assets: {
+                folder: 'img/characters', recursive: true,
+                charIndex: 0, direction: 2, animate: false, speed: 4, zoom: 2
+            },
+            capture: {
+                dir: 'shots', namePrefix: 'shot',
+                burst: 8, every: 6, hideOverlays: true
+            }
+        },
+
+        // M29 tint, weather, zoom, shake and the picture slots.
+        // Every hold.* is registered unsafeAtBoot by the module: a tint or a
+        // weather effect re-applied before the player has done anything is the
+        // exact symptom the panel exists to cure.
+        screen: {
+            duration: 0,
+            fade: { frames: 30 },
+            flash: { colour: '#ffffff', alpha: 160, frames: 30 },
+            shake: { power: 5, speed: 5, frames: 60 },
+            zoom: { frames: 0 },
+            weather: { frames: 0 },
+            driftFrames: 12,
+            hold: { tone: false, weather: false, zoom: false },
+            holdTone: [0, 0, 0, 0],
+            holdWeather: { type: 'none', power: 0 },
+            holdZoom: { x: 0, y: 0, scale: 1 },
+            log: {
+                on: true, max: 200,
+                kinds: ['tint', 'fade', 'flash', 'shake', 'zoom', 'weather', 'picture']
+            },
+            pictures: { preview: false, filter: 'in use' }
+        },
+        // M30 run something when the game reaches a state; run splits.
+        auto: {
+            triggers: {
+                on: true,
+                maxPerSecond: 4,      // a trigger whose snippet moves what it watches
+                maxDepth: 2,          //   would otherwise recurse until the stack ran out
+                disableOnThrow: true,
+                whilePaused: false,
+                toastOnFire: true,
+                resultMax: 400,
+                historyMax: 20
+            },
+            route: {
+                on: true,
+                startOnNewGame: true,
+                startOnLoad: false,
+                autoBest: true,
+                precision: 'cs',      // 'cs' | 's' | 'frames'; a split is RECORDED in
+                jumpFrames: 300,      //   frames and only converted for display
+                warnOnSpeed: true
+            }
+        },
+
+        // M31 equipment loadouts and an ad-hoc shop.
+        kit: {
+            loadout: {
+                applyClass: true, applyLevel: true, applySkills: true,
+                applyParams: true, applyEquip: true,
+                // Off by default: a loadout that conjures the equipment it names
+                // is a different action from one that puts back what you had.
+                provideMissing: false,
+                force: false,
+                max: 40
+            },
+            shop: {
+                purchaseOnly: false,
+                priceMode: 'database',
+                priceValue: 100,
+                closeOnOpen: true,
+                kind: 'item'
+            }
+        },
+
+        // M32 the key map the game itself reads.
+        // persist is OFF by default: a rebind that survives a launch is a rebind
+        // the player cannot escape by restarting, which is the one way out a
+        // session-only change always leaves them.
+        keys: { persist: false, reassert: false, watch: true },
+
+        // M33 what this build costs to run, and how its plugins are configured.
+        build: {
+            perf: {
+                sampleMs: 500,
+                historyLen: 240,
+                timeHooks: false,     // timing every per-frame hook costs a little itself
+                series: 'frame rate',
+                budgetMs: 4,
+                sceneNodeCap: 20000,
+                sceneDepthCap: 64
+            },
+            params: { q: '', filter: 'all', showEmpty: false }
         },
 
         // Single-key binds, matched against KeyboardEvent.code so they are
@@ -562,6 +748,12 @@
     function migrate(cfg, raw) {
         if (!raw) return;
         var from = Number(raw._schema) || 1;
+        if (from < 5) {
+            // Backlog became History when GigaHack started recording one of its
+            // own. A stored sub-tab name that no longer exists sends the shell
+            // back to the first panel, which reads as "it forgot where I was".
+            if (cfg.ui && cfg.ui.sub && cfg.ui.sub.game === 'Backlog') cfg.ui.sub.game = 'History';
+        }
         if (from < 4) {
             // The Toys panel is gone. Everything on it was decoration except
             // the accent cycling, which was never a toy — it is an appearance

@@ -142,7 +142,14 @@
     function kv(label, value, tip) {
         return h('div', { class: 'mm-row', tip: tip || null },
             h('div', { class: 'mm-lab', text: label }),
-            h('div', { class: 'mm-edge mm-mono mm-sub mm-selectable', text: String(value) }));
+            // The value is unbounded — a path, a project's own name for
+            // something, a joined list — so the edge is allowed to shrink and
+            // wrap. Without that it pushes the label out and is then clipped
+            // by the column, and neither half can be read.
+            h('div', {
+                class: 'mm-edge mm-edge--shrink mm-edge--wrap mm-mono mm-sub mm-selectable mm-breakall',
+                text: String(value)
+            }));
     }
 
     /**
@@ -188,7 +195,7 @@
     function pauseAvailable() { return !!($.pause && $.pause.available()); }
     function pauseDescription() {
         if ($.pause) return $.pause.describe();
-        return 'holds the game while the menu is open.';
+        return 'the pause module did not load, so nothing is held.';
     }
 
     /** The command that makes unreadable plugin files readable again. */
@@ -254,12 +261,11 @@
         var capsGroup = W.group('Engine capabilities', [
             capsTable,
             h('div', { class: 'mm-sub', style: 'padding:4px 2px;white-space:normal' },
-                'Probed once at load and never guessed from a version number. A plugin that adds or ' +
-                'removes one of these changes the answer, which is the whole reason it is asked this way.'),
+                'Probed at load, never read off a version number. A plugin that adds or ' +
+                'removes one changes the answer.'),
             W.button({
                 label: 'copy the environment report', wide: true, _ungated: true,
-                tip: 'Copy|Engine, capabilities and resolved paths as plain text — the block to paste ' +
-                    'into a bug report instead of a screenshot.',
+                tip: 'Copy|Engine, capabilities and paths as plain text, for a bug report.',
                 onClick: function () {
                     var ok = U.copyText(envReportText());
                     U.toast({
@@ -272,7 +278,10 @@
         ], { tag: ($.caps && $.caps.engine) ? $.caps.engine : 'unknown' });
 
         var dirGroup = W.group('Resolved paths', [
-            h('div', { class: 'mm-pre', text: $.describePaths() }),
+            // Nothing in this block is anything but a path, so it wraps: the
+            // tail is the half that identifies the install, and behind a
+            // horizontal scrollbar it is the half nobody reads.
+            h('div', { class: 'mm-pre mm-pre-wrap', text: $.describePaths() }),
             h('div', { class: 'mm-inline', style: 'padding:4px 2px' },
                 W.button({
                     label: 'copy paths', _ungated: true,
@@ -311,9 +320,13 @@
         ], { tag: p.mode });
 
         var save = $.saves.available()
-            ? [kv('Save folder', soft(function () { return $.saves.dir(); }, '—'),
-                'Save folder|Resolved through StorageManager, so it follows the game\'s own "external save directory" option. Refresh after the title screen for the final value.'),
-            kv('Slot 1 file', soft(function () { return $.saves.fileFor(1); }, '—'))]
+            ? [W.pathRow('Save folder', soft(function () { return $.saves.dir(); }, ''), {
+                why: 'StorageManager has not resolved one yet — refresh after the title screen',
+                tip: 'Save folder|Follows the game\'s own external-save-directory option.'
+            }),
+            W.pathRow('Slot 1 file', soft(function () { return $.saves.fileFor(1); }, ''), {
+                why: 'no save path on this install'
+            })]
             : [h('div', { class: 'mm-empty', text: 'save paths unavailable (' + $.paths.mode + ' mode)' })];
 
         // This panel is a snapshot. When the tab is built during boot (the
@@ -400,7 +413,7 @@
         return cols([
             W.group('Installed aliases', [table], { grow: true, tag: list.length + ' hooks' }),
             h('div', { class: 'mm-sub', style: 'padding:0 2px' },
-                'Every alias is additive. Unpatching only succeeds when no other plugin has patched on top of ours.')
+                'Unpatching only succeeds when no other plugin has patched on top of ours.')
         ]);
     }
 
@@ -425,8 +438,7 @@
 
         var copyBtn = W.button({
             label: 'Copy the whole report', wide: true, _ungated: true,
-            tip: 'Copy|Puts every line of this panel on the clipboard as plain text — modules, files, ' +
-                'panels and paths — so it can be pasted somewhere rather than screenshotted.',
+            tip: 'Copy|Modules, files, panels and paths, as plain text.',
             onClick: function () {
                 U.copyText($.report());
                 $.log('ok', 'module report copied to the clipboard');
@@ -524,19 +536,16 @@
             h('div', { class: 'mm-row' },
                 h('div', { class: 'mm-lab', text: 'delivery' }),
                 h('div', { class: 'mm-edge mm-mono mm-sub', text: deliveryLabel() })),
-            h('div', { class: 'mm-row' },
-                h('div', { class: 'mm-lab', text: 'plugins dir' }),
-                h('div', { class: 'mm-edge mm-mono mm-sub mm-selectable', text: $.paths.pluginsDir || '—' }))
+            W.pathRow('plugins dir', $.paths.pluginsDir, {
+                why: 'the plugins folder was not resolved — see Environment'
+            })
         ];
         if (mrep.manifest) {
             // A mod loader keeps its own list of what to load. It is an extra
             // column when it is there, and nothing at all when it is not.
-            footer.push(h('div', { class: 'mm-row' },
-                h('div', { class: 'mm-lab', text: 'mod manifest' }),
-                h('div', {
-                    class: 'mm-edge mm-mono mm-sub mm-selectable',
-                    text: (mrep.manifest.version ? 'v' + mrep.manifest.version + '  ' : '') + mrep.manifest.file
-                })));
+            footer.push(W.pathRow('mod manifest', mrep.manifest.file, {
+                prefix: mrep.manifest.version ? 'v' + mrep.manifest.version + '  ' : null
+            }));
         }
         footer.push(copyBtn);
 
@@ -592,8 +601,8 @@
                     h('div', { class: 'mm-lab', style: 'white-space:normal;color:var(--mm-warn)', text: w }));
             }).concat([
                 h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
-                    'The Compatibility sub-tab says what each of these does, which controls it makes ' +
-                    'unreliable, and whether the game currently agrees.')
+                    'The Compatibility sub-tab says what each one costs and whether the game ' +
+                    'currently agrees.')
             ]), { tag: rep.warnings.length + ' suites', collapsed: true })
             : null;
 
@@ -621,7 +630,7 @@
                     h('div', { class: 'mm-todo-ms', text: 'UNAVAILABLE' }),
                     h('b', { text: 'save backups are off' }),
                     h('div', { text: B.reason() || 'unknown reason' }),
-                    h('div', { text: 'dangerous actions will still run — they just will not be protected' })));
+                    h('div', { text: 'dangerous actions still run, just unprotected' })));
         }
 
         var list = B.list();
@@ -644,7 +653,8 @@
                     W.button({
                         label: 'restore', mini: true, variant: 'danger', mutates: true,
                         confirmLabel: 'overwrite saves?',
-                        tip: 'Restore|Copies these files back over your live saves. The current state is backed up first.',
+                        tip: 'Restore|Overwrites your live saves. The current state is backed up ' +
+                            'first.',
                         onClick: function () {
                             var n = B.restore(e);
                             if (n !== false) {
@@ -772,7 +782,7 @@
                     }
                 }),
                 h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
-                    'Everything in Settings travels together — appearance, behaviour, hotkeys and every feature flag.')
+                    'Appearance, behaviour, hotkeys and every feature flag travel together.')
             ], { tag: list.length + ' saved' }),
 
             W.group('Selected', [
@@ -860,9 +870,7 @@
                 })),
                 W.toggleRow('Cycle the accent colour', W.ungated({
                     value: U.accentCycling(),
-                    tip: 'Cycle|Runs the overlay\u2019s accent through the spectrum. Repaints one CSS ' +
-                        'variable and nothing else \u2014 the game is untouched. Off at every launch, ' +
-                        'whatever this says.',
+                    tip: 'Cycle|Off at every launch, whatever this says. The game is untouched.',
                     onChange: function (v) { U.setAccentCycling(v); U.rerender(); }
                 })),
                 W.row('Cycle speed', W.slider(W.ungated({
@@ -930,8 +938,7 @@
                 kv('Build', $.codename + ' v' + $.version),
                 kv('Engine', ($.caps.engine || 'unknown') + ' ' + ($.caps.engineVersion || '')),
                 kv('Delivery', deliveryLabel(),
-                    'Delivery|Detected from where this script is, not assumed. The same files run from ' +
-                    'the game plugins folder, a web-deploy folder, or a mod loader\'s own folder.'),
+                    'Delivery|Detected from where this script sits, not assumed.'),
                 null
             ], { collapsed: true })
         ]);
@@ -943,7 +950,7 @@
             W.group('Safety', [
                 W.toggleRow('Read-only mode', W.ungated({
                     value: $.cfg.behaviour.readonly,
-                    tip: 'Read-only|Blocks every write to game state. Viewers, tables and overlays stay live.',
+                    tip: 'Read-only|Blocks every write. Viewers, tables and overlays stay live.',
                     onChange: function (v) {
                         $.store.cfgSet('behaviour.readonly', v);
                         root.classList.toggle('mm-ro', v);
@@ -953,13 +960,13 @@
                 })),
                 W.toggleRow('Confirm dangerous actions', W.ungated({
                     value: $.cfg.behaviour.confirmDangerous,
-                    tip: 'Confirm|Danger-styled buttons arm on the first click and fire on the second.',
+                    tip: 'Confirm|Danger buttons arm on the first click, fire on the second.',
                     onChange: function (v) { $.store.cfgSet('behaviour.confirmDangerous', v); }
                 })),
                 W.toggleRow('Back up the save before dangerous actions', W.ungated({
                     value: $.cfg.behaviour.backupBeforeDanger,
                     sub: 'M4+',
-                    tip: 'Backups|Copies the current save into userdata/backups before teleports, forced events and bulk edits.',
+                    tip: 'Backups|Teleports, forced events and bulk edits count as dangerous.',
                     onChange: function (v) { $.store.cfgSet('behaviour.backupBeforeDanger', v); }
                 })),
                 W.row('Backups to keep', W.number(W.ungated({
@@ -979,7 +986,8 @@
                         onClick: function () { $.undo.clear(); U.rerender(); }
                     })),
                 h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
-                    'Simple edits only. Teleports, forced events, class changes and Forge injections are irreversible — the save backup is the way back.')
+                    'Simple edits only. Teleports, forced events, class changes and Forge ' +
+                        'injections cannot be undone — a save backup is the only way back.')
             ], { tag: 'reversible only' })
         ], [
             W.group('Game', [
@@ -1001,7 +1009,7 @@
                 })),
                 W.toggleRow('Swallow game input while open', W.ungated({
                     value: $.cfg.behaviour.swallowInput,
-                    tip: 'Input|Blocks keyboard input from reaching the game and freezes the player.',
+                    tip: 'Input|Also freezes the player.',
                     onChange: function (v) { $.store.cfgSet('behaviour.swallowInput', v); }
                 }))
             ]),
@@ -1037,7 +1045,7 @@
         var LABELS = {
             toggleMenu: ['Toggle menu', 'Opens and closes this window'],
             watch: ['Watch panel', 'Shows the floating watch panel'],
-            panicHide: ['Panic hide', 'Hides the window and every float instantly']
+            panicHide: ['Panic hide', 'Hides the window and every float']
         };
         var rows = Object.keys(LABELS).map(function (k) {
             var kb;
@@ -1114,8 +1122,7 @@
                 ? W.group('Everything already claimed', [
                     h('div', { class: 'mm-pre', text: claimedText }),
                     h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
-                        'The defaults above were picked from what was left over after this list. ' +
-                        'It is the answer to "why did it not choose that key".')
+                        'The defaults were picked from what this list left over.')
                 ], { tag: 'derived', collapsed: true })
                 : null
         ]);
@@ -1188,7 +1195,7 @@
         var K = $.compat;
         if (!K) {
             return todo('UNAVAILABLE', 'the compatibility module did not load', [
-                'Load order, write verification and the live self-tests all live there.',
+                'Load order, write verification and the self-tests all live there.',
                 'Debug → Plugins says whether its file is present, readable and registered.'
             ]);
         }
@@ -1221,7 +1228,10 @@
         fw.forEach(function (f) {
             fwRows.push(h('div', { class: 'mm-row' },
                 h('div', { class: 'mm-lab', text: f.name }),
-                h('div', { class: 'mm-edge mm-mono mm-sub mm-selectable', text: (f.plugins || []).join(', ') })));
+                h('div', {
+                    class: 'mm-edge mm-edge--shrink mm-edge--wrap mm-mono mm-sub mm-selectable mm-breakall',
+                    text: (f.plugins || []).join(', ')
+                })));
             fwRows.push(h('div', { class: 'mm-sub mm-selectable', style: 'padding:0 2px 4px;white-space:normal' },
                 f.note));
             if (f.affects && f.affects.length) {
@@ -1245,8 +1255,7 @@
         if (deg.length) {
             degRows.push(W.button({
                 label: 'clear and try again', wide: true, _ungated: true,
-                tip: 'Clear|Forgets that these failed. The next write is verified again from scratch — ' +
-                    'worth doing after changing a plugin setting that was the cause.',
+                tip: 'Clear|Worth doing after changing the plugin setting that caused it.',
                 onClick: function () { K.clearDegraded(); U.rerender(); }
             }));
         }
@@ -1270,13 +1279,11 @@
         results.forEach(function (r) { if (counts[r.state] !== undefined) counts[r.state]++; });
         var testGroup = W.group('Live self-tests', [
             h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
-                'Run against the running game, not a harness: set a sentinel and read it back, gain an ' +
-                'item and count it. Every test restores what it touched, and what it learns is what ' +
-                'greys a control before you find out the hard way.'),
+                'Run against the live game; every test restores what it touched. What they ' +
+                'learn is what greys a control.'),
             W.button({
                 label: 'Run self-tests', wide: true, mutates: true,
-                tip: 'Run|Writes to game state and reads it back. Refused in read-only mode, because ' +
-                    'that is exactly what read-only means.',
+                tip: 'Run|Writes to game state and reads it back. Refused in read-only mode.',
                 onClick: function () {
                     $.safe(function () { K.selfTest(); }, 'run self-tests');
                     U.rerender();
@@ -1310,7 +1317,7 @@
         var X = $.index;
         if (!X) {
             return todo('UNAVAILABLE', 'the index module did not load', [
-                'Search falls back to scanning the live database, which still works — it is only slower.',
+                'Search falls back to scanning the live database — slower, but it works.',
                 'Debug → Plugins says whether its file is present, readable and registered.'
             ]);
         }
@@ -1338,8 +1345,7 @@
             W.button({
                 label: 'Rebuild index', variant: 'danger', mutates: true,
                 confirmLabel: 'rebuild it?',
-                tip: 'Rebuild|Throws the cache away and reads the database again. Nothing in the game is ' +
-                    'touched — the index is a lookup table, never authority.',
+                tip: 'Rebuild|Reads the database again. Nothing in the game is touched.',
                 onClick: function () {
                     $.safe(function () { X.rebuild(); }, 'index rebuild');
                     U.toast({ title: 'REBUILDING', msg: 'the index is being rebuilt in the background', severity: 'ok' });
@@ -1364,8 +1370,7 @@
         var notesGroup = notes.length
             ? W.group('Notes', notes.concat([
                 h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
-                    'Every query that cannot be complete carries one of these as its reason, so a short ' +
-                    'result list is never silently short.')
+                    'Every incomplete query carries one of these as its reason.')
             ]), { tag: notes.length + '' })
             : null;
 
@@ -1408,9 +1413,7 @@
 
         var benchGroup = W.group('Benchmark', [
             h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
-                'The same question asked with the index and without it, back to back. This is what ' +
-                'justifies a stage or retires it: a stage whose saving cannot be measured here is ' +
-                'build time spent for nothing.'),
+                'The same question asked with the index and without it, back to back.'),
             W.button({
                 label: 'Benchmark', wide: true, _ungated: true,
                 onClick: function () {

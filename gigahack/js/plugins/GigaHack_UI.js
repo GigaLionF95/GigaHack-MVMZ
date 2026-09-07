@@ -126,6 +126,13 @@
   position:absolute; left:0; top:0; right:0; bottom:0; overflow:hidden;
   font-family:var(--mm-font); font-size:var(--mm-fs); line-height:var(--mm-lh);
   color:var(--mm-text); -webkit-font-smoothing:antialiased;
+  /* A filesystem path has no spaces in it, so soft wrapping alone cannot break
+     one and it runs straight out of every note, tooltip and toast that holds
+     it. This is the legacy spelling on purpose: overflow-wrap:anywhere is
+     Chromium 80 and the floor here is 66. It is inherited, and it only acts
+     where wrapping is already allowed — every white-space:nowrap and
+     white-space:pre box below is untouched. */
+  word-wrap:break-word;
 }
 #mm-root *{box-sizing:border-box; margin:0; padding:0; font:inherit; color:inherit}
 #mm-root button{background:none;border:0;cursor:pointer;font:inherit;color:inherit}
@@ -307,6 +314,18 @@
 #mm-root .mm-sub{font-size:var(--mm-fs-xs);color:var(--mm-text-dim)}
 #mm-root .mm-edge{display:flex;align-items:center;flex:0 0 auto}
 #mm-root .mm-edge>*+*{margin-left:var(--mm-sp-1)}
+/* .mm-edge itself must stay flex:0 0 auto — a button, stepper, keybind or
+   swatch in an edge must never be squeezed to fit a long label. A row that puts
+   a STRING there opts in instead. The large shrink factor makes the edge, not
+   the label, absorb the whole deficit. */
+#mm-root .mm-edge--shrink{flex:0 100 auto;min-width:0}
+#mm-root .mm-edge--wrap{white-space:normal;text-align:right}
+/* Ellipsised from the MIDDLE, in JS, by measurement: text-overflow keeps the
+   head, and the head of a path is the half that says nothing. */
+#mm-root .mm-path{
+  display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  user-select:text;-webkit-user-select:text;cursor:text;
+}
 #mm-root .mm-sep{height:1px;background:var(--mm-line-soft)}
 /* A separator's own spacing and its container's row spacing are now the same
    property, so one of them has to win outright rather than adding up as margin
@@ -576,15 +595,23 @@
 }
 #mm-root .mm-twisty-none{width:14px;height:14px;flex:0 0 auto;display:block}
 #mm-root .mm-btn-mini{height:13px;padding:0 4px;font-size:var(--mm-fs-xs);letter-spacing:0}
+/* Sized to sit inside a 20px row without changing its height. */
+#mm-root .mm-copy{
+  flex:0 0 auto;width:13px;height:13px;display:grid;place-items:center;
+  background:var(--mm-bg-2);border:1px solid var(--mm-line);border-radius:var(--mm-radius);
+  color:var(--mm-text-dim);font-size:var(--mm-fs-xs);line-height:1;
+}
+#mm-root .mm-copy:hover{background:var(--mm-bg-3);color:var(--mm-text-hi);border-color:#3a3d44}
+#mm-root .mm-copy.mm-ok{color:var(--mm-ok);border-color:var(--mm-ok)}
 
 /* ---------- misc dressing ---------- */
 #mm-root .mm-bar{height:4px;background:var(--mm-bg-sunken);box-shadow:inset 0 0 0 1px #000;flex:1 1 auto;position:relative;overflow:hidden}
 #mm-root .mm-bar i{position:absolute;top:0;bottom:0;left:0;right:auto;display:block;background:var(--mm-ok)}
 #mm-root .mm-card{border:1px solid var(--mm-line);background:var(--mm-bg-2);padding:var(--mm-sp-2) var(--mm-sp-3);display:flex;flex-direction:column}
 #mm-root .mm-card>*+*{margin-top:var(--mm-sp-2)}
-#mm-root .mm-tree-row{display:flex;align-items:center;width:100%;height:16px;flex:0 0 auto;white-space:nowrap;text-align:left;font-size:var(--mm-fs-sm);color:var(--mm-text);padding:0 var(--mm-sp-2) 0 var(--mm-sp-1)}
+#mm-root .mm-tree-row{display:flex;align-items:center;width:100%;height:16px;flex:0 0 auto;white-space:nowrap;overflow:hidden;text-align:left;font-size:var(--mm-fs-sm);color:var(--mm-text);padding:0 var(--mm-sp-2) 0 var(--mm-sp-1)}
 #mm-root .mm-tree-row>*+*{margin-left:var(--mm-sp-2)}
-#mm-root .mm-tree-row>span{min-width:0}
+#mm-root .mm-tree-row>span{min-width:0;overflow:hidden;text-overflow:ellipsis}
 #mm-root .mm-tree-row:hover{background:var(--mm-hover);color:var(--mm-text-hi)}
 #mm-root .mm-tree-row.mm-on{background:var(--mm-accent-soft);color:var(--mm-text-hi)}
 #mm-root .mm-tree-row.mm-dir{color:var(--mm-text-dim);text-transform:uppercase;font-size:var(--mm-fs-xs);letter-spacing:var(--mm-track)}
@@ -648,6 +675,9 @@
   position:absolute;z-index:90;max-width:190px;padding:3px var(--mm-sp-2);pointer-events:none;
   background:#08090a;border:1px solid var(--mm-line);color:var(--mm-text);
   font-size:var(--mm-fs-sm);box-shadow:0 4px 12px rgba(0,0,0,.5);
+  /* Without these the ink paints outside the box AND offsetWidth over-reports,
+     so the placement clamp positions the tip as though it fitted. */
+  overflow:hidden;word-wrap:break-word;
 }
 #mm-root .mm-tip b{display:block;color:var(--mm-text-hi);font-weight:400}
 
@@ -663,6 +693,10 @@
 @keyframes mm-out{to{opacity:0;transform:translateX(10px)}}
 #mm-root .mm-toast-bd{display:flex;padding:var(--mm-sp-3)}
 #mm-root .mm-toast-bd>*+*{margin-left:var(--mm-sp-3)}
+/* A flex item's automatic minimum size is its min-content width, which for an
+   unbreakable path is the whole path — so without this the text block cannot
+   shrink inside the toast and is simply clipped. */
+#mm-root .mm-toast-bd>*{min-width:0}
 #mm-root .mm-toast-bar{width:2px;flex:0 0 auto;background:var(--mm-accent)}
 #mm-root .mm-toast-t{font-size:var(--mm-fs-sm);color:var(--mm-text-hi);letter-spacing:var(--mm-track)}
 #mm-root .mm-toast-m{font-size:var(--mm-fs-xs);color:var(--mm-text);margin-top:1px}
@@ -677,7 +711,7 @@
    where it was dropped. */
 #mm-root .mm-float{
   position:absolute;background:var(--mm-bg-0);border:1px solid var(--mm-line-outer);
-  box-shadow:var(--mm-shadow),var(--mm-inset);opacity:var(--mm-opacity);
+  box-shadow:var(--mm-shadow),var(--mm-inset);opacity:var(--mm-opacity);overflow:hidden;
   transform:scale(var(--mm-scale)); transform-origin:0 0;
 }
 #mm-root .mm-float-hd{
@@ -691,8 +725,8 @@
 #mm-root .mm-watch-row{display:flex;align-items:center;height:15px;padding:0 var(--mm-sp-2);font-size:var(--mm-fs-xs);font-family:var(--mm-font-mono)}
 #mm-root .mm-watch-row>*+*{margin-left:var(--mm-sp-2)}
 #mm-root .mm-watch-row:hover{background:var(--mm-hover)}
-#mm-root .mm-watch-row span:first-child{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--mm-text)}
-#mm-root .mm-watch-row span:last-child{color:var(--mm-text-hi)}
+#mm-root .mm-watch-row span:first-child{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--mm-text)}
+#mm-root .mm-watch-row span:last-child{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--mm-text-hi)}
 /* Anchored by its right edge, so it must grow LEFTWARD. Scaling a right-anchored box
    about its own top-left corner pushes it off the screen edge, which is
    exactly what raising the UI scale did to it. */
@@ -731,7 +765,7 @@
 #mm-root .mm-inspect-list>*+*{margin-top:1px}
 #mm-root .mm-inspect-list div{display:flex;font-family:var(--mm-font-mono);font-size:var(--mm-fs-xs);color:var(--mm-text-dim)}
 #mm-root .mm-inspect-list div>*+*{margin-left:var(--mm-sp-2)}
-#mm-root .mm-inspect-list div b{flex:1 1 auto;color:var(--mm-text);font-weight:400}
+#mm-root .mm-inspect-list div b{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--mm-text);font-weight:400}
 #mm-root .mm-inspect-hint{padding:var(--mm-sp-1) var(--mm-sp-3) var(--mm-sp-2);font-size:var(--mm-fs-xs);color:#3f434b}
 `;
 
@@ -793,6 +827,15 @@
   overflow:auto;user-select:text;-webkit-user-select:text;
 }
 #mm-root .mm-selectable{user-select:text;-webkit-user-select:text}
+/* A wrapping .mm-pre, for blocks that hold paths. .mm-pre itself keeps
+   white-space:pre — the console's tape and reference depend on it — so a tail
+   hidden behind a 6px horizontal scrollbar is fixed by opting in, not by
+   changing the shared rule. */
+#mm-root .mm-pre-wrap{white-space:pre-wrap;word-wrap:break-word;overflow-x:hidden}
+/* Where the value must stay fully readable rather than ellipsised. break-all
+   is the only value that reduces min-content width, which is what lets a flex
+   item shrink at all; break-word does not. Never on prose. */
+#mm-root .mm-breakall{white-space:normal;word-break:break-all}
 `;
 
     /* ---------------------------------------------------------------------
@@ -831,7 +874,7 @@
                    engine's behaviour, and so does the rest of the overlay —
                    selecting a label instead of dragging a window is worse. */
                 out += '\n#mm-root input,#mm-root textarea,#mm-root .mm-cellinput,' +
-                       '#mm-root .mm-pre,#mm-root .mm-selectable' +
+                       '#mm-root .mm-pre,#mm-root .mm-selectable,#mm-root .mm-path' +
                        '{user-select:text !important;-webkit-user-select:text !important}';
             }
 
@@ -1169,8 +1212,19 @@
             on = !!v; box.classList.toggle('mm-on', on);
             if (!silent && g.fn) g.fn(on);
         }
-        box.addEventListener('click', function (e) { e.stopPropagation(); set(!on); });
-        box.mm = { get: function () { return on; }, set: set, toggle: function () { set(!on); }, disable: function (d) { box.classList.toggle('mm-dis', d); } };
+        // Same reason as mmButton's: pointer-events:none stops a pointer and
+        // nothing else, and the row wrapper forwards clicks here by hand.
+        box.addEventListener('click', function (e) {
+            e.stopPropagation();
+            if (box.classList.contains('mm-dis')) return;
+            set(!on);
+        });
+        box.mm = {
+            get: function () { return on; },
+            set: set,
+            toggle: function () { if (!box.classList.contains('mm-dis')) set(!on); },
+            disable: function (d) { box.classList.toggle('mm-dis', d); }
+        };
         return box;
     }
 
@@ -1401,7 +1455,7 @@
     function mmKeybind(opts) {
         opts = opts || {};
         var key = opts.key || null, mode = opts.mode || 'On hotkey';
-        var el = h('button', { class: 'mm-kb', tip: 'Keybind|Click to bind a key and pick a mode' });
+        var el = h('button', { class: 'mm-kb' });
         function paint() {
             el.textContent = key ? prettyCode(key) : '[-]';
             el.classList.toggle('mm-set', !!key);
@@ -1474,7 +1528,7 @@
     function mmColor(opts) {
         opts = opts || {};
         var hsv = hex2hsv(opts.value || '#6c7ae0') || [240, .5, .9];
-        var sw = h('button', { class: 'mm-sw', tip: 'Colour|Click for saturation / hue / hex' });
+        var sw = h('button', { class: 'mm-sw', tip: 'Colour|Saturation, hue, hex' });
         function hex() { return rgb2hex(hsv2rgb(hsv[0], hsv[1], hsv[2])); }
         function paint() { sw.style.background = hex(); }
         sw.addEventListener('click', function (e) {
@@ -1533,6 +1587,13 @@
         if (!opts._ungated && (opts.variant === 'danger' || opts.mutates)) cls += ' mm-gated';
         var btn = h('button', { class: cls, text: opts.label, tip: opts.tip || null });
         var armed = false, timer = null;
+        /* .mm-dis carries pointer-events:none, so a POINTER cannot reach a
+           disabled button — but el.click() and a dispatched event both ignore
+           that, and mm.disable() can add the class long after the handler was
+           attached. Disabled has to mean one thing on every path, or a control
+           the panel has greyed with a reason still runs when something asks it
+           to programmatically. */
+        function blocked() { return btn.classList.contains('mm-dis'); }
         // Dangerous buttons obey the "confirm dangerous actions" setting; a
         // button explicitly marked confirm:true always confirms.
         function needsConfirm() {
@@ -1541,6 +1602,7 @@
         }
         function disarm() { armed = false; btn.classList.remove('mm-armed'); btn.textContent = opts.label; clearTimeout(timer); }
         btn.addEventListener('click', function () {
+            if (blocked()) { disarm(); return; }
             if (!opts._ungated && $.isReadOnly() && (opts.variant === 'danger' || opts.mutates)) {
                 disarm();
                 $.allowWrite(opts.label);
@@ -1570,7 +1632,11 @@
     function mmRow(label, controls, opts) {
         opts = opts || {};
         var lab = h('div', { class: 'mm-lab' }, label, opts.sub ? h('span', { class: 'mm-sub', text: '  ' + opts.sub }) : null);
-        var edge = h('div', { class: 'mm-edge' });
+        // opts.edgeClass is how a row says its value is a STRING of unknown
+        // length rather than a control. The classes have to land on the EDGE —
+        // that is the flex:0 0 auto box — so putting them on the child does
+        // nothing at all, which is a silent way to keep squeezing the label.
+        var edge = h('div', { class: 'mm-edge' + (opts.edgeClass ? ' ' + opts.edgeClass : '') });
         add(edge, controls);
         if (opts.keybind) edge.appendChild(mmKeybind(opts.keybind === true ? {} : opts.keybind));
         if (opts.color) edge.appendChild(mmColor(typeof opts.color === 'string' ? { value: opts.color, label: label } : opts.color));
@@ -1587,7 +1653,7 @@
             disabled: opts.disabled, _ungated: opts._ungated, _noMark: true
         });
         var lab = h('div', { class: 'mm-lab' }, label, opts.sub ? h('span', { class: 'mm-sub', text: '  ' + opts.sub }) : null);
-        var edge = h('div', { class: 'mm-edge' });
+        var edge = h('div', { class: 'mm-edge' + (opts.edgeClass ? ' ' + opts.edgeClass : '') });
         if (opts.extra) add(edge, opts.extra);
         if (opts.keybind) edge.appendChild(mmKeybind(opts.keybind === true ? {} : opts.keybind));
         if (opts.color) edge.appendChild(mmColor({ value: opts.color, label: label }));
@@ -1676,7 +1742,7 @@
          */
         var MIN_COL = 24;
         function grip(i) {
-            var g = h('div', { class: 'mm-colgrip', tip: 'Drag|Resize this column · double-click to reset' });
+            var g = h('div', { class: 'mm-colgrip', tip: 'Drag|Resize · double-click to reset' });
             g.addEventListener('pointerdown', function (e) {
                 e.preventDefault(); e.stopPropagation();
                 g.setPointerCapture(e.pointerId);
@@ -1696,6 +1762,7 @@
                     g.removeEventListener('pointerup', up);
                     g.removeEventListener('pointercancel', up);
                     rememberWidths();
+                    U.refitPaths();   // middle-ellipsis is measured, so it goes stale
                 }
                 g.addEventListener('pointermove', mv);
                 g.addEventListener('pointerup', up);
@@ -1868,6 +1935,156 @@
         return span;
     }
 
+    /* ---------------------------------------------------------------------
+       PATHS AND OTHER UNBOUNDED VALUES
+
+       A row's right-hand side is `flex:0 0 auto`, which is right for a button
+       and wrong for a string: an absolute path is longer than the whole column
+       and cannot shrink, so it pushes the label out and is then clipped by the
+       column's own overflow. Every panel that printed one grew its own copy of
+       the problem; this is the one place it is solved.
+
+       ELLIPSISED FROM THE MIDDLE, AND BY MEASUREMENT. text-overflow keeps the
+       head, and the head of every path here is the part that says nothing —
+       what distinguishes one install, slot or folder from another is the tail.
+       The CSS direction:rtl trick does not do it: a leading '/' is
+       bidi-neutral, so it puts the ellipsis at the front and still clips the
+       tail. A binary search over scrollWidth does, in about seven iterations,
+       once per mount.
+
+       Four things it does that a bare string does not:
+         · the complete value on the NATIVE title attribute, which survives the
+           overlay's own tooltip layer and can be read by the OS;
+         · selectable text, opted back in on MV where the engine sets
+           user-select:none on the whole body;
+         · a copy button, through the one clipboard helper, that says so when
+           there is no clipboard rather than doing nothing;
+         · with no value it prints the REASON, not a dash.
+       ------------------------------------------------------------------ */
+
+    /**
+     * Fit `full` into `el` by eliding its middle.
+     *
+     * clientWidth is 0 while the node is detached, so this is a no-op until the
+     * box has a width and callers refit after mount. It always re-derives from
+     * the full string, so repeated calls cannot compound the truncation.
+     */
+    function fitMiddle(el, full) {
+        return $.safe(function () {
+            el.textContent = full;
+            var avail = el.clientWidth;
+            if (!avail || el.scrollWidth <= avail) return full;
+            var lo = 0, hi = full.length, best = '…', mid, head, tail, s;
+            while (lo <= hi) {
+                mid = (lo + hi) >> 1;
+                head = Math.ceil(mid / 2);
+                tail = mid - head;
+                s = full.slice(0, head) + '…' + (tail ? full.slice(full.length - tail) : '');
+                el.textContent = s;
+                if (el.scrollWidth <= avail) { best = s; lo = mid + 1; }
+                else { hi = mid - 1; }
+            }
+            el.textContent = best;
+            return best;
+        }, 'fit path', full);
+    }
+
+    /**
+     * mmPath(value, opts) → an .mm-edge holding one long value.
+     *
+     * opts.why       what to say INSTEAD when there is no value — name what is
+     *                missing and why, not '—'
+     * opts.fallback  a literal to show when there is no path but a meaningful
+     *                name still exists (a bare file name, say)
+     * opts.prefix    a short leading token kept whole and never elided
+     * opts.copy      false to leave the copy button off
+     */
+    function mmPath(value, opts) {
+        opts = opts || {};
+        var full = (value === null || value === undefined) ? '' : String(value);
+        var edge = h('div', {
+            class: 'mm-edge mm-edge--shrink mm-sub' + (opts.mono === false ? '' : ' mm-mono')
+        });
+
+        if (!full) {
+            if (opts.fallback) {
+                edge.appendChild(h('span', {
+                    class: 'mm-path mm-selectable', text: opts.fallback, title: opts.fallback
+                }));
+            } else {
+                edge.classList.add('mm-edge--wrap');
+                edge.appendChild(h('span', {
+                    style: 'color:var(--mm-warn)',
+                    text: opts.why || 'not resolved on this install'
+                }));
+            }
+            edge.mm = { refit: function () { }, full: function () { return ''; }, set: function () { } };
+            return edge;
+        }
+
+        if (opts.prefix) edge.appendChild(h('span', { class: 'mm-sub', text: opts.prefix }));
+        var span = h('span', { class: 'mm-path mm-selectable', text: full, title: full });
+        edge.appendChild(span);
+
+        if (opts.copy !== false) {
+            var btn = h('button', {
+                class: 'mm-copy', text: '⧉', tip: 'Copy|The whole value, not the shortened one'
+            });
+            btn.addEventListener('click', function (e) {
+                e.stopPropagation();
+                var ok = U.copyText(span.getAttribute('title'));
+                if (ok) btn.classList.add('mm-ok');
+                mmToast(ok
+                    ? { title: opts.copyLabel || 'COPIED', msg: 'on the clipboard', severity: 'ok', ms: 1400 }
+                    : { title: 'NO CLIPBOARD', msg: 'select it and copy it by hand', severity: 'warn' });
+                setTimeout(function () { btn.classList.remove('mm-ok'); }, 1200);
+            });
+            edge.appendChild(btn);
+        }
+
+        function refit() { fitMiddle(span, span.getAttribute('title') || ''); }
+        edge.mm = {
+            refit: refit,
+            full: function () { return span.getAttribute('title') || ''; },
+            set: function (v) {
+                var t = String(v == null ? '' : v);
+                span.setAttribute('title', t);
+                refit();
+            }
+        };
+        // Measurement needs a mounted node with a width.
+        requestAnimationFrame(function () { refit(); });
+        return edge;
+    }
+
+    /** A whole row: label on the left, the value handled by mmPath on the right. */
+    function mmPathRow(label, value, opts) {
+        opts = opts || {};
+        var edge = mmPath(value, opts);
+        var row = h('div', { class: 'mm-row', tip: opts.tip || null },
+            h('div', { class: 'mm-lab', text: label }), edge);
+        row.mm = edge.mm;
+        return row;
+    }
+
+    /**
+     * Re-measure every path on screen.
+     *
+     * Middle-ellipsis is measured, so it goes stale the moment a column, a
+     * split or the window changes width. Each of those already has one place
+     * that runs when the drag ends; this is what they call.
+     */
+    U.refitPaths = function (root) {
+        $.safe(function () {
+            var scope = root || (HOST && HOST.root) || document;
+            if (!scope.querySelectorAll) return;
+            var n = scope.querySelectorAll('.mm-edge--shrink');
+            for (var i = 0; i < n.length; i++) {
+                if (n[i].mm && n[i].mm.refit) n[i].mm.refit();
+            }
+        }, 'refit paths');
+    };
+
     function mmToast(o) {
         o = o || {};
         if (!HOST || !HOST.toasts) { $.log(o.severity === 'err' ? 'err' : 'info', (o.title || '') + ' ' + (o.msg || '')); return null; }
@@ -1945,7 +2162,7 @@
     }
 
     function splitter(body, made, index) {
-        var el = h('div', { class: 'mm-split', tip: 'Drag|Move the divider · double-click to reset' });
+        var el = h('div', { class: 'mm-split', tip: 'Drag|Double-click to reset' });
         el.addEventListener('pointerdown', function (e) {
             e.preventDefault();
             el.setPointerCapture(e.pointerId);
@@ -1970,6 +2187,7 @@
                 el.removeEventListener('pointerup', up);
                 el.removeEventListener('pointercancel', up);
                 right.style.flex = rightFlex;
+                U.refitPaths();       // both columns changed width
                 var key = splitKey(index);
                 if (key) {
                     if (!$.cfg.ui.split) $.cfg.ui.split = {};
@@ -2151,7 +2369,19 @@
                 return true;
             }
             if (navigator.clipboard && navigator.clipboard.writeText) {
-                navigator.clipboard.writeText(String(text));
+                /* It answers with a promise, and it rejects for reasons the
+                   caller cannot see coming — the page is not focused, the
+                   permission was refused, the document is not a secure
+                   context. Unhandled, that surfaces as a console error nobody
+                   can attribute and the toast still says COPIED. Handled, it
+                   says which one. */
+                var r = navigator.clipboard.writeText(String(text));
+                if (r && typeof r.then === 'function') {
+                    r.then(null, function (e) {
+                        $.log('warn', 'the clipboard refused the write — ' +
+                            ((e && e.message) || e) + '. Select the value and copy it by hand.');
+                    });
+                }
                 return true;
             }
             return false;
@@ -2165,7 +2395,7 @@
         search: mmSearch, dropdown: mmDropdown, keybind: mmKeybind, color: mmColor,
         button: mmButton, chip: mmChip, row: mmRow, toggleRow: mmToggleRow,
         group: mmGroup, table: mmTable, editCell: mmEditCell, ungated: ungated,
-        textarea: mmTextarea
+        textarea: mmTextarea, path: mmPath, pathRow: mmPathRow
     };
 
     $.log('info', 'ui: design system ready (' + Object.keys(U.w).length + ' widget factories)');

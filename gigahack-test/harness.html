@@ -17,10 +17,24 @@
 <canvas id="gameCanvas" width="1280" height="720" style="z-index:1"></canvas>
 
 <!-- Stock RPG Maker MZ 1.9.0. No third-party plugins.
-     Load order is core -> engine -> [plugins] -> fixtures -> the 26 modules,
+     Load order is core -> engine -> [plugins] -> fixtures -> the 35 modules,
      and it is spelled out here rather than implied by one file's line numbers. -->
 <script src="stubs/core.js"></script>
+<script src="stubs/x-misc.js"></script>
+<script src="stubs/x-interp.js"></script>
+<script src="stubs/x-equip.js"></script>
+<script src="stubs/x-input.js"></script>
+<script src="stubs/x-screen.js"></script>
+<script src="stubs/x-audio.js"></script>
+<script src="stubs/x-gfx.js"></script>
 <script src="stubs/engine-mz.js"></script>
+<script src="stubs/x-misc-mz.js"></script>
+<script src="stubs/x-interp-mz.js"></script>
+<script src="stubs/x-equip-mz.js"></script>
+<script src="stubs/x-input-mz.js"></script>
+<script src="stubs/x-screen-mz.js"></script>
+<script src="stubs/x-audio-mz.js"></script>
+<script src="stubs/x-gfx-mz.js"></script>
 <script src="stubs/fixtures.js"></script>
 
 <script src="../gigahack/js/plugins/GigaHack_Core.js"></script>
@@ -48,6 +62,15 @@
 <script src="../gigahack/js/plugins/GigaHack_Steam.js"></script>
 <script src="../gigahack/js/plugins/GigaHack_Save.js"></script>
 <script src="../gigahack/js/plugins/GigaHack_Console.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Trace.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Snapshot.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Quest.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Media.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Screen.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Auto.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Kit.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Keys.js"></script>
+<script src="../gigahack/js/plugins/GigaHack_Build.js"></script>
 <script src="../gigahack/js/plugins/GigaHack_Boot.js"></script>
 
 <!-- SceneManager.run + the boot scene, after the mod's aliases are installed. -->

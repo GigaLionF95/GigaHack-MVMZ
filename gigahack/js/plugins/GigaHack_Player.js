@@ -579,7 +579,14 @@
     function kv(label, value, tip) {
         return h('div', { class: 'mm-row', tip: tip || null },
             h('div', { class: 'mm-lab', text: label }),
-            h('div', { class: 'mm-edge mm-mono mm-sub', text: String(value) }));
+            // The value is unbounded — a path, a project's own name for
+            // something, a joined list — so the edge is allowed to shrink and
+            // wrap. Without that it pushes the label out and is then clipped
+            // by the column, and neither half can be read.
+            h('div', {
+                class: 'mm-edge mm-edge--shrink mm-edge--wrap mm-mono mm-sub mm-breakall',
+                text: String(value)
+            }));
     }
 
     function bind(id) {
@@ -595,9 +602,8 @@
             _ungated: true, disabled: !cfg('speedOverride', false),
             onChange: function (v) { set('speed', v); }
         }), {
-            tip: 'Move speed|The engine moves 2^speed/256 tiles per frame, so this is exponential: 4 is walking, ' +
-                '5 is dashing, and 8 is a whole tile every frame — fast enough to outrun the map scroll and to ' +
-                'skip over tiles that would have triggered something.'
+            tip: 'Move speed|Exponential: 4 walks, 5 dashes, 8 is a tile per frame and skips ' +
+                'triggers.'
         });
 
         var left = [
@@ -605,16 +611,13 @@
                 W.toggleRow('Noclip', {
                     value: !!cfg('noclip', false), _ungated: true, keybind: false,
                     sub: bind('noclip'),
-                    tip: 'Noclip|Walls and events stop mattering, including anything a plugin has made ' +
-                        'impassable. The edge of the map still does — walking off it would put every tile ' +
-                        'lookup out of bounds.',
+                    tip: 'Noclip|The map edge still stops you; nothing else does.',
                     onChange: function (v) { setSync('noclip', v); }
                 }),
                 W.toggleRow('Ghost past events', {
                     value: !!cfg('ghost', false), _ungated: true, keybind: false,
                     sub: bind('ghost'),
-                    tip: 'Ghost|Touching an event no longer sets it off. The action button still works, so you ' +
-                        'can still talk to people on purpose.',
+                    tip: 'Ghost|The action button still works, so you can still talk on purpose.',
                     onChange: function (v) { setSync('ghost', v); }
                 }),
                 h('div', { class: 'mm-sep' }),
@@ -627,8 +630,7 @@
                 W.toggleRow('Always dash', {
                     value: P.dash(), keybind: false, _ungated: true,
                     disabled: !P.dashAvailable(),
-                    tip: 'Always dash|This is the game\'s own option, the same one in its Options menu — ' +
-                        'GigaHack keeps no second copy of it.',
+                    tip: 'Always dash|The game\'s own option, not a second copy.',
                     onChange: function (v) { P.setDash(v); U.rerender(); }
                 }),
                 P.dashAvailable() ? null : h('div', {
@@ -648,7 +650,7 @@
                     onClick: function () { P.resetVisibility(); U.rerender(); }
                 }),
                 h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
-                    'Saved with the character — save while invisible and that save stays invisible.')
+                    'Saved with the character, so an invisible save loads invisible.')
             ], { tag: 'in the save' })
         ];
 
@@ -683,16 +685,15 @@
                         onClick: function () { P.recall(); U.rerender(); }
                     })),
                 h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
-                    'One slot, overwritten each time. Named places live in Teleport → Bookmarks.')
+                    'One slot, overwritten each time. Named places live in World → Places.')
             ], { tag: 'quick slot' }),
 
             W.group('Time', [
                 W.toggleRow('Override game speed', {
                     value: !!cfg('speedy', false), keybind: false, _ungated: true,
                     disabled: !P.speedyAvailable(),
-                    tip: 'Game speed|Runs the engine\'s game logic more or less often. Everything scales with ' +
-                        'it — animations, message timing, the encounter counter. Drawing does not: the screen ' +
-                        'is still painted once per real frame. ' + P.describeSpeed(),
+                    tip: 'Game speed|Scales game logic, not drawing — the screen still paints once per ' +
+                        'real frame. ' + P.describeSpeed(),
                     onChange: function (v) { setSync('speedy', v); U.rerender(); }
                 }),
                 W.row('Speed', W.slider({
@@ -708,9 +709,8 @@
                 W.row('Frame step', h('div', { class: 'mm-inline' },
                     W.button({
                         label: '1', mutates: true, disabled: !canStep,
-                        tip: 'Step|Runs exactly one step of the engine\'s game logic — input, scene change, ' +
-                            'scene update — pause or no pause. Drawing is left to the engine, so the step ' +
-                            'appears on the next frame it paints.',
+                        tip: 'Step|One logical step, paused or not; it shows on the next painted ' +
+                            'frame.',
                         onClick: function () { P.step(1); }
                     }),
                     W.button({ label: '10', mutates: true, disabled: !canStep, onClick: function () { P.step(10); } }),
@@ -718,8 +718,7 @@
                 W.toggleRow('Pause while this menu is open', {
                     value: !!$.store.cfgGet('behaviour.pauseGame', false), keybind: false, _ungated: true,
                     disabled: !pauseOk,
-                    tip: 'Pause|The same switch as Settings → Behaviour. Frame step is what makes it useful. ' +
-                        pauseText,
+                    tip: 'Pause|The same switch as Settings → Behaviour. ' + pauseText,
                     onChange: function (v) {
                         $.store.cfgSet('behaviour.pauseGame', v);
                         // The badge tracks actual state, and pause only applies

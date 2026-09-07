@@ -606,7 +606,7 @@
         var why = S.slotGateWhy();
         if (!why) {
             return h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
-                'Save anywhere also lifts the save menu\'s per-slot restriction, so every slot is selectable.');
+                'Also lifts the save menu\'s per-slot restriction.');
         }
         return h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal', text: why });
     }
@@ -652,7 +652,7 @@
                         }),
                         W.button({
                             label: 'quick', mini: true, _ungated: true,
-                            tip: 'Quick slot|Point the quick save/load hotkeys at this slot',
+                            tip: 'Quick slot|Points the quick save/load hotkeys here.',
                             onClick: function () { $.store.cfgSet('save.quickSlot', r.id); U.rerender(); }
                         }))
                 ];
@@ -664,7 +664,7 @@
                 // column, no tooltip.
                 if (r.mark) {
                     tr.setAttribute('data-mm-tip',
-                        markShort + '|this save was written by the game\'s own ' + markName);
+                        markShort + '|written by the game\'s own ' + markName);
                 }
             }
         });
@@ -674,7 +674,7 @@
             W.group('Quick save', [
                 W.row('Slot', W.number({
                     value: qs, min: 1, max: S.maxSlots(), wide: true, _ungated: true,
-                    tip: 'Quick slot|Defaults to the last slot, so quick-saving never lands on one you use normally.',
+                    tip: 'Quick slot|Defaults to the last slot.',
                     onChange: function (v) { $.store.cfgSet('save.quickSlot', v); U.rerender(); }
                 })),
                 h('div', { class: 'mm-inline', style: 'padding:2px' },
@@ -691,8 +691,8 @@
                 h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
                     'Works mid-cutscene. Overwriting an occupied slot takes a backup first.' +
                     (S.slotIsHidden(qs)
-                        ? ' This build\'s own save menu does not list slot ' + qs + ' — it is a real file, ' +
-                          'but you can only reach it from here or the hotkey.'
+                        ? ' The save menu does not list slot ' + qs + ' — it is a real file, ' +
+                          'reachable only from here or the hotkey.'
                         : ''))
             ], { tag: 'slot ' + qs }),
 
@@ -700,9 +700,8 @@
                 W.toggleRow('Save anywhere', {
                     value: !!$.store.cfgGet('save.anywhere', false),
                     _ungated: true,
-                    tip: 'Save anywhere|Makes the engine\'s "is saving allowed" test always true, so the in-game ' +
-                        'save menu works during cutscenes, under a restricted save mode, and where the game ' +
-                        'disabled saving on purpose.',
+                    tip: 'Save anywhere|Forces the engine\'s "saving allowed" test true, so the ' +
+                        'in-game menu works everywhere.',
                     onChange: function (v) { $.store.cfgSet('save.anywhere', v); U.rerender(); }
                 }),
                 // The per-slot half of the same feature. Where the engine has
@@ -716,9 +715,8 @@
                     value: S.relaxOn(),
                     _ungated: true,
                     sub: S.ironmanOn() ? markName + ' is ON' : markName + ' is off',
-                    tip: 'Reload penalty|Some save modes arm a flag on load and act on it when the next map ' +
-                        'finishes loading. This clears it before it is read. Session-only, and off by default: ' +
-                        'it is the game\'s own design being overridden.',
+                    tip: 'Reload penalty|Clears the flag the game arms on load, before it is read. ' +
+                        'Session-only.',
                     onChange: function (v) { S.setRelax(v); U.rerender(); }
                 }) : null,
                 S.anywhereAvailable() ? null : h('div', {
@@ -742,7 +740,9 @@
                 // from the game root: relocating the save folder by aliasing
                 // that resolution is common on both engines, and a hand-built
                 // path would name a folder nobody reads.
-                kv('Save directory', $.eng.saveDir() || '—'),
+                W.pathRow('Save directory', $.eng.saveDir(), {
+                    why: 'StorageManager did not resolve one on this build'
+                }),
                 kv('Save files', $.caps.saveExt || 'unknown'),
                 kv('Slot gate', S.slotGateAvailable() ? 'lifted with "save anywhere"' : 'not used by this build')
             ], { tag: 'live' })
@@ -1005,8 +1005,8 @@
                         S.setPlaytime(v * 3600 + (S.playtimeSeconds() % 3600));
                         U.rerender();
                     }
-                }), { tip: 'Playtime|Derived from Graphics.frameCount, with a copy in Game_System that a load ' +
-                        'puts back. Both are written, or the change reverts the next time you load.' }),
+                }), { tip: 'Playtime|Two copies, both written — otherwise the next load reverts ' +
+                          'it.' }),
                 W.row('Minutes', W.number({
                     value: Math.floor(S.playtimeSeconds() % 3600 / 60), min: 0, max: 59, label: 'playtime minutes',
                     onChange: function (v) {
@@ -1020,7 +1020,7 @@
                     onChange: function (v) { S.setSaveCount(v); U.rerender(); }
                 })),
                 h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
-                    'Both are on the undo stack, and neither is written to disk until the next save.')
+                    'On the undo stack; not on disk until the next save.')
             ], { tag: 'in the save' }),
 
             W.group('Export a slot', [
@@ -1039,11 +1039,10 @@
                         U.rerender();
                     }
                 }) : null,
-                kv('Folder', S.exportDir() || '—'),
+                W.pathRow('Folder', S.exportDir(), { why: 'no filesystem here, so there is nowhere to export to' }),
                 h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
-                    'Copied byte for byte. Plugins commonly extend what goes into a save, so a save is bytes, ' +
-                    'not JSON we understand — anything that parsed and rewrote one would drop the sections ' +
-                    'it had not heard of.')
+                    'Copied byte for byte — parsing and rewriting a save would drop what plugins ' +
+                    'added.')
             ], { tag: S.exports().length + ' exported' })
         ];
 
@@ -1075,9 +1074,9 @@
                         U.rerender();
                     }
                 }),
-                kv('Folder', S.importDir() || '—'),
+                W.pathRow('Folder', S.importDir(), { why: 'no filesystem here, so there is nowhere to import from' }),
                 h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
-                    'The slot being overwritten is backed up first — this is the one action here that destroys a save.')
+                    'Backed up first — this is the one action here that destroys a save.')
             ], { tag: files.length + ' waiting' }),
 
             W.group('Exports on disk', [
@@ -1099,11 +1098,18 @@
     function kv(label, value) {
         return h('div', { class: 'mm-row' },
             h('div', { class: 'mm-lab', text: label }),
-            h('div', { class: 'mm-edge mm-mono mm-sub mm-selectable', text: String(value) }));
+            // The value is unbounded — a path, a project's own name for
+            // something, a joined list — so the edge is allowed to shrink and
+            // wrap. Without that it pushes the label out and is then clipped
+            // by the column, and neither half can be read.
+            h('div', {
+                class: 'mm-edge mm-edge--shrink mm-edge--wrap mm-mono mm-sub mm-selectable mm-breakall',
+                text: String(value)
+            }));
     }
 
-    U.debugPanel('Saves', build);
-    U.debugPanel('Transfer', buildTransfer);
+    U.debugPanel('Saves', build, 50);
+    U.debugPanel('Transfer', buildTransfer, 55);
 
     $.api.quickSave = function () { return S.quickSave(); };
     $.api.quickLoad = function () { return S.quickLoad(); };

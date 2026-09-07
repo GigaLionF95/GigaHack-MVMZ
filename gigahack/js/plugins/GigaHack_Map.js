@@ -555,7 +555,12 @@
         out.push(W.group('Here', [
             h('div', { class: 'mm-row' },
                 h('div', { class: 'mm-lab', text: 'Map' }),
-                h('div', { class: 'mm-edge mm-mono mm-hi', text: here ? here + ' · ' + M.mapName(here) : '—' })),
+                // A project names its own maps and some of those names are long.
+                h('div', {
+                    class: 'mm-edge mm-edge--shrink mm-path mm-mono mm-hi',
+                    text: here ? here + ' · ' + M.mapName(here) : '—',
+                    title: here ? here + ' · ' + M.mapName(here) : null
+                })),
             h('div', { class: 'mm-row' },
                 h('div', { class: 'mm-lab', text: 'Position' }),
                 h('div', { class: 'mm-edge mm-mono mm-hi', text: pos.x + ',' + pos.y })),
@@ -584,7 +589,7 @@
                     h('div', { class: 'mm-lab', style: 'white-space:normal', text: selected.name })),
                 W.row('Landing', W.dropdown({
                     options: ['safe', 'exact'], value: target.mode, width: '90px', _ungated: true,
-                    tip: 'Landing|"safe" searches the target map for a tile you can actually stand on. "exact" uses the numbers below verbatim.',
+                    tip: 'Landing|"safe" finds a standable tile; "exact" uses the numbers below.',
                     onChange: function (v) {
                         target.mode = v;
                         if (v === 'safe' && selected) selectMap(selected.id); else U.rerender();
@@ -654,7 +659,7 @@
                 { label: 'x,y', w: '0 0 66px', cls: 'mm-td-num' },
                 { label: '', w: '0 0 108px' }
             ],
-            empty: 'no bookmarks yet — use "bookmark this spot" on the Maps tab',
+            empty: 'no bookmarks yet — use "bookmark this spot" on the Teleport tab',
             render: function (b, i) {
                 return [
                     h('span', { class: 'mm-hi', text: b.name }),

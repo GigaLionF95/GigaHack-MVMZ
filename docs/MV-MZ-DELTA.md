@@ -561,10 +561,28 @@ MZ-only: `PluginManager._commands` (`:3107`), `registerCommand` (`:3159`), `call
 
 The mod's hook (`GigaHack_Forge.js:941-949`) runs *after* the original in both, so it is safe. `DataManager.isTitleSkip` and `Scene_Boot.prototype.startNormalGame`/`resizeScreen`/`adjustBoxSize`/`adjustWindow`/`screenScale` are MZ-only; `Window_TitleCommand.initCommandPosition` is MV-only.
 
-### C.20 `Game_Message`, `Game_Interpreter`, `BattleManager` — checked, materially compatible
+### C.20 `Game_Message`, `Game_Interpreter`, `BattleManager` — the command codes agree; the interpreter's own fields do not
 
 - **`Game_Message`**: everything the mod calls exists in both with identical signatures except `setSpeakerName` (§A.17). `add(text)` MV `:421` / MZ `:572`; `setFaceImage(faceName, faceIndex)` MV `:425` / MZ `:580`; `setBackground(background)` MV `:430` / MZ `:585`; `setPositionType(positionType)` MV `:434` / MZ `:589`; `isBusy()` MV `:495` / MZ `:650`; `isChoice`/`isNumberInput`/`isItemChoice` present in both.
-- **`Game_Interpreter`**: referenced only in comments (`GigaHack_Events.js:224`, `GigaHack_Forge.js:189`, `:324`, `:1686`, `:1966`). The `{code:0}` terminator requirement holds on both. The event-command codes the mod renders and forges — 108/408 (comment), 111/411/412 (conditional), 121/122/123 (switch/var/self-switch), 201 (transfer), 355/655 (script) at `GigaHack_Events.js:1145-1155`, and every effect/trait code table at `GigaHack_Forge.js:1018-1049` — are **identical** between MV and MZ. Note MZ code **357** (Plugin Command MZ) has no MV equivalent, and MV code **356** (Plugin Command MV) has no MZ handler — neither is emitted by the mod. Live code execution goes through `$gameTemp.reserveCommonEvent(id)` (`GigaHack_Forge.js:1693`), present in both.
+- **`Game_Interpreter`**: referenced only in comments (`GigaHack_Events.js:224`, `GigaHack_Forge.js:189`, `:324`, `:1686`, `:1966`). The `{code:0}` terminator requirement holds on both. The event-command codes the mod renders and forges — 108/408 (comment), 111/411/412 (conditional), 121/122/123 (switch/var/self-switch), 201 (transfer), 355/655 (script) at `GigaHack_Events.js:1145-1155`, and every effect/trait code table at `GigaHack_Forge.js:1018-1049` — are **identical** between MV and MZ. Note MZ code **357** (Plugin Command MZ) has no MV equivalent, and MV code **356** (Plugin Command MV) has no MZ handler — neither is emitted by the mod. Live code execution goes through `$gameTemp.reserveCommonEvent(id)` (`GigaHack_Forge.js:1693`), present in both — but see the correction below.
+
+  **Correction, from writing the harness stubs against both shipped sources.**
+  "Materially compatible" is true of the event-command CODES above and false of
+  the interpreter's own fields, which is what a panel that reads the class sees:
+
+  | Thing | MV | MZ |
+  |---|---|---|
+  | `executeCommand` | sets `this._params`, calls `command<code>()` with no arguments | no `_params` field at all; passes `command.parameters` as the argument |
+  | `clear` keeps | `this._character`, a resolved object | `this._characterId`, a number re-resolved through `character()` each frame |
+  | `setup` preloads via | the **static** `Game_Interpreter.requestImages(list)`, which recurses into referenced common events | the **instance** `this.loadImages()`, capped at the first 200 commands, codes 101 and 231 only, never following a common event |
+  | reserved common event | `$gameTemp` holds **one** id; a second reserve overwrites it silently, and `retrieveCommonEvent` does not exist | a queue; a second reserve appends, and a miss returns false |
+  | `setupReservedCommonEvent` | does not null-test, so a reserved id with no data throws | null-tests and returns false, consuming the bad id silently |
+  | `command101` | wrapped in `if (!$gameMessage.isBusy())`, bumps `_index` by hand, returns **false** | early `return false` guard, no manual bump, returns **true**; also sets a speaker name from a fifth parameter MV has no field for |
+  | `command122` Random | its own loop with an early `return`, so nothing else sees randomness | one loop for all five operands plus a `typeof value === 'number'` guard MV does not need |
+  | `Game_Map.autorunCommonEvents()` | **absent** — the filter is inlined in `setupAutorunCommonEvent` | present, so the candidate list can be overridden without touching the switch test |
+
+  Anything reading `_params`, `_character` or `retrieveCommonEvent` is reading a
+  field that exists on exactly one engine. Feature-detect, as everywhere else.
 - **`BattleManager`**: every member the mod touches exists in both with the same signature — `setup(troopId, canEscape, canLose)` MV `:2144` / MZ `:2276`; `forceAction(battler)` MV `:2592` / MZ `:2874`; `checkBattleEnd()` MV `:2614` / MZ `:2897`; `processVictory()` MV `:2638` / MZ `:2921`; `invokeAction(subject, target)` MV `:2538` / MZ `:2817`. The `startAction`/`endAction` restructuring the prompt asks about exists in both (MV `:2511`/`:2533`, MZ `:2786`/`:2808`) and the mod does not touch either. **One real difference:** `BattleManager._phase` sentinel values — MV initialises to `'init'` on setup (`rpg_managers.js:2154`) and nulls to `null` (`:2710`); MZ uses `""` on both ends (`rmmz_managers.js:2286`, `:3012`). `GigaHack_Battle.js:269` tests `if (!BattleManager._phase) return;` — both `null` and `""` are falsy, and both are `undefined` before the first battle, so this is safe. `BattleManager.updateTurn` gained a `timeActive` parameter in MZ (`:2655`) — unused by the mod.
 
 ### C.21 `Scene_Map.updateCallMenu`, `Game_Player.canMove`, and the rest of the movement/encounter hooks — byte-identical

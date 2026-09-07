@@ -953,15 +953,14 @@
         return [
             W.group('Snippets', snipRows, {
                 tag: list.length + ' saved',
-                tip: 'Snippets|Each one can take a hotkey in Settings → Hotkeys.'
+                tip: 'Snippets|Each can take a hotkey in Settings → Hotkeys.'
             }),
 
             W.group('Record what you do', [
                 W.toggleRow('Recording', {
                     value: C.recording(), keybind: false, _ungated: true,
-                    tip: 'Recording|Every GigaHack action that has an API entry point is written down as the ' +
-                        'JavaScript that would repeat it. Not keystrokes — those replay nothing reliable in a ' +
-                        'game with async loads and its own RNG.',
+                    tip: 'Recording|GigaHack actions with an API entry point, written as ' +
+                        'replayable JavaScript — not keystrokes.',
                     onChange: function (v) { C.record(v); U.rerender(); }
                 }),
                 h('div', { class: 'mm-row' },
@@ -1001,8 +1000,7 @@
             W.group('Behaviour', [
                 W.toggleRow('Capture console.log', {
                     value: $.store.cfgGet('console.captureLog', true) !== false, keybind: false, _ungated: true,
-                    tip: 'Capture|Routes console.log/warn/error into the output pane while your code runs. ' +
-                        'The real console still gets them.',
+                    tip: 'Capture|warn and error too; the real console still gets them.',
                     onChange: function (v) { $.store.cfgSet('console.captureLog', v); }
                 })
             ], { collapsed: true })
@@ -1151,8 +1149,8 @@
         });
     }
 
-    U.debugPanel('Console', buildConsole);
-    U.debugPanel('Log', buildLog);
+    U.debugPanel('Console', buildConsole, 60);
+    U.debugPanel('Log', buildLog, 65);
 
     $.log('ok', 'console ready — ' + C.snippets().length + ' snippet(s), ' +
         C.history().length + ' line(s) of history');

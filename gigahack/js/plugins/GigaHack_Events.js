@@ -1014,12 +1014,12 @@
             }),
             W.chip({
                 label: 'inactive', value: !!cfg().showInactive,
-                tip: 'Inactive|Also outline events whose page conditions are all unmet, in grey.',
+                tip: 'Inactive|Also outline events with no active page, in grey.',
                 onChange: function (v) { $.store.cfgSet('events.showInactive', v); }
             }),
             W.chip({
                 label: 'click to pick', value: cfg().pick !== false,
-                tip: 'Pick|While on, clicking the map selects an event instead of walking there.',
+                tip: 'Pick|Clicking the map selects an event instead of walking there.',
                 onChange: function (v) { $.store.cfgSet('events.pick', v); }
             }));
 
@@ -1053,11 +1053,12 @@
     var LOOK = [
         ['fill', 'box fill', 'Box fill|Interior of each event rectangle. Raise it to spot events over busy artwork; drop it to see the map underneath.'],
         ['line', 'box outline', 'Box outline|The rectangle border. This is the one to raise first — a line reads at a much lower strength than a fill.'],
-        ['edge', 'dark edge', 'Dark edge|A black keyline just outside the box. This is what makes a box readable on a bright map — colour alone disappears against artwork of a similar tone, a dark boundary does not.'],
-        ['label', 'labels', 'Labels|The id / name / page text above each box. It already has a black outline, so it stays legible well below full strength.'],
+        ['edge', 'dark edge', 'Dark edge|A black keyline just outside the box.'],
+        ['label', 'labels', 'Labels|The id / name / page text above each box.'],
         ['transfer', 'transfer mark', 'Transfer mark|The cyan inner outline on events that contain a Transfer Player.'],
-        ['grid', 'passability', 'Passability|The per-tile dots. Fully-open tiles are drawn a third lighter than this so the blocked ones stand out.'],
-        ['region', 'region tint', 'Region tint|Whole-tile colour wash. This one covers the most artwork, so it usually wants the lowest setting.']
+        ['grid', 'passability', 'Passability|The per-tile dots. Fully-open tiles are drawn a ' +
+                                    'third lighter.'],
+        ['region', 'region tint', 'Region tint|Whole-tile colour wash.']
     ];
 
     function lookPanel() {
@@ -1073,13 +1074,13 @@
             value: lineWidth(), min: 1, max: 4, step: 1, unit: 'px', width: '104px',
             label: 'outline width', _ungated: true,
             onChange: function (v) { $.store.cfgSet('events.lineWidth', v); }
-        }), { tip: 'Outline width|Thickness of the event rectangle, 1-4px. Thicker reads from further away than brighter does.' }));
+        }), {  }));
 
         rows.push(W.row('dot size', W.slider({
             value: dotSize(), min: 4, max: 24, step: 1, unit: 'px', width: '104px',
             label: 'dot size', _ungated: true,
             onChange: function (v) { $.store.cfgSet('events.dotSize', v); }
-        }), { tip: 'Dot size|Size of the passability marker on each tile. At 24px it fills most of the tile.' }));
+        }), { tip: 'Dot size|The passability marker on each tile.' }));
 
         rows.push(W.button({
             label: 'reset to defaults', wide: true, _ungated: true,
@@ -1133,7 +1134,7 @@
         }).concat([
             W.button({
                 label: 'reset A–D', wide: true, variant: 'danger', mutates: true,
-                tip: 'Reset|Clears every self-switch on this event — this is what re-opens a looted chest.',
+                tip: 'Reset|This is what re-opens a looted chest.',
                 onClick: function () {
                     var n = E.resetSelfSwitches(ev);
                     U.toast({ title: 'RESET', msg: n + ' self-switch(es) cleared', severity: 'ok' });
@@ -1151,7 +1152,8 @@
                 disabled: !!why, confirmLabel: 'run it? (irreversible)',
                 tip: why
                     ? 'Force run|Not available: ' + why + '.'
-                    : 'Force run|Starts the active page as if you had triggered it. It may set switches, transfer you, or start a battle. The save is backed up first.',
+                    : 'Force run|May set switches, transfer you, or start a battle. The save is ' +
+                      'backed up first.',
                 onClick: function () { if (E.forceRun(ev)) U.setOpen(false); }
             }),
             why ? h('div', {
@@ -1164,8 +1166,7 @@
             }),
             W.button({
                 label: 'bring it here', wide: true, mutates: true,
-                tip: 'Bring it|Puts the event on your tile with locate(), which also stops any move route ' +
-                    'it was mid-way through — otherwise it slides back on the next frame.',
+                tip: 'Bring it|Also stops any move route it was mid-way through.',
                 onClick: function () { E.bringHere(ev); refresh(); }
             }),
         ]));
@@ -1176,7 +1177,13 @@
     function kvRow(label, value) {
         return h('div', { class: 'mm-row' },
             h('div', { class: 'mm-lab', text: label }),
-            h('div', { class: 'mm-edge mm-mono mm-sub', style: 'white-space:normal;text-align:right', text: String(value) }));
+            // Unbounded: an event name, a note tag, a joined list. The edge is
+            // allowed to shrink and break, or it pushes the label out and is
+            // then clipped by the column, and neither half can be read.
+            h('div', {
+                class: 'mm-edge mm-edge--shrink mm-edge--wrap mm-mono mm-sub mm-breakall',
+                text: String(value)
+            }));
     }
 
     /* ------------------------------------------------------------- Commands */
@@ -1196,7 +1203,7 @@
             return h('div', { class: 'mm-body' },
                 h('div', { class: 'mm-todo' },
                     h('b', { text: 'no event selected' }),
-                    h('div', { text: 'pick one on the Overlay sub-tab, or click one on the map' })));
+                    h('div', { text: 'pick one on the Events sub-tab, or click one on the map' })));
         }
 
         var info = E.info(ev);
@@ -1406,8 +1413,9 @@
                             disabled: !$.map || !$.map.teleport || r.gone,
                             tip: !$.map || !$.map.teleport
                                 ? 'Go|Not available: the Teleport module did not load.'
-                                : 'Go|Teleports onto the event\'s own tile, backing the save up first. ' +
-                                  'A touch-triggered event will fire on arrival — Movement → Ghost stops that.',
+                                : 'Go|Teleports onto the event\'s tile, backing the save up ' +
+                                  'first. A touch-triggered event fires on arrival — ' +
+                                  'Movement → Ghost stops that.',
                             onClick: function () { if (E.goTo(r)) U.setOpen(false); }
                         }))
                 ];
@@ -1479,8 +1487,7 @@
             W.group('Find events that touch', [
                 W.row('Kind', W.dropdown({
                     options: TYPES, value: find.type, width: '110px', _ungated: true,
-                    tip: 'Kind|Switch and variable are searched by id. Self-switch is searched by ' +
-                        'channel — A to D — because that is what an event page actually references.',
+                    tip: 'Kind|Switch and variable are searched by id, self-switch by channel A–D.',
                     onChange: function (v) { find.type = v; U.rerender(); }
                 })),
                 keyRow,
@@ -1496,11 +1503,11 @@
 
             W.group('What this is', [
                 h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
-                    'The engine can only see the map you are on. This reads the boot index, which walked ' +
-                    'every map file once, so it can answer for the whole game.'),
+                    'The engine only sees the map you are on. This reads the boot index, ' +
+                    'which walked every map file once.'),
                 h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
-                    'Every hit is checked against live data before it is shown, and rows the game no longer ' +
-                    'agrees with are dimmed. Rebuild the index from Debug → Index.'),
+                    'Rows the game no longer agrees with are dimmed. Rebuild the index from ' +
+                    'Debug → Index.'),
                 $.index ? W.button({
                     label: 'rebuild the index', wide: true, _ungated: true,
                     onClick: function () { $.safe(function () { $.index.rebuild(); }, 'index rebuild'); run(); }

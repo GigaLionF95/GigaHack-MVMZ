@@ -290,12 +290,12 @@
         }
 
         var note = f.from === 'yours'
-            ? (f.why || 'Your filter. Sections whose title does not match are hidden until you switch them back on below.')
+            ? (f.why || 'Sections whose title does not match are hidden until you list them ' +
+                            'below.')
             : f.from === 'profile'
-                ? 'This game’s profile supplies a filter. Type your own here to replace it, or leave the box empty to keep it.'
-                : 'No filter: every section this project has is offered. Type a word — or a regular expression — ' +
-                  'to narrow the list on a project with a lot of them. It is matched against the section TITLE, ' +
-                  'never against ids, because ids move between versions and titles do not.';
+                ? 'The game profile supplies this. Type your own to replace it.'
+                : 'No filter: every section is listed. A word or regex, matched against the title, ' +
+                  'never ids.';
 
         return W.group('Which collections are listed', [
             W.row('Filter', [input, W.button({
@@ -386,16 +386,12 @@
                 f.re ? h('div', { class: 'mm-sep' }) : null,
                 f.re ? W.toggleRow('List the sections the filter hides too', {
                     value: showAll, keybind: false, _ungated: true,
-                    tip: 'Everything|Off, this lists only the sections whose title matches the filter. ' +
-                        'On, it lists every section in the project, including the ones that drive its own logic.',
                     onChange: function (v) { showAll = v; selected = null; U.rerender(); }
                 }) : null,
                 !hiding ? h('div', {
                     class: 'mm-sub', style: 'color:var(--mm-warn);white-space:normal;padding:2px',
-                    text: 'This is every switch section the project has, and a project keeps its own state ' +
-                        'in switches too — quest stages, flags an event checks before it will run. Setting ' +
-                        'those in bulk can leave a quest somewhere its events do not expect. Section titles ' +
-                        'usually say which is which.'
+                    text: 'Projects store quest state in switches too — bulk-setting those can leave a ' +
+                        'quest somewhere its events do not expect.'
                 }) : null
             ], { tag: list.length + (hiding ? ' of ' + all.length : '') + ' listed' }),
 
@@ -415,10 +411,8 @@
                     onClick: function () { G.setAll(true, pct, hiding); U.rerender(); }
                 }),
                 h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
-                    'The FIRST n, not a random n, so the same percentage always unlocks the same things. ' +
-                    'Whether that means “the early part” depends on the project: ids inside a section usually ' +
-                    'run in the order the content was written, but nothing in the engine requires it. If this ' +
-                    'one numbered its switches some other way, this is simply the lowest n% of ids.')
+                    'The lowest n% of ids, not a random n — usually, but not necessarily, the earliest ' +
+                    'content.')
             ], { tag: pct + '%' })
         ];
 
@@ -429,7 +423,11 @@
             right.push(W.group('Selected', [
                 h('div', { class: 'mm-row' },
                     h('div', { class: 'mm-lab', text: 'Name' }),
-                    h('div', { class: 'mm-edge mm-mono mm-sub', text: sec.title })),
+                    // The section title comes from the project's switch names.
+                    h('div', {
+                        class: 'mm-edge mm-edge--shrink mm-path mm-mono mm-sub',
+                        text: sec.title, title: sec.title
+                    })),
                 h('div', { class: 'mm-row' },
                     h('div', { class: 'mm-lab', text: 'Switches' }),
                     h('div', { class: 'mm-edge mm-mono mm-sub', text: sec.from + '–' + sec.to + ' (' + sec.total + ' named)' })),
@@ -438,7 +436,7 @@
                     h('div', { class: 'mm-edge mm-mono mm-hi', text: sec.on + ' / ' + sec.total })),
                 W.button({
                     label: 'open it in Switches', wide: true, _ungated: true,
-                    tip: 'Switches|Jumps to the list with this section’s first flag in view, for setting them one at a time.',
+                    tip: 'Switches|Opens with this section’s first flag in view.',
                     onClick: function () {
                         $.store.cfgSet('ui.varFilter.switch', {
                             q: '', named: true, active: false, changed: false, pinned: false
@@ -513,7 +511,10 @@
         }
 
         decided = true;
-        U.panel('world', 'Gallery', build, 110);
+        // 120, not 110: Events' Find already claims 110, and two panels on one
+        // tab with the same order leave their relative position to Array#sort's
+        // tie-breaking, which is not stable below every engine's list length.
+        U.panel('world', 'Gallery', build, 120);
 
         var f = G.filter();
         var all = G.sections();
