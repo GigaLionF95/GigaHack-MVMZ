@@ -27,6 +27,49 @@ claim about one specific game; installing one on the wrong game would pin
 variables that do not exist and filter a Gallery by the wrong vocabulary, and
 both fail quietly.
 
+## Or register one from an addon
+
+The above is how you ship a profile *with* a game. Somebody adding one to a game
+they already have does not have to edit `js/plugins.js` or write anything into
+the game's own folder: an addon can register a profile at runtime.
+
+```js
+/*:
+ * @gigahack-addon
+ * @id my-game-profile
+ * @name My Game — profile
+ */
+GigaHack.addon(function (api) {
+    api.profile({
+        id: 'my-game',
+        name: 'My Game',
+        match: function (ctx) { return /my game/i.test(ctx.title || ''); },
+        quickVars: ['gold_multiplier', 'story_flag']
+    });
+});
+```
+
+`api.profile(def)` takes exactly the object described below and hands it to
+`$.profile.register`, so the shape, the matching rules and the fields worth
+omitting are all the same. Import it through **Settings → Addons**, which shows
+you the whole source before it runs anything; `gigahack/addons/README.md` covers
+the format and the import routes. If `GigaHack_Profile` did not load, the call
+says so in the log and returns `false` rather than appearing to work.
+
+**A profile registered this way applies from the NEXT launch.** Profile
+resolution is settled once, at the first access after boot, and re-resolving
+mid-session changes answers other modules have already read and latched:
+derived hotkey defaults, the Gallery panel's decision about whether to register
+at all, the Forge id bases already written into its library, and any cached
+section ranges. So the addon registers the profile, the panel says out loud that
+it is registered and not yet in effect, and it is picked up the next time the
+game starts. Settings → Addons offers a re-resolve anyway, with those four
+named beside it as the things it does not move.
+
+Switching the addon off does not unregister the profile, for the same reason —
+it simply is not registered at all at the next launch, because the body that
+registers it does not run.
+
 ## The shape
 
 Every field is optional. Anything you omit stays computed — which is why a

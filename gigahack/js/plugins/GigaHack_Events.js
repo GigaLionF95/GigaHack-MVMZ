@@ -985,10 +985,26 @@
         // and you have to leave the tab and come back.
         onSelect = function () { refresh(); repaint(); };
 
-        // Positions change as the player walks; refresh the list gently.
-        // tickHooks is emptied on every tab rebuild, so this does not stack up.
-        var host = U.getHost();
-        if (host) host.tickHooks.push(function () { if (!table.mm.isScrolling()) repaint(); });
+        /* Positions change as events walk and a page index changes when a
+           switch flips, so both are in the signal — they are both columns.
+           What the signal is NOT is rows(): E.list().map(E.info) allocates a
+           row object and scans a page for transfer commands per event, and an
+           unconditional tickHooks.push did exactly that 86 times a minute,
+           including while the overlay was closed, because the shell's clock
+           has no visibility test of its own. U.live holds on both. */
+        function listStamp() {
+            var evs = E.list(), s = '' + evs.length, i, ev;
+            for (i = 0; i < evs.length; i++) {
+                ev = evs[i];
+                s += '|' + ev.eventId() + ',' + ev.x + ',' + ev.y + ',' +
+                    ev._pageIndex + (ev._erased ? ',x' : '');
+            }
+            return s;
+        }
+        U.live(listStamp, repaint, {
+            name: 'event list', within: table,
+            when: function () { return !table.mm.isScrolling(); }
+        });
 
         var toolbar = h('div', { class: 'mm-toolbar' },
             W.search({ placeholder: 'search events…', onInput: function (v) { q = v.trim(); repaint(); } }),
@@ -1200,6 +1216,16 @@
                 h('div', { class: 'mm-todo' }, h('b', { text: 'no map loaded' })));
         }
         if (!ev) {
+            /* A selection can become valid again without anybody clicking
+               anything: it is scoped to the map it was made on, so walking
+               back through the door restores it. Without this the panel is a
+               dead end — it says "pick one" about an event that is selected,
+               on the map it was selected on, until something else rebuilds the
+               tab. Clicking one still arrives through event:select above; this
+               is only the case where nothing was clicked. */
+            U.live(function () { return E.selected() ? 'selected' : 'none'; },
+                function () { U.rerender(); },
+                { name: 'event commands (nothing selected)' });
             return h('div', { class: 'mm-body' },
                 h('div', { class: 'mm-todo' },
                     h('b', { text: 'no event selected' }),
@@ -1254,17 +1280,58 @@
         }
         paintConditions();
 
+        function activeText(ix) { return 'active page: ' + (ix >= 0 ? ix + 1 : 'none'); }
+        var activeEl = h('span', { class: 'mm-sub', text: activeText(info.pageIndex) });
+
         var toolbar = h('div', { class: 'mm-toolbar' },
             W.dropdown({
                 options: pages, value: pages[shown] || pages[0], width: '96px', _ungated: true,
                 onChange: function (v) { shown = pages.indexOf(v); repaint(); paintConditions(); }
             }),
-            h('span', { class: 'mm-sub', text: 'active page: ' + (info.pageIndex >= 0 ? info.pageIndex + 1 : 'none') }));
+            activeEl);
+
+        var posRow = kvRow('Position', info.x + ',' + info.y);
+
+        /* Three things on this panel are the game's and not the page data's:
+           which page the engine has chosen to run, where the event is standing,
+           and the "(now N)" the variable condition carries. The command list
+           itself is page data and does not move — and `shown` is the page the
+           USER picked, so a live repaint never changes it. Switching the panel
+           to the newly active page would take away the page they were reading
+           the moment a switch flipped.
+
+           BOTH halves re-ask E.selected() first, and neither trusts `ev`.
+           E.selected() is map-scoped on purpose (event ids repeat across maps)
+           but this hook is not: after a transfer the captured Game_Event is no
+           longer in $gameMap._events, so nothing updates it — while
+           Game_Event.prototype.event() is $dataMap.events[id], which is now
+           the NEW map's data. Painting from it put the old map's position and
+           page index beside the new map's page conditions, live "(now N)"
+           readouts included, and presented all three as current. A rebuild is
+           the right answer because everything on the panel is derived from the
+           selection; buildCommands then says "no event selected", which is
+           true. Same shape as Party's `P.selected() !== a` and Quest's
+           `live.eventId() !== builtFor`. */
+        var builtFor = ev;
+        U.live(function () {
+            if (E.selected() !== builtFor) return 'the selection is gone';
+            var live = E.info(ev);
+            if (!live) return '';
+            return live.pageIndex + ':' + live.x + ',' + live.y + ':' +
+                E.conditions(ev, shown).join('|');
+        }, function () {
+            if (E.selected() !== builtFor) { U.rerender(); return; }
+            var live = E.info(ev);
+            if (!live) return;
+            activeEl.textContent = activeText(live.pageIndex);
+            posRow.lastChild.textContent = live.x + ',' + live.y;
+            paintConditions();
+        }, { name: 'event commands', within: condBox });
 
         return cols({ narrow: true, items: [
             W.group('Event ' + info.id, [
                 kvRow('Name', info.name || '—'),
-                kvRow('Position', info.x + ',' + info.y),
+                posRow,
                 kvRow('Pages', String(info.pageCount))
             ]),
             W.group('Page conditions', [condBox], { tag: 'page ' + (shown + 1) }),

@@ -901,6 +901,13 @@
        per-frame path.
        ------------------------------------------------------------------ */
     var reads = {};
+    /* One number over the whole table, so the panel can ask "has anything read
+       its parameters since I last looked" without walking every entry. It is
+       the only thing on that panel the GAME moves, and the reads column was
+       painted once — a counter that ticks while the game runs, shown frozen.
+       Increment-only and never reset: a total that goes backwards would make
+       the panel repaint on a value it had already acted on. */
+    var readTotal = 0;
     /* Set while this module reads the table back to verify its own write. A
        verify read counted as evidence would let a row claim an edit takes
        effect purely because the edit was made. */
@@ -911,6 +918,7 @@
             if (!internalRead) {
                 var k = String(name).toLowerCase();
                 var c = reads[k];
+                readTotal++;
                 if (c) { c.calls++; c.lastFrame = $.frameCount; }
                 else reads[k] = { calls: 1, lastFrame: $.frameCount };
             }
@@ -918,6 +926,9 @@
         };
     }, 'the engine\'s parameter reader is not a function on this build, so nothing can observe a ' +
        'plugin re-reading and no row can claim an edit takes effect');
+
+    /** Every parameter read this module has seen, across every entry. */
+    PM.readTotal = function () { return readTotal; };
 
     PM.reads = function (key) {
         var installed = !!($.hooks[HOOK_PARAMS] && $.hooks[HOOK_PARAMS].installed);
@@ -991,7 +1002,12 @@
        the first time one is written so a revert restores the exact string
        that was there rather than whatever the last edit left. */
     var originals = {};
-    function origKey(key, pname) { return key + ' ' + pname; }
+    /* NUL, spelled as an escape rather than typed as a byte. A raw one makes the
+       whole file 'data' to every text tool on the machine: grep skips it in
+       silence and reports nothing rather than an error, which is how the panel
+       count came out two short. The separator is still NUL because it is the
+       one character a plugin name cannot contain. */
+    function origKey(key, pname) { return key + '\u0000' + pname; }
 
     PM.entries = function () {
         return $.safe(function () {
@@ -1632,6 +1648,23 @@
         repaint();
         paintDetail();
 
+        /* The reads column is the only evidence anywhere that a plugin looks
+           at its parameters again after load, and it is the one thing on this
+           panel that moves on its own — so it is the one thing repainted. The
+           entry detail beside the table is not: it holds a selectable JSON
+           block, and rewriting it under a reader who is selecting from it
+           takes the selection away for a number that changed in the table
+           they can already see.
+
+           The value cells are edit cells, which is what `within` is for, and
+           the table is virtual, so isScrolling() is a real guard and the
+           offset survives the paint. */
+        U.live(PM.readTotal, repaint, {
+            name: 'parameter reads', within: table,
+            when: function () { return !table.mm.isScrolling(); },
+            whyNot: 'you are scrolling the list'
+        });
+
         var toolbar = h('div', { class: 'mm-toolbar' },
             W.search({
                 placeholder: 'filter ' + scope.parameters + ' parameters…',
@@ -1754,6 +1787,11 @@
                 // Where the cache is absent the value is a SENTENCE, so the edge
                 // has to give way to the label rather than the other way round.
                 edgeClass: c.present ? null : 'mm-edge--shrink mm-edge--wrap',
+                // And where it is present the LABEL is the long half — the
+                // value is a rigid "12 entries · ~3.40 MB" and the name beside
+                // it is what got clipped to "renderer base tex…", which is the
+                // only part saying what the number counts.
+                labelClass: c.present ? 'mm-lab--wrap' : null,
                 tip: c.present ? 'Estimate|Width x height x 4 over ' + c.sized + ' sized entries.' : null
             });
         });

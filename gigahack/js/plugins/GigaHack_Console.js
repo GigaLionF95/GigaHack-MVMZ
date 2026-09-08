@@ -1037,6 +1037,20 @@
     /* =====================================================================
        PART 6 — THE LOG PANEL
        ===================================================================== */
+    /**
+     * How many lines the log ring holds, without copying it.
+     *
+     * `$.logHistory()` answers with a slice of up to `$.logCapacity()` entries,
+     * and a signal asked every 700ms must not allocate one of those to find out
+     * that nothing has changed. Core publishes no count today; when it does,
+     * this reads it, and until then the copy is paid for once per tick rather
+     * than pretending the problem is not there.
+     */
+    function logCount() {
+        if (typeof $.logCount === 'function') return $.logCount();
+        return $.logHistory().length;
+    }
+
     function buildLog() {
         var q = '';
         var levels = { info: true, ok: true, warn: true, err: true };
@@ -1073,9 +1087,21 @@
 
         var tag = h('span', { class: 'mm-group-tag' });
         function repaint() {
+            /* An append-only list is read from the bottom, so following the
+               tail is the whole behaviour — but only for somebody who is AT
+               the tail. Anywhere else, every new line would yank them forward
+               out of what they were reading. Four pixels of slack, because a
+               scroller does not always land on an exact boundary. */
+            var body = table.mm.body;
+            var atTail = body.scrollTop + body.clientHeight >= body.scrollHeight - 4;
             var r = rows();
-            tag.textContent = r.length + ' / ' + $.logHistory().length;
+            tag.textContent = r.length + ' / ' + logCount();
             table.mm.paint(r);
+            if (!atTail) return;
+            // Past the end clamps to the end; refresh() then draws the window
+            // that scroll position actually lands on.
+            body.scrollTop = body.scrollHeight;
+            table.mm.refresh();
         }
         repaint();
 
@@ -1091,62 +1117,107 @@
         var group = W.group('Log', [toolbar, table], { grow: true });
         group.mm.head.appendChild(tag);
 
-        var errs = C.errors();
-        var errRows = errs.length ? errs.slice().reverse().map(function (e) {
-            var body = h('div', { class: 'mm-trace', style: 'display:none', text: e.stack || '(no stack)' });
-            var head = h('div', { class: 'mm-row' },
-                h('div', {
-                    class: 'mm-lab', style: 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap',
-                    text: e.message
-                }),
-                h('div', { class: 'mm-edge mm-mono mm-sub', text: timeOf(e.t) }));
-            head.style.cursor = 'pointer';
-            head.addEventListener('click', function () {
-                body.style.display = body.style.display === 'none' ? 'block' : 'none';
-            });
-            return h('div', {}, head,
-                e.where ? h('div', { class: 'mm-sub mm-mono', style: 'padding-left:2px', text: e.where }) : null,
-                body);
-        }) : [h('div', { class: 'mm-empty', text: 'no uncaught errors' })];
+        /* The errors are in a container of their own so a new one can appear
+           without the "clear" button under them being replaced. Each row's
+           stack is expanded by a click, and that state lives on the node — so
+           the list is rebuilt only when the COUNT has moved, which is the one
+           time there is something new to show. */
+        var errBox = h('div', { class: 'mm-stack-tight' });
+        function paintErrors() {
+            var errs = C.errors();
+            clear(errBox);
+            add(errBox, errs.length ? errs.slice().reverse().map(function (e) {
+                var body = h('div', { class: 'mm-trace', style: 'display:none', text: e.stack || '(no stack)' });
+                var head = h('div', { class: 'mm-row' },
+                    h('div', {
+                        class: 'mm-lab', style: 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap',
+                        text: e.message
+                    }),
+                    h('div', { class: 'mm-edge mm-mono mm-sub', text: timeOf(e.t) }));
+                head.style.cursor = 'pointer';
+                head.addEventListener('click', function () {
+                    body.style.display = body.style.display === 'none' ? 'block' : 'none';
+                });
+                return h('div', {}, head,
+                    e.where ? h('div', { class: 'mm-sub mm-mono', style: 'padding-left:2px', text: e.where }) : null,
+                    body);
+            }) : [h('div', { class: 'mm-empty', text: 'no uncaught errors' })]);
+            return errs.length;
+        }
+        var errCount = paintErrors();
+        var errGroup = W.group('Uncaught errors', [
+            errBox,
+            W.button({
+                label: 'clear', wide: true, _ungated: true,
+                onClick: function () { C.clearErrors(); U.rerender(); }
+            })
+        ], { tag: errCount ? errCount + ' caught' : 'clean' });
 
-        return cols([group], {
-            narrow: true,
-            items: [
-                W.group('Uncaught errors', errRows.concat([
-                    W.button({
-                        label: 'clear', wide: true, _ungated: true,
-                        onClick: function () { C.clearErrors(); U.rerender(); }
-                    })
-                ]), { tag: errs.length ? errs.length + ' caught' : 'clean' }),
-                W.group('Breakdown', ['info', 'ok', 'warn', 'err'].map(function (lv) {
-                    var n = $.logHistory().filter(function (e) { return e.level === lv; }).length;
-                    return h('div', { class: 'mm-row' },
-                        h('div', { class: 'mm-lab' }, h('span', { class: 'mm-sev-' + lv, text: lv })),
-                        h('div', { class: 'mm-edge mm-mono mm-sub', text: String(n) }));
-                }).concat([
-                    h('div', { class: 'mm-sep' }),
-                    W.button({
-                        label: 'copy what is shown', wide: true, _ungated: true,
-                        onClick: function () {
-                            var text = rows().map(function (e) {
-                                return timeOf(e.t) + '  ' + e.level + '  ' + e.msg;
-                            }).join('\n');
-                            var ok = $.safe(function () {
-                                if (typeof nw !== 'undefined' && nw.Clipboard) { nw.Clipboard.get().set(text, 'text'); return true; }
-                                if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(text); return true; }
-                                return false;
-                            }, 'clipboard', false);
-                            U.toast({
-                                title: ok ? 'COPIED' : 'CLIPBOARD BLOCKED',
-                                msg: ok ? rows().length + ' lines' : 'the log is also printed to the devtools console',
-                                severity: ok ? 'ok' : 'warn'
-                            });
-                        }
-                    })
-                ]), { tag: $.logHistory().length + ' held' }),
-                null
-            ]
+        var levelCells = [];
+        var breakdownGroup = W.group('Breakdown', ['info', 'ok', 'warn', 'err'].map(function (lv) {
+            var cell = h('div', { class: 'mm-edge mm-mono mm-sub', text: '0' });
+            levelCells.push({ level: lv, el: cell });
+            return h('div', { class: 'mm-row' },
+                h('div', { class: 'mm-lab' }, h('span', { class: 'mm-sev-' + lv, text: lv })),
+                cell);
+        }).concat([
+            h('div', { class: 'mm-sep' }),
+            W.button({
+                label: 'copy what is shown', wide: true, _ungated: true,
+                onClick: function () {
+                    var text = rows().map(function (e) {
+                        return timeOf(e.t) + '  ' + e.level + '  ' + e.msg;
+                    }).join('\n');
+                    var ok = $.safe(function () {
+                        if (typeof nw !== 'undefined' && nw.Clipboard) { nw.Clipboard.get().set(text, 'text'); return true; }
+                        if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(text); return true; }
+                        return false;
+                    }, 'clipboard', false);
+                    U.toast({
+                        title: ok ? 'COPIED' : 'CLIPBOARD BLOCKED',
+                        msg: ok ? rows().length + ' lines' : 'the log is also printed to the devtools console',
+                        severity: ok ? 'ok' : 'warn'
+                    });
+                }
+            })
+        ]), { tag: '0 held' });
+
+        /* The one thing on this panel that never stops moving. The shell's own
+           log drawer is already live off $.logSink, so a frozen panel and a
+           moving drawer disagree on the same screen — which reads as one of
+           them being broken rather than as one of them being a snapshot.
+           There is only ONE sink slot and the drawer owns it, so this is
+           polled: the dropped count plus the length, which together move on
+           every line whether or not the ring has started rolling.
+
+           within: the table. Its search box is not in the thing being
+           repainted and must not stop the log from following. */
+        function paintCounts() {
+            var all = $.logHistory();
+            for (var i = 0; i < levelCells.length; i++) {
+                var lv = levelCells[i], n = 0;
+                for (var j = 0; j < all.length; j++) if (all[j].level === lv.level) n++;
+                lv.el.textContent = String(n);
+            }
+            breakdownGroup.mm.tag(all.length + ' held');
+        }
+        paintCounts();
+
+        U.live(function () {
+            return $.logDropped() + ':' + logCount() + ':' + C.errors().length;
+        }, function () {
+            repaint();
+            paintCounts();
+            if (C.errors().length === errCount) return;
+            errCount = paintErrors();
+            errGroup.mm.tag(errCount ? errCount + ' caught' : 'clean');
+        }, {
+            name: 'log',
+            within: table,
+            when: function () { return !table.mm.isScrolling(); }
         });
+
+        return cols([group], { narrow: true, items: [errGroup, breakdownGroup, null] });
     }
 
     U.debugPanel('Console', buildConsole, 60);

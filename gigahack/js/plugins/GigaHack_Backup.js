@@ -104,10 +104,23 @@
         return null;
     };
 
+    /**
+     * Where backups go.
+     *
+     * COMPUTED from the data directory, not read from the cached backupsDir,
+     * and that ordering is load-bearing now that the data directory can change
+     * while the game is running. `backupsDir` is resolved once at boot; the
+     * moment somebody answers the storage question, a stale copy of it still
+     * RESOLVES, still exists and is still writable — so preferring it would put
+     * this session's backups in the folder that was just left behind, with
+     * nothing anywhere saying so. There is no way to tell a stale one from a
+     * deliberate one by looking at it, so it is not consulted at all while
+     * there is a data directory to compute from.
+     */
     B.dir = function () {
-        if ($.paths.backupsDir) return $.paths.backupsDir;
-        if (!$.paths.dataDir || !pathMod()) return null;
-        return pathMod().join($.paths.dataDir, 'backups');
+        var path = pathMod();
+        if (!$.paths.dataDir || !path) return $.paths.backupsDir || null;
+        return path.join($.paths.dataDir, 'backups');
     };
 
     /**
@@ -143,11 +156,36 @@
     };
 
     /** Cheap identity for the whole save directory. */
+    /**
+     * The one fold that says "this set of files is the same set of files".
+     *
+     * Sorted, because it is about the files and not about their order:
+     * saveFiles() sorts by mtime, and Array#sort is not stable on the CSS
+     * floor's V8, so two saves written in the same millisecond could otherwise
+     * swap places and read as a change nobody made.
+     *
+     * mtime and size and not just the names: a save WRITTEN OVER an existing
+     * slot — an autosave, or an event saving to a slot that already has a file
+     * — adds and removes no name at all, so a listing of names is
+     * byte-identical while the newest file has changed underneath it.
+     */
     function fingerprint(files) {
         return files.map(function (f) {
             return f.name + ':' + f.size + ':' + Math.round(f.mtimeMs);
         }).sort().join('|');
     }
+
+    /**
+     * The same fold over the save directory, for anything watching it change.
+     *
+     * Takes the list when the caller already has one. A panel that polls this
+     * every 700ms and then draws what it read would otherwise list the
+     * directory twice per tick — once to decide whether anything moved and
+     * once to show it.
+     */
+    B.saveStamp = function (files) {
+        return $.safe(function () { return fingerprint(files || B.saveFiles()); }, 'save stamp', '');
+    };
 
     function rmDirRecursive(dir) {
         // fs.rmSync needs Node 14.14 and fs.rmdirSync's recursive option is

@@ -79,8 +79,13 @@ module.exports = async function (ctx) {
     const G = window.GigaHack;
     return { subs: G.ui.panelNames('settings'), marker: typeof G.keys };
   });
+  /* Adjacency, not the whole strip. The claim in the name is where this panel
+     sits RELATIVE to its two neighbours; pinning the tab's entire contents
+     made every later Settings panel fail a check about the key map. */
   check('the key map panel sits on the Settings tab between Hotkeys and Profiles, which is order 35',
-    placed.subs.join(',') === 'Interface,Behaviour,Hotkeys,Game Keys,Profiles',
+    placed.subs.indexOf('Game Keys') === placed.subs.indexOf('Hotkeys') + 1 &&
+    placed.subs.indexOf('Profiles') === placed.subs.indexOf('Game Keys') + 1 &&
+    placed.subs.indexOf('Hotkeys') > -1,
     placed.subs.join(','));
   check('the module publishes $.keys, so Console and the boot report can ask about the map without a second copy of the escape rule',
     placed.marker === 'object');

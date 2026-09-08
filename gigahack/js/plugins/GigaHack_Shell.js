@@ -350,7 +350,15 @@
                 coords.textContent = mapLabel();
                 cheats.textContent = String(Object.keys(HOST.active).length);
                 paintGameName();
-                HOST.tickHooks.forEach(function (fn) { try { fn(n); } catch (e) { } });
+                /* Over a COPY. A hook is allowed to ask for a tab rebuild —
+                   a live panel that finds the thing it was drawing has gone
+                   does exactly that — and renderTab empties this array with
+                   `length = 0`. Iterating the live array, every hook after the
+                   one that rebuilt was skipped for that tick, silently and
+                   only sometimes, which is the hardest kind of intermittent to
+                   attribute. The frame-hook loop below has the same shape and
+                   the same fix. */
+                HOST.tickHooks.slice().forEach(function (fn) { try { fn(n); } catch (e) { } });
             }, 'shell clock');
         }, 700);
 
@@ -462,6 +470,203 @@
     }
 
     /* =====================================================================
+       THE STORAGE QUESTION
+
+       Up to 2.1.0 the mod chose the application-data folder for itself and
+       nobody was asked. This card is where that stops.
+
+       It is a float and not a modal, and every part of that is deliberate: it
+       does not pause the game, it does not swallow the game's input, and it
+       does not need the menu open. There is no modal anywhere else in this
+       overlay, so one here would be the only thing in the mod a player cannot
+       walk away from — over a question about a directory, put to them in the
+       first ten seconds of a game they launched to play.
+
+       Three answers, and the third one is an answer too: "ask me again next
+       launch" is recorded as such, rather than the card quietly not appearing
+       and nobody ever knowing the question had been put.
+
+       The answer is per game and is written beside the game. The card says so
+       out loud, because "I allowed this once already" is otherwise a
+       reasonable thing to believe about a mod menu, and here it would be
+       wrong.
+       ===================================================================== */
+    var askEl = null;
+
+    /**
+     * Is there a question to put, and would putting it now be a repeat?
+     *
+     * Returns {ask, why}. `why` is a sentence rather than a bare false,
+     * because "the card did not appear" has four causes and three of them are
+     * answers somebody gave — which is what Settings → Storage prints.
+     */
+    function storageQuestion() {
+        var p = $.paths;
+        if (p.consent === 'moot') return { ask: false, why: p.consentWhy };
+        if (p.consent !== 'unasked') return { ask: false, why: 'this game has answered already — ' + p.consentWhy };
+        if ($.consentDeferred && $.consentDeferred()) {
+            return { ask: false, why: 'you asked to be asked again next launch, so this launch does not ask again.' };
+        }
+        return { ask: true, why: '' };
+    }
+
+    function askText(text) {
+        return h('div', { class: 'mm-sub', style: 'white-space:normal', text: text });
+    }
+
+    /**
+     * A label, and the whole path on the line under it.
+     *
+     * Under and not beside: a row measures its right-hand edge against the
+     * label, and at this width the label wins and the path is what gets
+     * shortened — backwards for the one thing on this card the reader has to
+     * be able to check. U.w.path still elides from the middle if even the full
+     * width is not enough, and keeps the whole value for its copy button,
+     * because a path is one unbreakable token and text-overflow would keep the
+     * head, which is the half that says nothing.
+     */
+    function askPath(label, value, why) {
+        return h('div', {},
+            h('div', { class: 'mm-lab', text: label }),
+            W.path(value, { why: why }));
+    }
+
+    function removeAsk() {
+        if (!askEl) return false;
+        if (askEl.parentNode) askEl.parentNode.removeChild(askEl);
+        askEl = null;
+        return true;
+    }
+
+    function buildAsk() {
+        var p = $.paths;
+        var hd = h('div', { class: 'mm-float-hd' }, h('span', { text: 'Storage' }));
+
+        function answer(fn, label) {
+            return function () {
+                // The card goes first: the answer re-resolves the paths and
+                // may reload the settings under it, and a card still on screen
+                // showing the question that has just been answered is worse
+                // than no card at all.
+                removeAsk();
+                $.safe(fn, label);
+            };
+        }
+
+        var grant = W.button({
+            label: 'Use the shared folder', variant: 'prime', wide: true, mutates: true,
+            tip: 'Shared folder|Settings, addons and backups live outside the game folder, ' +
+                 'where a game update cannot remove them.',
+            onClick: answer(function () {
+                var r = $.store.grantStorage();
+                if (r && r.ok) {
+                    $.log('ok', 'Settings → Storage can copy what is already beside the game across. ' +
+                        'Nothing has been moved: the move copies, keeps whatever the destination ' +
+                        'already has, and never deletes.');
+                }
+            }, 'grant storage')
+        });
+        var decline = W.button({
+            label: 'Keep everything beside the game', wide: true, _ungated: true,
+            tip: 'Beside the game|Nothing outside the game folder is read or written. ' +
+                 'Uninstalling the game removes GigaHack\'s files with it.',
+            onClick: answer(function () {
+                $.store.declineStorage();
+                U.toast({
+                    title: 'BESIDE THE GAME',
+                    msg: 'Everything stays in ' + ($.paths.dataDir || $.paths.mode) +
+                        '. Settings → Storage can change this.',
+                    severity: 'ok', ms: 6000
+                });
+            }, 'decline storage')
+        });
+        var later = W.button({
+            label: 'Ask again next launch', wide: true, _ungated: true,
+            tip: 'Later|Nothing outside the game folder is touched in the meantime.',
+            onClick: answer(function () {
+                $.store.deferStorage();
+                U.toast({
+                    title: 'ASKED AGAIN NEXT LAUNCH',
+                    msg: 'Until then everything stays beside the game. Settings → Storage answers it ' +
+                        'at any time.',
+                    severity: 'ok', ms: 6000
+                });
+            }, 'defer storage')
+        });
+
+        var card = h('div', { class: 'mm-card' },
+            h('b', { text: 'Where should GigaHack keep its own files?' }),
+            askText('Its settings, its addons, its save backups and its console snippets. ' +
+                'Nothing of the game\'s own is moved or touched either way.'),
+            askPath('Beside the game', p.localDir,
+                'this build has no game folder it can write to — ' + (p.mode === 'fs' ? '' : 'persistence is in ' + p.mode + ' mode.')),
+            askPath('A folder of its own, outside the game', p.sharedDir,
+                'there is no application-data folder to reach from here.'),
+            askText('A folder of its own survives a game update or a reinstall, which the game ' +
+                'folder does not. Beside the game keeps everything in one place and reads and ' +
+                'writes nothing outside it.'),
+            askText('This is asked once per game, and the answer is written beside THIS game. ' +
+                'Answering here says nothing about any other game on this machine: copy GigaHack ' +
+                'into a second game and it asks again there.'),
+            askText('GigaHack 2.1.0 and earlier wrote to that folder without asking. If you used it ' +
+                'before, what it saved is still there and is picked up again the moment you allow ' +
+                'this — nothing outside the game folder is read until then, including to find out ' +
+                'whether anything is there.'),
+            // One per line, and each its own flex row so `wide` can do its job:
+            // three answers of three different lengths, laid out at three
+            // different widths, read as one being the recommended one.
+            h('div', { class: 'mm-inline' }, grant),
+            h('div', { class: 'mm-inline' }, decline),
+            h('div', { class: 'mm-inline' }, later));
+
+        // Top-left, clear of the watch float (top right), the HUD (right) and
+        // the toast stack (bottom right), so an answer and its own toast are
+        // never the same pixels.
+        var el = h('div', { class: 'mm-float mm-ask', style: 'left:24px;top:24px;width:430px' }, hd, card);
+        // Movable, and deliberately not remembered: it is on screen once, and a
+        // remembered position for a card that appears once is a setting that
+        // outlives the thing it describes.
+        U.makeDraggable(hd, el, HOST.root);
+        return el;
+    }
+
+    /**
+     * Put the question on screen whatever the current answer is.
+     *
+     * This is the "re-openable from Settings → Storage" path. The only refusal
+     * is a build with no filesystem, where there is nothing outside the game
+     * folder to reach and so no question worth putting.
+     */
+    U.showStorageCard = function () {
+        if (!HOST || !HOST.root) return { shown: false, why: 'the overlay has not mounted yet.' };
+        if ($.paths.consent === 'moot') return { shown: false, why: $.paths.consentWhy };
+        removeAsk();
+        var el = $.safe(buildAsk, 'build the storage card', null);
+        if (!el) return { shown: false, why: 'the card threw while building — see the log.' };
+        askEl = el;
+        HOST.root.appendChild(el);
+        return { shown: true, why: '' };
+    };
+
+    /** Take it off screen without recording anything. */
+    U.hideStorageCard = function () { return removeAsk(); };
+    U.isStorageCardOpen = function () { return !!askEl; };
+
+    /**
+     * The first-launch path: ask only where there is no answer yet.
+     *
+     * Separate from showStorageCard so that the decision is drivable on its
+     * own — "it did not ask, and here is which of the four reasons" is the
+     * thing worth being able to check, and it is not observable from whether a
+     * div appeared.
+     */
+    U.askStorage = function () {
+        var q = storageQuestion();
+        if (!q.ask) return { shown: false, why: q.why };
+        return U.showStorageCard();
+    };
+
+    /* =====================================================================
        Open / close + input swallowing
        ===================================================================== */
     function setOpen(v) {
@@ -495,6 +700,11 @@
         setWatch(false);
         if (HOST && HOST.toasts) clear(HOST.toasts);
         hideInspect();
+        // The storage card is the one thing on screen that a person cannot
+        // dismiss by closing the menu, so it is also the one thing panic-hide
+        // most has to reach. Nothing is recorded by taking it away: the answer
+        // stays unasked and the question is put again next launch.
+        removeAsk();
     }
 
     /* The inspect layer itself is an empty hidden div while the M6 module is
@@ -959,7 +1169,8 @@
             // only run while the overlay is actually visible.
             $.onFrame('tab fast hooks', function (n) {
                 if (!open || !HOST.fastHooks.length) return;
-                for (var i = 0; i < HOST.fastHooks.length; i++) HOST.fastHooks[i](n);
+                var fast = HOST.fastHooks.slice();   // see the note on the 700ms clock
+                for (var i = 0; i < fast.length; i++) fast[i](n);
             });
 
             hudEl = buildHud(); root.appendChild(hudEl);
@@ -1045,6 +1256,13 @@
             }, 'claimed hotkey report');
 
             $.log('ok', 'overlay mounted — press ' + U.prettyCode($.cfg.hotkeys.toggleMenu) + ' to open');
+
+            // Last, and only once there is somewhere to draw it: the first
+            // launch that has no answer for this game gets the question. It is
+            // deliberately after 'mounted' — a feature module listening for
+            // that may register a panel, and every registration re-renders the
+            // tab, which is a thing to have finished before a card appears.
+            $.safe(U.askStorage, 'ask the storage question');
             return HOST;
         }, 'overlay mount');
     }

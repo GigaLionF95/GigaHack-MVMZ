@@ -21,7 +21,7 @@ installed.
 
 ## How to read this
 
-Three things are worth knowing before the list, because they show up on nearly
+Four things are worth knowing before the list, because they show up on nearly
 every control.
 
 **A greyed control with a named reason is a feature, not a gap.** When
@@ -38,6 +38,24 @@ degraded for the session — but leaves it usable, because the cause may have
 gone away (a plugin's own state changed, a reload) and the only way to find out
 is to let you press it again. Every degraded control carries a "try again"
 button that clears the mark so the next write is re-tested from scratch.
+
+**A panel that shows something the game owns repaints itself, and stops while
+you are working in it.** Each of those asks a cheap signal on a 700ms tick — a
+counter, or one string folded out of everything on screen — and repaints only
+when the answer differs from the last one it acted on, so a table listing a
+thousand rows is not rebuilt sixty times a second to show that nothing has
+changed. Four things hold a repaint off: the overlay being closed, the cursor
+being in a field inside the part being repainted, a popup being open over it,
+and the panel's own "not now" — a table mid-scroll, usually. **A hold does not
+consume the signal**, so the repaint happens on the first tick after you let go
+rather than being lost with the tick it landed on. One function does this for
+every panel — `GigaHack.ui.live(signal, paint, opts)`, which registers into the
+overlay host's own hook list and is cleared with the next tab render, so a
+panel never has to clean up after itself — and `opts.fast` moves it onto the
+frame hook for the few readouts a person would call laggy at 700ms. Each panel
+section below says what its own signal watches, because a signal that leaves
+something out is a column that stops updating with nothing on screen to say
+why.
 
 **Three global guards apply everywhere**, all under Settings → Behaviour:
 
@@ -312,6 +330,17 @@ Identity panel writes are not in it. A level above the actor's own cap is
 clamped, and the report gives both the number recorded and the number that
 stuck rather than the one that was asked for.
 
+The difference table is live without being expensive.
+`GigaHack.kit.actorStamp(actor)` folds everything the diff would read — class,
+level, skills, every slot with the **kind** of what is in it, and the parameter
+bonuses — into one string the panel asks for on every tick, and the diff itself,
+which resolves every recorded slot against the database and asks about every
+refusal, runs only when that string has moved. The kind is in it because
+weapons and armors number from 1 independently, so an id alone would read a
+swap between the two databases as no change at all. An event that changes the
+actor's class, levels them, teaches a skill, swaps a slot or hands out a bonus
+all move it.
+
 In read-only mode an apply writes nothing at all and the message names the
 action that was refused and where to turn the gate off; saving, renaming,
 deleting and importing are refused the same way. The panel itself is always
@@ -497,6 +526,17 @@ you type them: numbers are floored on the way in so a fraction truncates; text
 and lists are stored exactly as typed, because nothing in the engine requires a
 variable to hold a number; and ids outside `1–n` are ignored by the engine with
 no error, no exception and no return value.
+
+Both tables repaint on `GigaHack.vars.revision()`, one monotonic counter that
+answers "has any value moved" for every variable and every switch at once, so a
+panel listing a range asks one number rather than walking its own rows every
+tick. It is never reset, so comparing it with the last value seen is the whole
+test. Pins live in `bookmarks.json`, which the Places list shares, and
+`GigaHack.vars.reloadMarks()` reads them back and returns how many there are:
+answering the storage question moves the data directory under a running
+session, and without a re-read the first pin added after a move writes the old
+directory's list over the new directory's file — a silent overwrite of a file
+nobody has seen. Boot calls it on `paths:changed`.
 
 Sidebar:
 
@@ -787,6 +827,14 @@ Named bookmarks, stored in their own file.
 | Name + bookmark current spot | Names are optional; unnamed ones take the map name. |
 | Bookmarks table | Name, map, coordinates, "go" and "delete" per row. |
 
+The list is read once when the module loads and written back on every change,
+so `GigaHack.map.reloadBookmarks()` exists to read it again where the data
+directory has moved during the session — answering the storage question does
+exactly that. Without it the first place added after a move writes the old
+directory's list over the new directory's file. Boot calls it on
+`paths:changed`, and it returns how many places came back. The pinned variables
+and switches share the same file and re-read on the same signal.
+
 ### Events
 
 The event overlay is the one part of GigaHack that draws into the PixiJS scene
@@ -1037,6 +1085,16 @@ maps are not covered: the boot index records the switches and variables an event
 touches, not the common events it calls. The panel is replaced by a line saying
 the common event list is not loaded yet on the title screen.
 
+The table is live on `GigaHack.quest.commonsStamp()`, which folds the three
+things here that can move into one string: the gate switch, whether a parallel
+one has an interpreter right now, and the explicit-call count. The database
+fields are deliberately left out because they cannot change while the game
+runs, and a signal that includes what never moves costs the same on every tick
+and buys nothing. The live list is walked once and indexed to answer it rather
+than searched per row, because a project with two hundred common events and
+twenty parallels would otherwise pay four thousand comparisons a tick to answer
+a question whose whole purpose is to be cheaper than the repaint it guards.
+
 ### Quests *(only where the project's own flag names group into chains or sections)*
 
 Nothing in either engine records a quest. What a project with quests has instead
@@ -1097,6 +1155,18 @@ the same sentence, because two panels do the same job without the guess — Worl
 → Switches lists every flag raw, and World → Find answers which event sets one.
 The answer "nothing to group" is not treated as final, so a plugin that reloads
 the database gets a fresh answer out of it rather than a stale one.
+
+The panel refreshes without re-inferring. `GigaHack.quest.refreshQuests()` reads
+the live flags back into the groups already worked out and returns them: the
+grouping comes from the project's switch and variable **names**, which cannot
+change while the game runs, and re-running the inference would reorder the
+panel under whoever is reading it. Done, next and each step's own flag are
+recomputed through the same function that computed them at inference time, so a
+live panel and a freshly built one cannot disagree. `GigaHack.quest.questsStamp()`
+is what says a refresh is due, and a variable step carries its **value** rather
+than whether it is done: a counter going from 3 to 5 leaves "done" true the
+whole way, and keying on the boolean would freeze the number printed beside it
+while the quest visibly advanced.
 
 ### Script
 
@@ -1185,6 +1255,15 @@ honours immediately, and GigaHack's own `maxItems` hook. Writing the container
 or `_gold` directly bypasses the clamp entirely, and is used only after the
 public API has demonstrably refused the value — at which point the UI says the
 value was forced past the game's own cap.
+
+Counts move without anyone touching the panel — a battle spends items — so the
+three tables and the gold readout repaint on `GigaHack.inv.revision()`, a
+rolling hash over gold and the three containers rather than a sum. A sum cannot
+tell "one potion used" and "one elixir found" in the same tick apart from
+nothing happening at all, which is the one answer that leaves a wrong number on
+screen. It is not a checksum and is not called one: a collision leaves a count
+stale until the next change, and the alternative — walking a database that runs
+to four figures on a large game — would cost more than the repaint it avoids.
 
 ### Gold
 
@@ -1371,6 +1450,13 @@ next to it. The panel is always registered so the tab never changes shape under
 you; what degrades is the body, which names the inventory module and points at
 Debug → Environment when the pickers have no list to draw from, and says to
 start or load a game when there is no party yet.
+
+The "have" column is live on `GigaHack.kit.partyStamp()`, which carries **counts**
+and not just which rows exist — an item spent in a battle leaves the row in
+place and changes only the number beside it — and gold with them, because the
+price column is read against it. The container keys are sorted into that string:
+object key order is insertion order, so a stack emptied and refilled would
+otherwise read as a change on every tick for the rest of the session.
 
 ## Game
 
@@ -1576,6 +1662,13 @@ always had: the lines it holds, which colour index marks a speaker header
 trimmed lines back, a clear that is confirmed where there is no restore, and
 "open in game" where the adapter offers a scene.
 
+The recorded view repaints on `GigaHack.text.history.revision()`, which moves
+whenever the buffer's **contents** change and not when its length does. The
+records are a ring, so once it is full its length never moves again — which is
+the steady state and not the empty one anyone tests — and a panel keyed on that
+would freeze exactly when the history is worth reading. Trimming the limit
+moves it too, because dropping lines changes what is on screen.
+
 ### Achievements *(only where a Steam binding is present)*
 
 Nothing in this module knows any game's achievements, app id or stats. All
@@ -1612,6 +1705,12 @@ what it looked for and what stopped it.
 | Unlock every achievement / Clear every achievement | Warns that this is visible on your public profile and that Steam has no undo beyond clearing them again. |
 | Refresh from Steam | Re-reads the unlocked states. |
 | Stats | One box per stat the game's profile declared, with its goal and which achievement it counts toward. The API enumerates achievements but not the counters behind them, so this group exists only where a profile declared some. |
+
+The table repaints on `GigaHack.steam.revision()`, which is honest about its one
+blind spot: it cannot see the **game** unlocking an achievement through its own
+plugin, because that call goes straight to the binding and never passes through
+here, so the row still says what the last read said. "Look again" is what
+re-asks Steam, and the panel says so rather than letting a stale row look live.
 
 ---
 
@@ -1803,6 +1902,14 @@ shift, so outside a battle it can only ever touch the map half — so the curren
 range goes through the engine's function and the other half is nulled directly,
 which is what that function does anyway: it writes null rather than deleting, so
 the array keeps its length and the picture update still visits the slot.
+
+The table is live on `GigaHack.screen.picturesStamp()` and re-reads the slots
+only when that string differs, because reading them allocates a row object per
+slot and there can be a hundred of them. Every field the table and the two
+counts beside it show is folded into it — a field left out is a column that
+stops updating with nothing on screen to say why — and the range marker is in
+it too, since the same slot number is a different picture in battle and walking
+into a fight must not read as "nothing changed".
 
 The whole panel is replaced by "no game running" on the title screen. Where
 `$gameScreen.picture` is not a function — something replaced `Game_Screen`
@@ -2251,6 +2358,13 @@ lasts until the game is relaunched. The whole panel is replaced by a stated
 reason where the game plugin list cannot be read at all, since then no plugin
 can be asked what it is configured to do.
 
+`GigaHack.build.params.readTotal()` is every parameter read this module has
+seen, across every entry, and it is what the table repaints on: one number for
+the whole panel costs nothing to ask on a tick, where asking per row would walk
+the table to find out that nothing had been read. It moves only while the read
+counter is installed, which is the same condition that lets any row say **live**
+at all.
+
 ### Compatibility
 
 Four questions, in the order they earn their keep.
@@ -2308,6 +2422,15 @@ Recognised frameworks, and what each is flagged for:
 | Build cost | Milliseconds per stage, slowest first, with the total. |
 | Benchmark | The same question asked with the index and without it, back to back. This is what justifies a stage or retires it: a stage whose saving cannot be measured here is build time spent for nothing. |
 
+`GigaHack.index.persist()` writes what is **already built** into wherever the
+store now points, and is deliberately not a rebuild: the index describes the
+game's database, and the data directory moving says nothing about the game, so
+re-deriving it would spend a second of frames to reach the same answer and
+leave every query reporting "incomplete" while it ran — which reads as a broken
+index rather than a busy one. What actually needs doing is leaving a copy in
+the new directory so the next launch finds one. It returns false where there is
+nothing built to write, which is not an error. Boot calls it on `paths:changed`.
+
 ### Saves
 
 | Control | What it does |
@@ -2327,6 +2450,14 @@ the scene it belongs to has been left. Quick save and quick load sequence all
 of that by hand, in order. The write itself is called as found at call time,
 never cached or reimplemented, because replacing `DataManager.saveGame` outright
 with no alias is a thing plugins do.
+
+The slot table repaints on `GigaHack.saveTools.slotSignature()`, because the
+game writes slots on its own — an autosave, an event that calls save — and
+nothing tells this module when. Timestamps are what change, so they are what
+the signature asks about, and the playtime beside each one is derived from the
+same file and moves with it. It reads the same cached slot info the table
+reads, which on the engine that re-reads per call is cached to at most once a
+frame, so asking every 700ms costs one walk of the list.
 
 ### Transfer
 
@@ -2468,6 +2599,15 @@ Errors are displayed rather than allowed to reach the game loop.
 | Uncaught errors | Every uncaught error and unhandled rejection caught this session, with its location and a click-to-expand stack. Plus "clear". |
 | Breakdown | Count per level, and "copy what is shown" — the filtered view as plain text, on the clipboard. |
 
+`GigaHack.logCount()` is how many entries the ring currently holds, without
+copying it: the log buffer runs to four thousand entries and a signal asked
+every 700ms must not allocate a copy of that to find out that nothing has
+changed. It is never the signal on its own, and for the reason the ring makes
+unavoidable — once the buffer is full its length stops moving — so the panel
+keys on the number of lines that have rolled off the front as well, plus the
+uncaught-error count. The log drawer at the bottom of the window asks the same
+question through the same call.
+
 ### Journal
 
 Everything GigaHack itself has changed this session, in one chronological list,
@@ -2519,6 +2659,15 @@ installed, with Debug → Hooks named for the two aliases that failed. Where onl
 one is missing the panel still builds and says which: without the undo feed
 nothing here can be reverted, and without the verify feed whether a write stuck
 is unknown rather than assumed — the column header reads `—` instead of `stuck`.
+
+The list repaints on `GigaHack.journal.revision()`, a counter kept beside the
+state rather than derived from it, because neither of the two obvious signals
+works. The rows are a ring, so once it is full its length never moves again —
+which is the steady state and not the one anyone tests. And the count of writes
+does not move when the undo stack is cleared, which empties "reversible now"
+and marks every row unreversible without a single row arriving or leaving. Both
+of those are silent staleness, and this panel is where it would be least
+visible.
 
 ### Interpreters
 
@@ -2639,6 +2788,20 @@ the browser's. Where something replaced it after GigaHack did, release refuses
 rather than removing someone else's alias with ours, and points at Debug → Hooks.
 With recording off, the table says which function `Math.random` currently is
 instead of leaving an empty list unexplained.
+
+The panel has **two** live signals, because its two halves move at different
+rates and one signal would make the slower half pay the faster one's bill.
+`GigaHack.rng.stamp()` carries rolls this session, rolls last frame, rolls
+recorded, the drawn count and the number of distinct call sites; "rolls last
+frame" is by definition a per-frame number, so it differs on almost every tick
+while the game rolls — which is cheap, because it writes five text nodes.
+`GigaHack.rng.tableStamp()` moves only when a row is actually kept, so the list
+does not repaint 86 times a minute while a one-in-a-hundred sample records
+nothing. `GigaHack.rng.siteCount()` is in both and counts the distinct sites
+without building and sorting the table to do it. The roll list's own length is
+in the table's stamp beside the recorded count and never instead of it: it is a
+ring, and its length stops moving the moment it fills, which is where it spends
+the rest of the session.
 
 ### Triggers
 
@@ -2880,6 +3043,49 @@ The panel is replaced by a stated reason where backups are off — most often no
 filesystem — and adds that dangerous actions will still run, they just will not
 be protected.
 
+### Addons *(the diagnostics)*
+
+Settings → Addons is the list, the import buttons and the review; this is the
+record of what happened afterwards. What ran, in what order, how long each took,
+what each registered, what threw and on which line, the whole API an addon is
+handed, and what this build can and cannot do about addons. Nothing on this
+panel changes an addon.
+
+| Control | What it does |
+|---|---|
+| Load order and timings | Position, id, state, milliseconds and what it registered, one row per addon, with the error and line in the tooltip. The time comes off a monotonic clock and not the wall clock the log drawer prints — subtracting two of those is `NaN`, which is what this column showed until somebody looked at it. |
+| What threw | Every recorded error with its line. A row whose state is not `failed` is an error **inherited from the index** — what happened the last time that addon ran, not this launch — and the panel says which of the two it is. |
+| The API an addon is handed | Every call, what it does, and whether switching the addon off undoes it. Rendered from the same table the loader and `api.on`'s refusal message read, and a check asserts that every key the factory really puts on the object appears in it and that nothing in it is missing from the object — which is the only thing that stops a reference page going stale. |
+| Events | The eight event names, how many subscribers each has, and **how each is noticed**. |
+| This build | Whether addons are in a folder or in the settings store, both folders, the network transport, how the clipboard can be read, and whether line numbers are exact. |
+| line numbers | `exact`, with the measured wrapper offset, or `approximate` where it could not be measured. A `Function` body is wrapped in a preamble before it is compiled, so a line a stack reports is the addon's line plus however many lines that preamble happens to be — two on every host tried, and nothing anywhere promises that, so it is measured at load by throwing from a known line rather than assumed. |
+| Aliases | How many aliases addons have installed this session, and their names. |
+| re-baseline the alias snapshot | Only needed where an addon aliased a method GigaHack already hooks: that makes GigaHack's own hook read as over-patched and fails the "aliases" self-test until the baseline is retaken. It also erases the evidence of any genuine third-party over-patch from before now, and the button says so rather than presenting itself as a repair. |
+
+**Not one of the eight events is an engine alias**, and that is the load order
+talking rather than laziness. Addons is the last feature module, so an alias
+installed here would land on top of the one another module already holds on the
+same method — two modules hook the map's setup, one hooks the battle's, one the
+message window's, one both halves of a save. Unpatching refuses by identity and
+does not walk a chain, so sitting on top of those would take away *their*
+removal from Debug → Hooks for the rest of the session, and the button that
+offers it would then only ever be able to say no. Every addon event is
+**noticed** on the frame hook instead, at a cost of one frame of latency and a
+handful of property reads on a hook that was running anyway. The Events group
+prints how each one is noticed beside it, so an event that fires late has an
+explanation rather than a shrug.
+
+`message` is the exception in shape, and it is reuse rather than a special case:
+it reads the dialogue recorder's revision, which is the one capture in the mod
+that already reads the text **after** the engine has resolved it. A second
+capture of the same thing would have to relearn that, and one of the two would
+eventually get it wrong. Where the Text module did not load, or its recorder
+found nothing on this build to record from, the event is listed with the reason
+it can never fire rather than left looking merely idle.
+
+The re-baseline button is disabled with its reason where the Compat module did
+not load, since there is then no alias snapshot to retake.
+
 ---
 
 ## Settings
@@ -3044,6 +3250,202 @@ place. Settings that paint into the running game are stripped on apply and the
 toast names which — a profile saved with the event overlay on would otherwise
 switch it on from a file.
 
+### Storage
+
+Where GigaHack's own files go, which of the three locations they went to, and
+who said so. Everything the mod keeps — settings, profiles, snippets, the
+console history, bookmarks, the Forge library, the game key map, loadouts, the
+shop, automation triggers and routes, addons, the index cache, backups, exports
+and screenshots — lands in one directory, and this is the panel that says which
+one and moves it.
+
+**Nothing under the shared folder is read, written, probed or created until the
+answer is yes.** That is structural rather than cautious: the write probe that
+chooses a directory *creates* the directory it tests, so pointing it at a shared
+candidate is itself the act the question is about. The answer is recorded beside
+**this** game and never in the shared folder, so it cannot travel to a second
+one — copy GigaHack into another game and it asks again there.
+
+| Control | What it does |
+|---|---|
+| Persistence | `fs`, `localStorage` or `memory`, with `(fallback)` where the preferred candidate for this layout was not writable. That flag means exactly that and nothing more; "outside the game folder" is its own row, because on 2.1.0 this one was false in precisely the case its readers took it to describe. |
+| In use now | The directory everything below is written to, this launch, shortened from the middle and copyable in full. Replaced by the reason where there is no directory at all. |
+| Outside the game folder | Whether a game update or a reinstall would take these files with it. |
+| open this folder | Shows it in your file manager. |
+| Answer | allowed / refused / not answered yet / nothing to answer, with the sentence that goes with it. |
+| Given / By version / Times asked / Recorded in | The record as written. "Recorded in" is beside the game, always, for the reason above. |
+| Use the shared folder | Points the mod's data at a folder of GigaHack's own, outside the game, from this moment on. It copies nothing by itself — the move below does that, and it never deletes. Where an earlier build already left settings there — 2.1.0 and earlier wrote them without asking — those are **adopted** rather than overwritten, and the toast names both paths, because "which of my two settings files am I now using" has to have an answer. |
+| Keep everything beside the game | Nothing outside the game folder is read or written. Deliberately not gated by read-only mode: refusing to record a refusal because the mod is in read-only mode would be the wrong way round. |
+| Show the question again | Puts the first-launch card back on screen. It answers nothing by itself. |
+| The answer in force | Marked **on** rather than removed. Two buttons and no mark reads as a choice nobody has made yet, and taking the current one away would remove the only way to re-run a grant — which is what adopts a shared folder somebody has just restored from a backup by hand. |
+| Beside the game / A folder of its own / Shared between games | The three locations. All three are computed on every build; the two shared ones carry "computed but never touched" and the reason until the answer allows them. |
+| open the shared folder | Only where the answer is yes; otherwise it names the answer as the reason. |
+| copy everything to the shared folder / copy everything back beside the game | Copies. A file the destination already has is **kept, and said so, per file** — a merge nobody asked for is worse than a stated skip — and nothing is deleted. Pending debounced writes are committed first, or the last slider drag lands in the directory that was just abandoned. |
+| Move report | One row per file: copied, kept or failed, with where it went or the reason it did not. It survives the repaint that follows the move, because a move's outcome is a list and a toast cannot hold a list. |
+| remove the old copy | Deletes exactly the files that move copied, from exactly where it copied them from, and only where the copy is verifiably there. Danger-styled and names the count. Directories are left behind even when they end up empty: removing a directory is a different and much less recoverable act than removing a file this has just proved is duplicated. |
+| ui / behaviour / hotkeys | The three sections of settings that may travel between games, each with what it holds, whether it is on, and which game last wrote it. |
+| Shared file | The path of the cross-game file itself. |
+| Shared hotkeys report | After a hotkeys share: every bind that took a key from the shared set, and every one that did not, naming the claimant this game already has for it. |
+| What this folder holds | Every file and folder the store owns, what each is for, and whether it `stays`, `moves` or is `rebuilt`. One list, read by the move, by this table and by the folder readout — three copies of it would disagree within a month. |
+
+**The move keeps two kinds of file where they are, and says which.** The
+storage answer itself stays beside this game, because an answer in a shared
+folder could reach another game, which is the one thing it exists to prevent.
+Anything rebuilt from nothing at the next launch — the index cache, the module
+report — stays too, because a copy of it could only ever be stale. Everything
+else moves, and the "travels" column says in advance which a file is.
+
+**Sharing adopts rather than overwrites.** Turning a section on where the shared
+set already holds one takes theirs, merges it over the defaults, and names the
+game that last wrote it; this game's own copy stays in its settings file
+untouched and comes back the moment you turn it off. Hotkeys are off by default
+and are the exception in kind, not in degree: a hotkey default is derived from
+the keys **this** game leaves free, and a key that is free in one game is
+claimed in another, so a shared bind is applied only where this game has not
+claimed the key and every skip is listed with its claimant. GigaHack sees a key
+before the game does, so taking a claimed one would take the game's own action
+away rather than share anything.
+
+Where there is no cross-game folder the sharing group states which of the
+reasons applies — the answer has not been given, persistence is not in `fs`
+mode, or the folder could not be resolved from this environment — and leaves the
+toggles visible and off rather than removing them.
+
+Moving is unavailable, with the reason, where persistence is in `localStorage`
+or `memory` mode (there are no directories to move between), where either
+location could not be resolved, or where both resolve to the same directory. The
+shared direction additionally needs the answer and prints the answer it has. The
+copy walks at most 4000 files and four directories deep and says where it
+stopped when it stops early, rather than reporting a partial move as a whole one.
+
+"Open this folder" needs a desktop shell that will show a path in a file
+manager. Where there is none — a browser build, or an NW.js window that does not
+expose it — the button greys with that reason, and the path above it is
+selectable and carries a copy button, which is the answer that always works.
+
+The whole panel is replaced by a stated reason on a build whose storage layer
+cannot answer the question at all, with Debug → Environment named as where to
+find out what settings are being written to in the meantime.
+
+### Addons
+
+JavaScript somebody else wrote, listed before it is run. They are called addons
+and not plugins because "plugin" already means one of the game's own in this
+window — Debug → Plugins lists those, `$.compat` reasons about them, and the
+installer edits `js/plugins.js`. Two meanings for one word in one menu is a
+defect in the vocabulary, so this one gets its own.
+
+The file is read in two halves, and the split is the whole design. **The header
+is read without running anything**: an annotation block parsed off the comment
+text, the same shape the engine reads a plugin's own `/*:` block, so the list
+can show what a file *claims* — its name, its version, what game it says it is
+for, what it needs — before a line of it has executed. A file with no header is
+listed as claiming nothing and is never refused for that. **The body runs only
+when the addon is switched on**, and nothing that arrives here is switched on by
+arriving.
+
+**It is not a sandbox**, and the panel says so once, plainly, at the point where
+the decision is actually made — the review. An addon is arbitrary JavaScript
+running with the game's privileges, exactly like any plugin the game itself
+loads, and nothing here can make that untrue. What is true is smaller and is
+stated as such: nothing runs until you switch it on, you are looking at the
+whole source first, a link is never fetched again on its own, and an addon that
+throws is stopped, named, and given its line number.
+
+| Control | What it does |
+|---|---|
+| Addons in this game | Name, id, version and state per row: `on`, `off`, `on, inert`, `on, threw`, `on, stopped`, `failed`, `no file`, `skipped` or `quarantined`. `on, threw` means one of its event handlers has thrown and is still subscribed; `on, stopped` means one threw often enough to be unsubscribed, which is stated once rather than logged on every frame. Clicking a row selects it. |
+| Detail | id, version, author, where it is kept — this game's folder or the shared library — "says it is for" — read out of the header, and nothing checks it against this game, because it is what the file says about itself — what it needs, where it came from, its fingerprint and size, and when it was imported. |
+| fingerprint | A cheap 32-bit digest, **not a checksum**, and labelled as one. It answers "is this the same text as last time" and nothing else. |
+| switch it on / switch it off | Runs the file, or takes back everything that can be taken back. Switching on names what it registered; switching off names what stayed. |
+| read it again | Reads the file off disk again and runs it if it was on. |
+| check the source again | Asks the host this addon came from whether the file has changed, and answers unchanged, changed or unreachable. It installs nothing either way — a change goes to the review like anything else. Absent where the addon did not come from a link. |
+| remove it | Deletes the file and this addon's own store, behind a confirm. Says how many aliases it installed are still in place as pass-throughs, because only a restart takes those out. **A library addon is refused unless the removal is spelled out**: its file is the one copy every game on this machine reads, the row above the button says so, and the confirm reads "delete the shared copy?" rather than "delete the file?". Enablement is per game and removal is not, which is the whole of the difference. |
+| registered / panels / hotkeys / commands / events / aliases / profiles | Exactly what this addon put into the menu, by name, so a disable has something to be checked against. |
+| re-resolve the game profile now | Offered on an addon that registered a profile. Moves the profile now, and names the four things it does **not** move: the derived hotkey defaults, the Gallery panel's decision, the Forge id bases already written into its library, and any cached sections. |
+| paste box + review it | The first of five sources, and every one of them ends in the same place. |
+| start from a template | A working addon — a panel, a hotkey, a console call, a guarded write and an event subscription — onto the clipboard, and into the box either way, so a build that cannot write to the clipboard still gets it. |
+| read the clipboard | Reads it and goes straight to the review. |
+| Link + fetch it | Names the host it would reach and the transport it would use **before** anything is sent, because a fetch is your machine talking to somebody else's. |
+| File + read that path | Reads an absolute path. A file that is present and unreadable says so and prints the `chmod` that fixes it — an existence check needs only directory permission, so "there" and "readable" are two different answers. |
+| rescan the folder | Reads the addon folder again, plus the shared library where there is one. A `.js` file dropped into the folder by hand is listed, switched off. |
+| Review | The id it will take, what it claims to be, what it needs, its size against the ceiling, its fingerprint, where it came from and over what transport, its host, its first line, and the whole source. The two decisions sit **above** the source rather than under it: the source is a scrolling block of somebody else's file with no length it is guaranteed to be, and below it the only two buttons on the panel were off the bottom of a column that had already scrolled. |
+| add it, switched off / discard it | Adding writes the file and lists it. Switching it on is a separate, deliberate act and always was. |
+| This game / Shared library / Enablement | The two folders, and the rule between them: the library is shared between games, the switches are not. One machine-wide "on" is not what anybody means when they switch something on in one game. |
+| Skip every addon next launch | Safe mode. Survives the relaunch, then turns itself off so the launch after that is normal. |
+
+**Two registrations cannot be taken back, and the panel says which and why
+rather than leaving it in a comment nobody reads.** An engine alias cannot be
+pulled out of a chain once something else has aliased on top — `$.install`'s
+unpatch refuses by identity and does not walk a chain, which is correct, because
+forcing it would silently discard the other plugin's work. So an addon's alias
+is installed **once, permanently**, as a wrapper that consults the addon's
+enabled flag and otherwise calls straight through: switching off is then real
+and immediate and no chain is ever broken. And a profile is memoised at the
+first resolve after boot, so re-resolving mid-session changes answers other
+modules have already read and latched; a profile from an addon therefore applies
+from the next launch, and the re-resolve is offered with its cost named beside
+it. Everything else — panels, hotkeys, console commands, event subscriptions —
+goes when the addon does. A panel comes off the strip through
+`GigaHack.ui.removePanel(tab, name)`, which returns false where there was no
+such panel — a teardown that runs twice is normal, not an error — because a
+sub-tab that opens onto an empty body is worse than one that is gone: there is
+nothing in it to say why.
+
+**An addon that was loading when the game last stopped is named at the next
+launch and not run again until you say so.** That is the crash guard and it
+needs nothing from you: a file naming the addon about to be evaluated is written
+before it runs and removed after. Nothing can tell whether that addon was the
+cause, and the panel says so — switching it on again is the way to find out.
+Safe mode is the blunt version and has two ways in, which answer different
+problems: the switch above is a file and survives a relaunch, and holding the
+panic-hide key while the game starts skips every addon for that launch but is
+only seen if the browser has delivered a keystroke by the time addons load. The
+switch is the reliable one, and the panel says which is which.
+
+**Where there is no filesystem** — a browser build, a web deploy — an addon
+lives in the settings store under the same name, and the list is the index
+rather than a folder scan. The panel says that instead of showing an empty
+folder with no explanation: importing and switching on both work, a folder to
+drop a file into does not exist. The shared library needs the storage answer as
+well, and names Settings → Storage where it does not have it.
+
+**Fetching is the one source that can be missing entirely.** "Fetch it" is
+greyed with `$.net`'s own reason where this build has no transport, and the
+other four sources are unaffected — which is why the module asks for `$.net`
+rather than requiring it. Only `http` and `https` are fetched; anything else is
+refused by name, pointing at the file source. A reply of 400 or more prints the
+first line of what came back, which is what identifies an error page arriving
+with a cheerful status. The ceiling is 256 KB with the number in the message,
+because "too big" without one is not something anybody can act on.
+
+**Nothing reaches the review unlooked-at.** Two tests, neither of which runs
+anything: does it open like markup — an HTML error page is the usual thing a
+link that went wrong returns — and does it compile. Compiling is not running,
+`new Function` builds a function object and never calls it, and it is the only
+way to say "line 14" instead of "it did not work". An id already claimed is
+refused with the file that holds it named, and a folder holding more than 200
+`.js` files says so rather than listing part of it silently.
+
+**Reading the clipboard is not the mirror image of writing to it.** Writing has
+a synchronous path and reading has none, so `GigaHack.ui.readText(cb)` answers
+through a callback that fires exactly once, with an error whose message is
+already written for the user — every caller prints it verbatim. The probe
+behind it is `GigaHack.caps.clipboard()`, which is asked at call time rather
+than snapshotted at load: this one is about the host window rather than the
+engine, the answer is cheap, and a snapshot is a thing that can only ever be
+wrong. Where neither `nw.Clipboard` nor `navigator.clipboard.readText` is
+available the button greys with the reason — a page loaded from `file://` is
+not a secure context, which is what the browser API needs — and the answer is
+to paste into the box. Where only the browser clipboard is there, the row warns
+that it can still refuse for want of focus or permission.
+
+An addon that loads and registers nothing reads `on, inert`, and the panel says
+in as many words that this is not an error and not success either: the file may
+never call `GigaHack.addon()`. Every state that carries an error says whether it
+happened **this** launch or was carried in from the index, because the two look
+identical in a list and only one of them is worth acting on now.
+
 ---
 
 ## The console API
@@ -3073,6 +3475,8 @@ closure parameter and does not exist in the scope the console evaluates in.
 | `paths()` | Resolved directories and platform flags. |
 | `hooks()` | Every alias, installed or skipped, with reasons. |
 | `plugins()` | The `$plugins` report. |
+| `addons()` | Every addon this game has, with its state, what it registered, what it threw and on which line. |
+| `addonTemplate()` | A working addon as source — a panel, a hotkey, a console call, a guarded write and an event — ready to paste into Settings → Addons. |
 | `cfg()` | The live settings object. |
 | `log()` | The log buffer. |
 | `errors()` | Uncaught errors caught this session. |
@@ -3175,6 +3579,15 @@ profile for, these *are* the toolkit.
 ```
 GigaHack.caps.report()              engine + capability table, with reasons
 GigaHack.caps.reportText()          the same thing as pasteable text
+GigaHack.caps.clipboard()           {read, write, via, why} — asked at call time, never snapshotted
+GigaHack.paths                      dataDir, localDir, sharedDir, sharedCommonDir, mode, layout
+GigaHack.paths.consent              granted | declined | unasked | moot; consentWhy is the sentence
+GigaHack.paths.gameId               gameKey plus a hash of the root, for keys that must not collide
+GigaHack.pathsFor(env, opts)        the resolver as a pure function of its inputs — probes nothing
+GigaHack.usePaths(p, env)           swap them, returns a restore
+GigaHack.relocateData(dir, why)     move dataDir and emit 'paths:changed'
+GigaHack.net.transport()            {id, why, missing[]} — is there a way to fetch here, and which
+GigaHack.net.get(url, cb, opts)     cb(err, {status, body, via, url}) exactly once; nothing re-fetches
 GigaHack.profile.active()           what is known about this game
 GigaHack.compat.frameworks()        plugin suites, and what each one breaks
 GigaHack.compat.selfTest()          live write tests — these WRITE to the game
@@ -3207,6 +3620,11 @@ GigaHack.kit.loadouts() / save(actorId, name) / apply(id)
 GigaHack.keys.report() / set(code, action) / restore()
 GigaHack.build.perf.hookCosts() / params.rows()
 GigaHack.trace.report()                        the nine aliases this module installs, with reasons
+GigaHack.addons.list()              every addon, its state, what it registered and what it threw
+GigaHack.addons.stage({text:src}) / staged() / commit() / discard()   review first; nothing runs here
+GigaHack.addons.enable(id) / disable(id) / toggle(id) / reloadOne(id) / remove(id)
+GigaHack.addons.transport() / clipboard()      what this build can fetch and read, and why not
+GigaHack.addons.template()          a working addon, as source
 ```
 
 Every index query returns `{candidates, complete, why}` — candidates only,
@@ -3240,7 +3658,7 @@ Every reason the mod will give you, and where it comes from.
 
 | Reason | Meaning |
 |---|---|
-| *"the … module did not load"* | One of the 26 files is missing, unreadable or name-collided. Debug → Plugins says which and what to do. |
+| *"the … module did not load"* | One of GigaHack's own module files — `manifest.json` is the list, and the only place the count is written down — is missing, unreadable or name-collided. Debug → Plugins says which and what to do. |
 | *"no game running" / "database not loaded yet"* | The panel needs `$game*` or `$data*` and you are on the title screen. |
 | *"no map loaded"* | The panel is per-map. |
 | *"start a fight, then open this tab"* | Enemy data is live, not from the database. |

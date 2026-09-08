@@ -106,6 +106,13 @@
     var changedV = Object.create(null);   // id -> {at, from, to}
     var changedS = Object.create(null);
     var recent = [];                       // newest first
+    /* One integer, moved by every path that changes what a panel showing
+       variable or switch VALUES is showing. `recent.length` cannot do this
+       job: it is capped at RECENT_MAX and stops moving the moment the ring
+       fills, which is the normal steady state and not the empty one anyone
+       tests; and prime() empties both lists without any of them growing.
+       A panel asks for this once per tick and repaints on a difference. */
+    var revision = 0;
     var frozenV = Object.create(null);
     var frozenS = Object.create(null);
     var snapshot = null;                   // {at, v:[], s:[]}
@@ -133,6 +140,7 @@
 
     /* ------------------------------------------------------------- monitor */
     function record(kind, id, from, to) {
+        revision++;
         var e = { kind: kind, id: id, at: Date.now(), from: from, to: to };
         (kind === 'var' ? changedV : changedS)[id] = e;
         // Collapse repeats: one entry per id, moved to the front.
@@ -153,9 +161,23 @@
         changedV = Object.create(null);
         changedS = Object.create(null);
         recent.length = 0;
+        // A load or a new game replaces every value at once without recording
+        // one of them, so an open panel has to be told even though nothing was
+        // "changed" in the sense record() means.
+        revision++;
         primed = true;
     }
     V.prime = prime;
+
+    /**
+     * A cheap "has any value moved" probe for a panel that shows them.
+     *
+     * Monotonic and never reset, so === against the last value seen is the
+     * whole comparison. It answers for the game's variables and switches as a
+     * whole rather than for one id: a panel that lists a range gets one number
+     * to ask about instead of walking its own rows on every tick.
+     */
+    V.revision = function () { return revision; };
 
     function scan() {
         if (!alive()) { primed = false; return; }
@@ -466,6 +488,17 @@
         // next 250ms would be a bad surprise.
         $.store.write('bookmarks.json', m);
     }
+    /**
+     * Read the pins again from wherever the store now points. Same reason as
+     * Map's — both lists live in the same file, and the first pin added after
+     * the data directory moves would otherwise write the old directory's
+     * contents over the new directory's file. Boot calls it on paths:changed.
+     */
+    V.reloadMarks = function () {
+        loadMarks();
+        return marks.vars.length + marks.switches.length;
+    };
+
     V.isMarked = function (kind, id) {
         return (kind === 'var' ? marks.vars : marks.switches).indexOf(id) > -1;
     };
@@ -1542,8 +1575,55 @@
         function repaint() { table.mm.paint(events()); }
         repaint();
 
-        var host = U.getHost();
-        host.tickHooks.push(function () { if (!table.mm.isScrolling()) repaint(); });
+        /**
+         * What is on this table that the GAME moves: a self-switch an event
+         * set on itself, an NPC that walked, a page that became active. All
+         * three are in the signal because all three are in a column.
+         *
+         * A bare tickHooks.push was none of this. It rebuilt every visible row
+         * 86 times a minute whether anything had changed or not and whether or
+         * not the overlay was on screen — the shell's clock has no visibility
+         * test — and each rebuild replaced the row's "reset" button with a
+         * fresh one, so the two-click confirm could only be completed inside
+         * whatever slice of its 2600ms window happened to be left before the
+         * next tick. Most second clicks silently re-armed instead.
+         *
+         * The armed test is the other half: a walking event moves the signal
+         * honestly, and a repaint the reader did not cause must still not take
+         * away a question they are halfway through answering. It holds without
+         * consuming the signal, so the row updates on the tick after the
+         * button resolves.
+         */
+        function selfStamp() {
+            /* Every id on this panel — the group's title, the self-switch keys,
+               the "no other map's events exist right now" note — is scoped to
+               the map it was built on. A transfer does not rebuild the tab, so
+               the panel has to notice one itself or it would go on reading the
+               NEW map's events while writing the OLD map's self-switch keys. */
+            var here = $gameMap.mapId();
+            if (here !== mapId) return 'moved to ' + here;
+            var evs = $gameMap.events() || [];
+            var s = mapId + '#' + evs.length, i, j, ev, id;
+            for (i = 0; i < evs.length; i++) {
+                ev = evs[i];
+                id = ev.eventId();
+                s += '|' + id + ',' + ev.x + ',' + ev.y + ',' + ev._pageIndex + ',';
+                for (j = 0; j < LETTERS.length; j++) {
+                    if ($gameSelfSwitches.value([mapId, id, LETTERS[j]])) s += LETTERS[j];
+                }
+            }
+            return s;
+        }
+        U.live(selfStamp, function () {
+            if ($gameMap.mapId() !== mapId) { U.rerender(); return; }
+            repaint();
+        }, {
+            name: 'self-switches', within: table,
+            when: function () {
+                return !table.mm.isScrolling() && !table.querySelector('.mm-armed');
+            },
+            whyNot: 'a confirmation is waiting for its second click'
+        });
 
         var toolbar = h('div', { class: 'mm-toolbar' },
             W.search({ placeholder: 'filter events…', onInput: function (v) { q = v.trim(); repaint(); } }),
@@ -1609,7 +1689,24 @@
         // round even though only the first 400 are drawn.
         var SHOW = 400;
         var ids = V.scanCandidates();
-        table.mm.paint(ids.slice(0, SHOW));
+        var shown = ids.slice(0, SHOW);
+        table.mm.paint(shown);
+
+        /* "Scan for what you know, play until the number moves, then scan for
+           how it moved" is what this panel is for, and the numbers it exists
+           to watch were the ones that never updated. The candidate SET only
+           changes when the user runs a round — which rebuilds the panel — so
+           the same ids are repainted with their current values.
+
+           within: the table, not the panel. The value cells are edit cells,
+           and repainting one mid-edit takes the input and the keystrokes in it
+           away; the operand fields on the left are not in the thing being
+           repainted and must not freeze it. */
+        U.live(V.revision, function () { table.mm.paint(shown); }, {
+            name: 'scan candidates',
+            within: table,
+            when: function () { return !table.mm.isScrolling(); }
+        });
 
         var operands = [];
         if (needsA) {
@@ -1670,6 +1767,13 @@
         var ids = V.range(bulkKind, bulkFrom, bulkTo);
         var max = isVar ? V.varCount() : V.switchCount();
 
+        /* The "now" cell of every drawn row, kept by id so the live repaint can
+           rewrite the text and nothing else. This table is NOT virtual, and a
+           plain paint empties the body — which drops scrollHeight to zero and
+           lets the browser clamp scrollTop with it, so a repaint on a clock
+           would send the reader back to the top of the range four times a
+           minute. Rewriting the text nodes leaves the scroll where it was. */
+        var nowCells = Object.create(null);
         var preview = W.table({
             rowH: ROW_H, empty: 'empty range',
             cols: [
@@ -1678,12 +1782,23 @@
                 { label: 'now', w: '0 0 76px', cls: 'mm-td-val' }
             ],
             render: function (id) {
+                var now = h('span', { class: 'mm-sub', text: nowText(id) });
+                nowCells[id] = now;
                 return [String(id),
                 h('span', { class: 'mm-td-val', text: (isVar ? V.varName(id) : V.switchName(id)) || '—' }),
-                h('span', { class: 'mm-sub', text: String(isVar ? V.varValue(id) : V.switchValue(id)) })];
+                now];
             }
         });
-        preview.mm.paint(ids.slice(0, 200));
+        function nowText(id) { return String(isVar ? V.varValue(id) : V.switchValue(id)); }
+        var drawn = ids.slice(0, 200);
+        preview.mm.paint(drawn);
+
+        U.live(V.revision, function () {
+            for (var i = 0; i < drawn.length; i++) {
+                var cell = nowCells[drawn[i]], t = nowText(drawn[i]);
+                if (cell && cell.textContent !== t) cell.textContent = t;
+            }
+        }, { name: 'bulk preview', within: preview });
 
         var left = [
             W.group('Range', [

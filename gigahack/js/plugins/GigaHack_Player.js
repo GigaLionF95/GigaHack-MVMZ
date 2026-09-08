@@ -655,9 +655,12 @@
         ];
 
         var m = P.mark();
-        var pos = $.safe(function () {
-            return $gameMap.mapId() + ' · ' + $gamePlayer.x + ',' + $gamePlayer.y;
-        }, 'pos', '—');
+        function pos() {
+            return $.safe(function () {
+                return $gameMap.mapId() + ' · ' + $gamePlayer.x + ',' + $gamePlayer.y;
+            }, 'pos', '—');
+        }
+        var hereRow = kv('Here', pos());
 
         /* Pause and frame step are separate capabilities and are asked about
            separately. Hooks decides whether the game can be held at all and
@@ -669,9 +672,18 @@
             : 'the Hooks module did not load, so nothing can hold the game.';
         var canStep = typeof $.step === 'function';
 
+        /* The shell's footer prints the map and the tile on its own 700ms
+           clock, so a readout built once disagrees with the strip at the
+           bottom of the same window within a second of walking — which reads
+           as one of them being broken. Only the value node is rewritten:
+           "mark" and "recall" sit under it, recall is a mutating button, and
+           rebuilding the group would take away a click already made. */
+        U.live(pos, function () { hereRow.lastChild.textContent = pos(); },
+            { name: 'player position', within: hereRow });
+
         var right = [
             W.group('Position', [
-                kv('Here', pos),
+                hereRow,
                 kv('Marked', m ? (($.map ? $.map.mapName(m.mapId) : 'map ' + m.mapId) + ' · ' + m.x + ',' + m.y) : 'nothing marked'),
                 h('div', { class: 'mm-inline', style: 'padding:2px' },
                     W.button({

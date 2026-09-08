@@ -592,6 +592,7 @@
         addAll(Object.keys(hint).sort(), 'profile');
 
         listCache = order.map(function (id) { return byId[id]; });
+        revision++;                     // the discovered list itself is on screen
         return listCache;
     };
 
@@ -620,6 +621,23 @@
 
     var achieved = {};      // id → true | false | undefined (not yet asked)
     var polling = false;
+
+    /* One integer, moved by every path that changes what the panel is showing:
+       an answer arriving from Steam, a write of ours, and the discovered list
+       growing. Neither the size of `achieved` nor the number unlocked can do
+       this job — a refresh that turns one answer from unlocked to locked
+       leaves both exactly where they were. */
+    var revision = 0;
+
+    /**
+     * A cheap "has anything the Achievements panel shows changed" probe.
+     *
+     * It cannot see the GAME unlocking an achievement through its own plugin:
+     * that call goes straight to the binding and never passes through here, so
+     * the row still says what the last read said. "Look again" on the panel is
+     * what re-asks Steam, and it says so.
+     */
+    S.revision = function () { return revision; };
 
     S.stateOf = function (id) { return achieved[id]; };
     S.known = function () { return Object.keys(achieved).length; };
@@ -652,6 +670,7 @@
         }
         list.forEach(function (a) {
             e.api.get(a.id, function (is) {
+                if (achieved[a.id] !== ((is === null) ? undefined : !!is)) revision++;
                 achieved[a.id] = (is === null) ? undefined : !!is;
                 done();
             });
@@ -673,6 +692,7 @@
         if (!e.usable || !e.api.get) return;
         e.api.get(id, function (is) {
             if (is === null) return;                  // no answer is not a failure
+            if (achieved[id] !== !!is) revision++;
             achieved[id] = !!is;
             if (!!is === !!want) return;
             $.log('warn', 'steam: "' + id + '" still reads back as ' + (is ? 'unlocked' : 'locked') +
@@ -705,6 +725,7 @@
         var ok = e.api.activate(id, afterWrite(id, true));
         if (!ok) return false;
         achieved[id] = true;
+        revision++;
         $.log('ok', 'steam achievement unlocked: ' + id);
         return true;
     };
@@ -715,6 +736,7 @@
         var ok = e.api.clear(id, afterWrite(id, false));
         if (!ok) return false;
         achieved[id] = false;
+        revision++;
         $.log('ok', 'steam achievement cleared: ' + id);
         return true;
     };
@@ -739,6 +761,7 @@
         list.forEach(function (a) {
             if (!fn(a.id)) return;
             achieved[a.id] = !!on;
+            revision++;
             n++;
         });
         $.log(n ? 'ok' : 'warn', (on ? 'unlocked ' : 'cleared ') + n + ' of ' + list.length + ' steam achievements');
@@ -843,26 +866,46 @@
         });
         function paint() {
             var t = q.toLowerCase();
+            list = S.list();
             table.mm.paint(list.filter(function (a) {
                 return !t || a.id.toLowerCase().indexOf(t) > -1 || a.title.toLowerCase().indexOf(t) > -1;
             }));
         }
         paint();
 
-        var left = [
-            W.group('Achievements', [
-                h('div', { class: 'mm-toolbar' }, W.search({
-                    placeholder: 'filter ' + list.length + ' achievements…',
-                    onInput: function (v) { q = v; paint(); }
-                })),
-                table
-            ], {
-                grow: true,
-                tag: (e.usable && e.can.read)
-                    ? S.unlockedCount() + ' / ' + list.length + ' unlocked'
-                    : list.length + ' discovered'
-            })
-        ];
+        function countTag() {
+            return (e.usable && e.can.read)
+                ? S.unlockedCount() + ' / ' + list.length + ' unlocked'
+                : list.length + ' discovered';
+        }
+
+        var achGroup = W.group('Achievements', [
+            h('div', { class: 'mm-toolbar' }, W.search({
+                placeholder: 'filter ' + list.length + ' achievements…',
+                onInput: function (v) { q = v; paint(); }
+            })),
+            table
+        ], { grow: true, tag: countTag() });
+
+        /* Steam answers a refresh one achievement at a time and the answers
+           arrive long after the panel was drawn, so a state column built once
+           says "…" for as long as the panel is open. The count beside the group
+           title is repainted with the rows, because a list and a total that
+           disagree is the defect this project keeps a scar for.
+
+           within: the table. The filter box above it is not in the thing being
+           repainted, and a list that stopped taking answers because somebody
+           left the caret in the filter would be worse than the staleness. */
+        U.live(S.revision, function () {
+            paint();
+            achGroup.mm.tag(countTag());
+        }, {
+            name: 'steam achievements',
+            within: table,
+            when: function () { return !table.mm.isScrolling(); }
+        });
+
+        var left = [achGroup];
 
         var right = [];
         if (!e.usable) right.push(unavailable(e));

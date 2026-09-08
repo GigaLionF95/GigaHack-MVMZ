@@ -41,7 +41,20 @@
     }
     store.path = fsPath;
 
-    function lsKey(name) { return 'gigahack:' + name; }
+    /* Per game, because the backend is not.
+       NW.js keeps one storage area per APP, and two RPG Maker games whose
+       package.json carries the same name — which is the default, and common —
+       share it. Keyed on the file name alone, the second game read the first
+       game's settings, and every write from either overwrote the other's. That
+       is precisely the thing the consent answer is keyed to avoid, and the
+       rest of the store had no business being any looser about it.
+
+       LEGACY: a key written before this existed carries no game. read() falls
+       back to it once and adopts what it finds, so an upgrade keeps the
+       settings it had; whichever game reads first wins that adoption, which is
+       the same coin toss as before and the last time it is tossed. */
+    function lsKey(name) { return 'gigahack:' + ($.paths.gameId || $.paths.gameKey || 'game') + ':' + name; }
+    function lsLegacyKey(name) { return 'gigahack:' + name; }
 
     /* ---------------------------------------------------------------- read */
     store.read = function (name, fallback) {
@@ -55,6 +68,16 @@
             }
             if (p.mode === 'localStorage') {
                 var v = localStorage.getItem(lsKey(name));
+                if (v === null) {
+                    var old = localStorage.getItem(lsLegacyKey(name));
+                    if (old !== null) {
+                        localStorage.setItem(lsKey(name), old);
+                        localStorage.removeItem(lsLegacyKey(name));
+                        $.log('info', 'adopted ' + name + ' from the unkeyed browser store into ' +
+                            lsKey(name) + ' — it used to be shared with every game in this build');
+                        v = old;
+                    }
+                }
                 return v ? JSON.parse(v) : fallback;
             }
             return Object.prototype.hasOwnProperty.call(memory, name) ? memory[name] : fallback;
@@ -146,6 +169,11 @@
             clearTimeout(job.timer);
             writeNow(n, job.obj, job.quiet);
         });
+        /* The cross-game file is debounced on the same clock and is NOT in
+           `pending` — it is written with raw fs against an absolute path
+           outside dataDir. Leaving it out here would make "flush, then move
+           the directory" most of an instruction rather than all of one. */
+        flushSharedWrite();
     };
 
     store.exists = function (name) {
@@ -254,6 +282,22 @@
             logEveryWrite: true,
             backupBeforeDanger: true, // §6.1
             backupKeep: 20
+        },
+
+        /* Which whole sections of these settings follow the PERSON rather than
+           the GAME. Only meaningful once the storage answer is 'granted' —
+           there is no cross-game folder to share through until then, and
+           store.sharedWhy() is the sentence that says so.
+
+           ui and behaviour default on: the menu's size, scale, accent and how
+           it behaves are about the person. hotkeys defaults OFF and the row
+           says why — a hotkey default here is derived from the keys THIS game
+           leaves free, and a key that is free in one game is claimed in
+           another. When it is on, a shared bind is applied only where this
+           game has not claimed the key, and every bind that was not applied is
+           listed with its claimant. */
+        storage: {
+            share: { ui: true, behaviour: true, hotkeys: false }
         },
 
         inv: {
@@ -643,8 +687,15 @@
      * any bind the user has never set. Returns the new default map, or null
      * when the derivation could not run (no profile yet, unreadable keyMapper)
      * — in which case the fallback letters stand.
+     *
+     * The shared-hotkey overlay is applied from the wrapper below rather than
+     * from a second mechanism: both need the list of keys this game has
+     * claimed, both are therefore no-ops at load time, and this is the one
+     * function Boot already re-runs once the whole load order has gone by.
+     * Derived defaults go on first and a shared bind wins over them — a shared
+     * bind is a choice somebody made and a derived default is not.
      */
-    store.applyDerivedHotkeys = function (force) {
+    function deriveHotkeys(force) {
         if (derived && !force) return null;
 
         // The derivation is only as good as the claim list behind it, and the
@@ -723,10 +774,16 @@
             if (!rawSettings) store.saveSettings();
         }
         return next;
+    }
+
+    store.applyDerivedHotkeys = function (force) {
+        var out = deriveHotkeys(force);
+        $.safe(function () { store.applySharedHotkeys(force); }, 'apply shared hotkeys');
+        return out;
     };
 
     store.loadSettings = function () {
-        var raw = store.read('settings.json', null);
+        var raw = store.read(SETTINGS_FILE, null);
         rawSettings = raw;
         // No-op on the first pass — Profile loads after Store — but correct if
         // settings are ever reloaded later, and harmless either way.
@@ -740,8 +797,13 @@
         }
         migrate(cfg, raw);
         cfg._schema = DEFAULTS._schema;
+        /* The shared sections go on LAST, over the game's own, and what the
+           game's own were is remembered underneath — see §2.7. Nothing here
+           reaches outside the game folder unless the answer is 'granted';
+           store.sharedAvailable() is the one gate and it asks $.paths. */
+        applySharedSections(cfg);
         $.cfg = cfg;
-        $.log(raw ? 'ok' : 'info', raw ? 'settings loaded' : 'settings.json not found — using defaults');
+        $.log(raw ? 'ok' : 'info', raw ? 'settings loaded' : SETTINGS_FILE + ' not found — using defaults');
         return cfg;
     };
 
@@ -826,8 +888,18 @@
     // what a load did.
     store.migrateInto = migrate;
 
+    /**
+     * Persist the settings.
+     *
+     * Two files where sharing is on: the per-game one always holds every
+     * section in full — with this game's OWN value for anything shared, so
+     * turning sharing off is a return rather than an adoption — and the shared
+     * sections additionally go to the cross-game file. Both are debounced on
+     * the same clock and both are committed by store.flush().
+     */
     store.saveSettings = function () {
-        store.save('settings.json', $.cfg);
+        store.save(SETTINGS_FILE, perGameSnapshot());
+        queueSharedWrite();
     };
 
     /** Set a dotted path on $.cfg and persist. `cfgSet('ui.accent', '#fff')` */
@@ -1028,6 +1100,14 @@
         if (!$.allowWrite('save settings profile "' + name + '"')) return null;
         var raw = readProfiles();
         var snap = $.clone($.cfg);
+        /* Where this machine keeps its files is not a preference and does not
+           belong in something people hand each other. `storage.share` decides
+           whether a section is read from the folder shared between games, and a
+           profile carrying it would turn that on for somebody who never asked
+           — silently changing which file their settings come from. The consent
+           answer was never at risk: it lives in its own file and is not in
+           $.cfg at all. */
+        delete snap.storage;
         snap._at = stamp || new Date().toISOString();
         snap._schema = $.cfg._schema;
         raw.profiles[name] = snap;
@@ -1055,6 +1135,13 @@
         var merged = $.deepMerge(DEFAULTS, snap);
         delete merged._at;
         merged._schema = DEFAULTS._schema;
+        /* Whatever the profile says or does not say about storage, this machine
+           keeps what it already had. A profile written before storage existed
+           carries none and would otherwise be handed the defaults — which would
+           quietly switch sharing on; one written by an older copy of this file
+           carries somebody else's answer, which is worse. Neither is a
+           preference the person applying the profile asked to change. */
+        merged.storage = $.clone($.cfg.storage || DEFAULTS.storage);
         var before = $.cfg;
         $.cfg = merged;
         var scrubbed = store.scrubUnsafe();
@@ -1119,6 +1206,920 @@
         if (!writeProfiles(raw)) return { ok: false, error: 'could not write profiles.json' };
         $.log('ok', 'settings profile "' + name + '" imported' + (replaced ? ' (replaced an existing one)' : ''));
         return { ok: true, name: name, replaced: replaced };
+    };
+
+    /* =====================================================================
+       WHAT THIS STORE OWNS (§2.9)
+
+       One list, because the migration, the storage panel and the "what is in
+       this folder" readout all need the same answer and three copies of it
+       would disagree inside a month.
+
+       What can be derived is derived: the settings file and the profiles file
+       are named by the constants this file already keeps, and the capture
+       folder's name is read from the setting that decides it. What cannot be
+       derived is declared here, on behalf of the module that writes it, and
+       declareFile() is how a module states its own.
+
+       Two entries are marked and never travel:
+         · consent.json is `local` — the answer belongs to THIS game and stays
+           beside it. An answer in a shared folder could reach another game,
+           which is the one thing the answer exists to prevent.
+         · modules.json and index.json are `transient` — both are rewritten
+           from nothing at the next launch, so copying them across carries a
+           stale file and nothing else.
+
+       write-test.json is deliberately absent: it exists to prove a write
+       worked and there is nothing in it worth carrying anywhere.
+       ===================================================================== */
+    var SETTINGS_FILE = 'settings.json';
+    var FILES = [];
+
+    function declareFile(name, what, opts) {
+        opts = opts || {};
+        for (var i = 0; i < FILES.length; i++) if (FILES[i].name === name) return FILES[i];
+        var e = {
+            name: name, what: what,
+            dir: !!opts.dir, local: !!opts.local, transient: !!opts.transient,
+            from: opts.from || null, by: opts.by || 'store'
+        };
+        FILES.push(e);
+        return e;
+    }
+
+    /** A module declares a file it writes into the data directory. */
+    store.declareFile = function (name, what, opts) {
+        opts = opts || {};
+        opts.by = opts.by || 'module';
+        return declareFile(String(name), String(what || 'no description given'), opts);
+    };
+
+    /**
+     * Everything the store owns, with the derivable names resolved now rather
+     * than at declaration time — the capture folder is a setting and a panel
+     * that printed 'shots' while the files were going somewhere else would be
+     * worse than printing nothing.
+     */
+    store.files = function () {
+        return FILES.map(function (e) {
+            var out = $.clone(e);
+            if (e.from) out.name = String(store.cfgGet(e.from, e.name) || e.name);
+            return out;
+        });
+    };
+
+    declareFile(SETTINGS_FILE, 'this game\'s settings, in full');
+    declareFile(PROFILE_FILE, 'saved settings profiles');
+    declareFile('consent.json', 'the storage answer for this game', { local: true });
+    declareFile('snippets.json', 'console snippets');
+    declareFile('console.json', 'the console history');
+    declareFile('bookmarks.json', 'bookmarked places, variables and switches');
+    declareFile('items.json', 'custom items, skills and states');
+    declareFile('keys.json', 'the game key map this build saved');
+    declareFile('kits.json', 'equipment loadouts');
+    declareFile('shop.json', 'the ad-hoc shop');
+    declareFile('auto-triggers.json', 'automation triggers');
+    declareFile('auto-routes.json', 'automation routes');
+    declareFile('history.json', 'an exported dialogue history');
+    declareFile('addons.json', 'which addons are enabled in this game');
+    declareFile('index.json', 'the boot index cache', { transient: true });
+    declareFile('modules.json', 'the module report this launch wrote', { transient: true });
+    declareFile('backups', 'save backups', { dir: true });
+    declareFile('addons', 'addon files', { dir: true });
+    declareFile('exports', 'saves exported out of the game', { dir: true });
+    declareFile('imports', 'saves waiting to be imported', { dir: true });
+    declareFile('shots', 'screenshots', { dir: true, from: 'media.capture.dir' });
+
+    /* =====================================================================
+       SETTINGS SHARED BETWEEN GAMES (§2.7)
+
+       <sharedCommonDir>/settings.json holds whole SECTIONS of $.cfg, and
+       $.cfg.storage.share says which. Three rules make it comprehensible:
+
+       1. Load order is DEFAULTS, then this game's file, then the shared
+          section over the top. A shared section is merged over DEFAULTS
+          rather than over the game's own value, so applying it twice lands in
+          the same place — the same reason applyProfile does not merge.
+
+       2. The per-game file always keeps EVERY section, in full, and for a
+          section that is currently shared it keeps THIS GAME'S OWN value
+          rather than the overlay. That is what makes turning sharing off a
+          return to where the game was, instead of a silent adoption of
+          somebody else's settings that can never be undone.
+
+       3. Every shared section records which game last wrote it, because "my
+          hotkeys changed and I did not change them" is otherwise
+          unattributable.
+
+       The shared file is written with raw fs against an absolute path, not
+       through store.write: the store's whole backend is relative to dataDir,
+       and this file is deliberately not in it. It is debounced on the same
+       clock as everything else, or one slider drag rewrites another game's
+       settings sixty times a second.
+       ===================================================================== */
+    var SHARED_SECTIONS = ['ui', 'behaviour', 'hotkeys'];
+    var COMMON_FILE = 'settings.json';
+    var ownSections = {};      // section -> this game's own value, as loaded
+    var sharedApplied = {};    // section -> the stamp of the game that wrote it
+    var sharedHotkeys = null;  // the report applySharedHotkeys leaves behind
+    var commonTimer = null;
+
+    function commonDir() {
+        var p = $.paths;
+        if (p.consent !== 'granted') return null;
+        if (p.mode !== 'fs' || !p.sharedCommonDir || !$.env.fs || !$.env.path) return null;
+        return p.sharedCommonDir;
+    }
+
+    store.sharedAvailable = function () { return !!commonDir(); };
+
+    /** Why there is no cross-game area, in one sentence, or '' when there is. */
+    store.sharedWhy = function () {
+        var p = $.paths;
+        if (store.sharedAvailable()) return '';
+        if (p.consent === 'moot') return p.consentWhy;
+        if (p.consent !== 'granted') {
+            return 'settings are shared between games through a folder outside the game, and ' + p.consentWhy;
+        }
+        if (p.mode !== 'fs') {
+            return 'persistence is in ' + p.mode + ' mode on this build, so there is no cross-game folder ' +
+                'to share through.';
+        }
+        return 'the cross-game folder could not be resolved from this environment.';
+    };
+
+    store.sharedFile = function () {
+        var d = commonDir();
+        return d ? $.env.path.join(d, COMMON_FILE) : null;
+    };
+
+    /** The sections that may be shared, and which of them are, for the panel. */
+    store.sharedSections = function () {
+        return SHARED_SECTIONS.map(function (s) {
+            return { section: s, on: shareOn(s), wroteIt: sharedApplied[s] || null };
+        });
+    };
+
+    /** Who last wrote each shared section. Empty when there is no shared area. */
+    store.sharedWriters = function () {
+        var common = readCommon();
+        return (common && common.writers) ? $.clone(common.writers) : {};
+    };
+
+    function readCommon() {
+        var file = store.sharedFile();
+        if (!file) return null;
+        return $.safe(function () {
+            if (!$.env.fs.existsSync(file)) return null;
+            var raw = $.env.fs.readFileSync(file, 'utf8');
+            var obj = raw ? JSON.parse(raw) : null;
+            if (!obj || typeof obj !== 'object') return null;
+            if (!obj.sections || typeof obj.sections !== 'object') obj.sections = {};
+            if (!obj.writers || typeof obj.writers !== 'object') obj.writers = {};
+            return obj;
+        }, 'read shared settings', null);
+    }
+
+    function writeCommon(obj) {
+        var file = store.sharedFile();
+        if (!file) return false;
+        return $.safe(function () {
+            $.env.fs.mkdirSync($.env.path.dirname(file), { recursive: true });
+            $.env.fs.writeFileSync(file, JSON.stringify(obj, null, 2), 'utf8');
+            $.log('ok', 'wrote ' + file);
+            return true;
+        }, 'write shared settings', false);
+    }
+
+    /* Which game wrote this. The title where Profile has resolved one and the
+       storage key otherwise — a key is at least a folder the reader can go and
+       look inside, which "another game" is not. */
+    function writerStamp() {
+        var name = $.safe(function () {
+            return ($.profile && $.profile.active) ? $.profile.active().name : null;
+        }, 'shared writer name', null);
+        return {
+            game: name || $.paths.gameKey,
+            gameKey: $.paths.gameKey,
+            gameId: $.paths.gameId,
+            at: new Date().toISOString(),
+            version: $.version
+        };
+    }
+
+    function shareOnIn(cfg, section) {
+        if (SHARED_SECTIONS.indexOf(section) < 0) return false;
+        var s = (cfg && cfg.storage && cfg.storage.share) || DEFAULTS.storage.share;
+        return s[section] === true;
+    }
+
+    function shareOn(section) {
+        return store.sharedAvailable() && shareOnIn($.cfg, section);
+    }
+    store.isShared = shareOn;
+
+    /**
+     * Overlay the shared sections onto a freshly merged cfg, and remember what
+     * this game had underneath. Called from loadSettings, on the object being
+     * built, before it becomes $.cfg.
+     *
+     * hotkeys is skipped here on purpose: applying it needs the list of keys
+     * this game has claimed, and Profile — the only thing that knows — loads
+     * after this file. applySharedHotkeys does that half, from the one place
+     * Boot already re-runs once the whole load order has gone by.
+     */
+    function applySharedSections(cfg) {
+        var i, s, common;
+        ownSections = {};
+        sharedApplied = {};
+        for (i = 0; i < SHARED_SECTIONS.length; i++) {
+            s = SHARED_SECTIONS[i];
+            ownSections[s] = $.clone(cfg[s]);
+        }
+        if (!store.sharedAvailable()) return;
+        common = readCommon();
+        if (!common) return;
+        for (i = 0; i < SHARED_SECTIONS.length; i++) {
+            s = SHARED_SECTIONS[i];
+            if (s === 'hotkeys') continue;
+            if (!shareOnIn(cfg, s)) continue;
+            if (!common.sections[s]) continue;
+            cfg[s] = $.deepMerge(DEFAULTS[s], common.sections[s]);
+            sharedApplied[s] = common.writers[s] || null;
+        }
+    }
+
+    /**
+     * Apply the shared hotkey binds this game is allowed to take.
+     *
+     * A bind is skipped when THIS game has claimed the key, and the skip is
+     * named with its claimant rather than silently dropped: GigaHack sees a key
+     * before the game does, so a bind on a claimed key takes the game's own
+     * action away, and that is a thing to be told about.
+     *
+     * Returns {settled, applied[], skipped[], reason}. `settled` is false when
+     * the claim list could not be read yet, which is why this is safe to call
+     * from load time and again from Boot.
+     */
+    store.applySharedHotkeys = function (force) {
+        if (sharedHotkeys && sharedHotkeys.settled && !force) return sharedHotkeys;
+        var out = { settled: false, applied: [], skipped: [], reason: '', wroteIt: null };
+        sharedHotkeys = out;
+
+        if (!$.cfg || !$.cfg.hotkeys) {
+            out.reason = 'settings have not been loaded yet.';
+            return out;
+        }
+        if (!store.sharedAvailable()) {
+            out.settled = true;
+            out.reason = store.sharedWhy();
+            return out;
+        }
+        if (!shareOn('hotkeys')) {
+            out.settled = true;
+            out.reason = 'hotkeys are not shared between games. They default that way because a hotkey ' +
+                'default is derived from the keys THIS game leaves free, and a key that is free in one ' +
+                'game is claimed in another.';
+            return out;
+        }
+        var common = readCommon();
+        var binds = (common && common.sections) ? common.sections.hotkeys : null;
+        if (!binds) {
+            out.settled = true;
+            out.reason = 'no game has written a shared hotkey set yet.';
+            return out;
+        }
+        var claimed = $.safe(function () {
+            return ($.profile && typeof $.profile.claimedKeys === 'function') ? $.profile.claimedKeys() : null;
+        }, 'claimed keys', null);
+        if (!claimed) {
+            out.reason = 'which keys this game has already claimed is not known yet, so nothing shared ' +
+                'has been applied. It is applied once the whole load order has run.';
+            return out;   // deliberately NOT settled — Boot calls again
+        }
+
+        var id, code;
+        for (id in binds) {
+            code = binds[id];
+            if (code && claimed[code]) {
+                out.skipped.push({ id: id, code: code, claimedBy: String(claimed[code]) });
+                continue;
+            }
+            if ($.cfg.hotkeys[id] === code) continue;
+            $.cfg.hotkeys[id] = code;
+            out.applied.push({ id: id, code: code });
+        }
+        out.settled = true;
+        out.wroteIt = (common.writers && common.writers.hotkeys) || null;
+        sharedApplied.hotkeys = out.wroteIt;
+
+        if (out.applied.length) {
+            $.log('info', 'shared hotkeys applied from ' + ((out.wroteIt && out.wroteIt.game) || 'another game') +
+                ': ' + out.applied.map(function (a) { return a.id + ' → ' + (a.code || 'unbound'); }).join(', '));
+        }
+        if (out.skipped.length) {
+            $.log('warn', 'a shared hotkey was not applied here because this game claims the key: ' +
+                out.skipped.map(function (a) { return a.id + ' (' + a.code + ' is ' + a.claimedBy + ')'; }).join('; ') +
+                '. Settings → Hotkeys lists them and lets you bind something else.');
+        }
+        return out;
+    };
+
+    /** The last shared-hotkey result, for the panel. Null before the first run. */
+    store.sharedHotkeyReport = function () { return sharedHotkeys ? $.clone(sharedHotkeys) : null; };
+
+    /* Debounced on the same clock as everything else. store.flush() commits it
+       with the rest, which is what makes "flush, then move the directory" a
+       complete instruction rather than most of one. */
+    function queueSharedWrite() {
+        if (!store.sharedAvailable()) return;
+        if (commonTimer) clearTimeout(commonTimer);
+        commonTimer = setTimeout(function () { commonTimer = null; writeSharedSections(); }, DEBOUNCE_MS);
+    }
+
+    /* Called from store.flush(). Commit, never discard: dropping the timer
+       would silently lose the last edit, which is the whole reason flush means
+       commit everywhere else in this file. */
+    function flushSharedWrite() {
+        if (!commonTimer) return false;
+        clearTimeout(commonTimer);
+        commonTimer = null;
+        return writeSharedSections();
+    }
+
+    function writeSharedSections() {
+        if (!store.sharedAvailable()) return false;
+        var on = [], i, s;
+        for (i = 0; i < SHARED_SECTIONS.length; i++) {
+            s = SHARED_SECTIONS[i];
+            if (shareOn(s)) on.push(s);
+        }
+        if (!on.length) return false;
+        var common = readCommon() || { _schema: 1, sections: {}, writers: {} };
+        var who = writerStamp(), changed = 0, next;
+        for (i = 0; i < on.length; i++) {
+            next = $.clone($.cfg[on[i]]);
+            /* Only a section that actually differs is written, and only that
+               section's stamp moves. Two modules scrub boot-unsafe flags at
+               load and both save, so every launch of every game would
+               otherwise re-stamp the shared set with whichever game was
+               started last — and "who last wrote this" would then answer "the
+               last one you opened" rather than "the one that changed it",
+               which is the question the row exists for. */
+            if (JSON.stringify(common.sections[on[i]]) === JSON.stringify(next)) continue;
+            common.sections[on[i]] = next;
+            common.writers[on[i]] = who;
+            changed++;
+        }
+        if (!changed) return false;
+        common._schema = 1;
+        return writeCommon(common);
+    }
+
+    /* The per-game object, which is what settings.json always holds: every
+       section, in full, with this game's own value for anything shared. */
+    function perGameSnapshot() {
+        var out = $.clone($.cfg), i, s;
+        for (i = 0; i < SHARED_SECTIONS.length; i++) {
+            s = SHARED_SECTIONS[i];
+            if (shareOn(s) && ownSections[s] !== undefined) out[s] = $.clone(ownSections[s]);
+        }
+        return out;
+    }
+
+    /**
+     * Turn sharing on or off for one section.
+     *
+     * On: the shared file wins if it already has that section — adopting beats
+     * overwriting somebody else's settings with this game's — and is seeded
+     * from this game's when it has none.
+     * Off: this game's own value comes back, exactly as the per-game file has
+     * been holding it all along.
+     */
+    store.setShared = function (section, on) {
+        if (SHARED_SECTIONS.indexOf(section) < 0) {
+            return { ok: false, why: '"' + section + '" is not a section that can be shared. ' +
+                'The ones that can are: ' + SHARED_SECTIONS.join(', ') + '.' };
+        }
+        if (!$.allowWrite((on ? 'share ' : 'stop sharing ') + section + ' between games')) {
+            return { ok: false, why: 'read-only mode' };
+        }
+        if (on && !store.sharedAvailable()) return { ok: false, why: store.sharedWhy() };
+
+        if (!$.cfg.storage) $.cfg.storage = $.clone(DEFAULTS.storage);
+        if (!$.cfg.storage.share) $.cfg.storage.share = $.clone(DEFAULTS.storage.share);
+        $.cfg.storage.share[section] = !!on;
+
+        var out = { ok: true, section: section, on: !!on, adopted: false, why: '' };
+
+        if (on) {
+            /* THE MOMENT THE GAME'S OWN VALUE STOPS BEING LIVE IS THIS ONE, and
+               it is where the snapshot has to be taken. ownSections is written
+               in exactly one other place — applySharedSections, i.e. once per
+               loadSettings — so while a section was unshared it held the
+               LOAD-TIME value while every edit went to $.cfg and to the
+               per-game file. Turning sharing on then made the very next
+               perGameSnapshot write that stale value back over the per-game
+               file, and turning sharing off restored it: the edit was gone from
+               memory and from disk, while the panel said "this game's own is
+               still in its settings file and comes back if you turn this off".
+               (A share flag cannot arrive from a settings profile — applyProfile
+               keeps this machine's own storage section for exactly that reason —
+               so this and the load are the only two moments there are.) */
+            ownSections[section] = $.clone($.cfg[section]);
+            var common = readCommon();
+            var have = common && common.sections ? common.sections[section] : null;
+            if (have && section !== 'hotkeys') {
+                $.cfg[section] = $.deepMerge(DEFAULTS[section], have);
+                sharedApplied[section] = (common.writers && common.writers[section]) || null;
+                out.adopted = true;
+                out.why = 'the shared set already had ' + section + ', last written by ' +
+                    ((sharedApplied[section] && sharedApplied[section].game) || 'another game') +
+                    ', and that is what is now in use here. This game\'s own ' + section +
+                    ' is still in its settings file and comes back if you turn this off.';
+            } else if (section === 'hotkeys') {
+                sharedHotkeys = null;
+                var rep = store.applySharedHotkeys(true);
+                out.adopted = rep.applied.length > 0;
+                out.why = rep.reason || (rep.applied.length + ' bind(s) applied, ' + rep.skipped.length +
+                    ' not applied because this game claims the key.');
+            } else {
+                out.why = 'the shared set had no ' + section + ' yet, so this game\'s was written into it.';
+            }
+        } else {
+            if (ownSections[section] !== undefined) $.cfg[section] = $.clone(ownSections[section]);
+            delete sharedApplied[section];
+            if (section === 'hotkeys') sharedHotkeys = null;
+            out.why = section + ' is this game\'s own again, exactly as its settings file has been ' +
+                'keeping it. The shared copy is untouched.';
+        }
+
+        store.saveSettings();
+        store.flush();
+        $.emit('cfg', { path: 'storage.share.' + section, value: !!on });
+        $.emit('shared:changed', { section: section, on: !!on });
+        $.log('ok', 'settings sharing: ' + section + ' is ' + (on ? 'on' : 'off') + ' — ' + out.why);
+        return out;
+    };
+
+    /* =====================================================================
+       MOVING THE FILES (§2.6)
+
+       Copies, keeps, never deletes. The four rules are the whole design:
+
+         · a FILE that already exists at the destination is KEPT and said so,
+           per file, nested ones included. A merge nobody asked for is worse
+           than a stated skip. A DIRECTORY of the same name is descended into
+           rather than skipped, because a folder at the destination says
+           nothing about what is inside it.
+         · nothing is deleted. "Remove the old copy" is store.dropSource, a
+           separate and explicitly-labelled act on exactly the files that were
+           copied.
+         · pending debounced writes are committed FIRST, or the last slider
+           drag lands in the directory that was just abandoned.
+         · BOTH directions need the answer. Copying out of the shared folder
+           reads it, and reading it is the act the question is about.
+
+       The tree walk is bounded and says so when it stops early, the same
+       contract every other walk in this codebase carries.
+       ===================================================================== */
+    var COPY_CAP = 4000;
+    var COPY_DEPTH = 4;
+    /* How many nested "already there" files one directory entry may name in the
+       report before it summarises the rest. The walk itself is bounded at
+       COPY_CAP and the report has to be bounded too: re-running a migration
+       over a full backups folder would otherwise put four thousand rows in a
+       table somebody is trying to read. The count is never rounded off — the
+       summarising row says exactly how many it stands for. */
+    var KEPT_ROWS = 40;
+
+    function isDirectory(p) {
+        return $.safe(function () {
+            var st = $.env.fs.statSync(p);
+            return !!(st && st.isDirectory && st.isDirectory());
+        }, 'stat ' + p, false);
+    }
+
+    /* Why a file already at the destination is kept. Said in one place because
+       it is said in three: the top-level entries, the nested ones, and the
+       panel's report table, which prints this string verbatim. */
+    var KEPT_WHY = 'the destination already has one and it is kept. Nothing here merges two ' +
+        'versions of a file: a merge nobody asked for is worse than a stated skip.';
+
+    /* Two directories of the same name are the ONE case where the walk goes on.
+       A folder at the destination says nothing about what is inside it, and
+       every other kind of collision — a file over a file, a file over a folder —
+       is kept, unmerged, and named.
+
+       Both the top-level test and this one were once a bare existsSync, so a
+       destination holding an empty `backups/` hid every save backup in the
+       source: the whole tree was reported "kept — the destination already has
+       one", the source-only files were never copied and never mentioned, and
+       every later attempt reported the same thing. A half-finished migration
+       was permanently un-completable and read as done, for the one kind of file
+       this module's own comments call unregenerable. */
+    function mergeableDirs(src, dst) {
+        return isDirectory(src) && isDirectory(dst);
+    }
+
+    /* The destination path as a report row's name: 'backups/slotA/a.rmmzsave'
+       rather than the absolute path, which the row already carries in `at`. */
+    function relName(root, file) {
+        var path = $.env.path, r = String(root), f = String(file);
+        if (!path || !root) return f;
+        return f.indexOf(r + path.sep) === 0 ? f.slice(r.length + 1) : f;
+    }
+
+    /* Is this path at or under $.paths.sharedRoot — the area the question is
+       about? A resolved-prefix test rather than path.relative, which behaves
+       differently across the environments a check can hand us. */
+    function underSharedRoot(file) {
+        var p = $.paths, path = $.env.path, root, f;
+        if (!p.sharedRoot || !path || !file) return false;
+        root = $.safe(function () { return path.resolve(p.sharedRoot); },
+            'resolve the shared root', String(p.sharedRoot));
+        f = $.safe(function () { return path.resolve(file); }, 'resolve ' + file, String(file));
+        return f === root || f.indexOf(root + path.sep) === 0;
+    }
+
+    function copyTree(src, dst, state) {
+        var fs = $.env.fs, path = $.env.path, names, i, s, d;
+        if (state.left <= 0) {
+            state.complete = false;
+            state.why = 'the copy stopped at ' + COPY_CAP + ' files; the rest are still in ' + state.from + '.';
+            return;
+        }
+        if (!isDirectory(src)) {
+            fs.mkdirSync(path.dirname(dst), { recursive: true });
+            fs.copyFileSync(src, dst);
+            state.left--;
+            state.pairs.push({ from: src, to: dst });
+            return;
+        }
+        if (state.depth >= COPY_DEPTH) {
+            state.complete = false;
+            state.why = 'the copy stopped ' + COPY_DEPTH + ' directories deep; anything below that is ' +
+                'still in ' + src + '.';
+            return;
+        }
+        fs.mkdirSync(dst, { recursive: true });
+        names = fs.readdirSync(src);
+        state.depth++;
+        for (i = 0; i < names.length; i++) {
+            s = path.join(src, names[i]);
+            d = path.join(dst, names[i]);
+            if (fs.existsSync(d) && !mergeableDirs(s, d)) { state.kept.push(d); continue; }
+            copyTree(s, d, state);
+            if (state.left <= 0) break;
+        }
+        state.depth--;
+    }
+
+    /**
+     * Move the store's files between the two locations.
+     *
+     *   store.moveTo('shared')  <localDir> -> <sharedDir>   (needs 'granted')
+     *   store.moveTo('local')   <sharedDir> -> <localDir>   (needs 'granted' too:
+     *                                                        it READS that folder)
+     *
+     * Returns {ok, from, to, copied[], kept[], failed[], pairs[], complete,
+     * why}. Every absolute path is logged. Nothing in the source is removed.
+     */
+    store.moveTo = function (target) {
+        var p = $.paths, fs = $.env.fs, path = $.env.path;
+        var out = {
+            ok: false, from: null, to: null, copied: [], kept: [], failed: [],
+            pairs: [], complete: true, why: ''
+        };
+
+        if (target !== 'shared' && target !== 'local') {
+            out.why = '"' + target + '" is not a destination: it is "shared" or "local".';
+            return out;
+        }
+        if (p.mode !== 'fs' || !fs || !path) {
+            out.why = 'persistence is in ' + p.mode + ' mode here, so there are no directories to move ' +
+                'anything between. ' + ($.caps.fsWhy || '');
+            return out;
+        }
+        /* The gate is ABOVE the branch, not inside it. It was written inside
+           the 'shared' branch only, so moveTo('local') existsSync-ed,
+           statSync-ed and copyFileSync-read the whole file list OUT of the
+           shared folder with the answer still 'unasked' — and store.dropSource
+           then unlinked there. Reading that folder is the act the question is
+           about, and it does not become a different act because the copy is
+           going the other way. */
+        if (p.consent !== 'granted') {
+            out.why = p.consent === 'moot' ? p.consentWhy
+                : 'the shared folder needs an answer that has not been given (' + p.consent +
+                  '), and that is the same refusal in both directions: copying files back OUT of ' +
+                  'that folder reads it, which is the act the question is about. Settings → Storage ' +
+                  'asks the question — answer yes there, copy, then answer no again if that is what ' +
+                  'you want. Nothing is deleted by any of the three.';
+            return out;
+        }
+        if (target === 'shared') {
+            out.from = p.localDir; out.to = p.sharedDir;
+        } else {
+            out.from = p.sharedDir; out.to = p.localDir;
+        }
+        if (!out.from || !out.to) {
+            out.why = 'one of the two locations could not be resolved on this build ' +
+                '(beside the game: ' + (p.localDir || 'unknown') + ', shared: ' + (p.sharedDir || 'unknown') + ').';
+            return out;
+        }
+        if (out.from === out.to) {
+            out.why = 'both locations resolve to the same directory, so there is nothing to move.';
+            return out;
+        }
+        if (!$.allowWrite('move GigaHack\'s files to ' + out.to)) {
+            out.why = 'read-only mode';
+            return out;
+        }
+
+        /* First, and not negotiably: a debounced write in flight resolves its
+           path at fire time, so anything still pending would land in whichever
+           directory the paths happen to name 250ms from now. */
+        store.flush();
+
+        var list = store.files(), i, e, src, dst, state, ok;
+        for (i = 0; i < list.length; i++) {
+            e = list[i];
+            if (e.local) {
+                out.kept.push({ name: e.name, at: path.join(out.from, e.name),
+                    why: 'it is this game\'s own answer and it stays beside this game: an answer in a ' +
+                        'shared folder could reach another game.' });
+                continue;
+            }
+            if (e.transient) {
+                out.kept.push({ name: e.name, at: path.join(out.from, e.name),
+                    why: 'it is rebuilt from nothing at the next launch, so a copy would only ever be stale.' });
+                continue;
+            }
+            src = path.join(out.from, e.name);
+            dst = path.join(out.to, e.name);
+            if (!$.safe(function () { return fs.existsSync(src); }, 'exists ' + src, false)) continue;
+            /* A directory entry whose destination is also a directory is walked
+               rather than skipped — see mergeableDirs. Everything else that is
+               already there is kept, exactly as before. */
+            if ($.safe(function () { return fs.existsSync(dst); }, 'exists ' + dst, false) &&
+                !mergeableDirs(src, dst)) {
+                out.kept.push({ name: e.name, at: dst, why: KEPT_WHY });
+                continue;
+            }
+            state = { left: COPY_CAP, depth: 0, pairs: [], kept: [], complete: true, why: '', from: out.from };
+            ok = $.safe(function () { copyTree(src, dst, state); return true; }, 'copy ' + src, false);
+            if (!ok) {
+                out.failed.push({ name: e.name, from: src, to: dst,
+                    why: 'the copy threw; the original is untouched in ' + src + '.' });
+                continue;
+            }
+            if (!state.complete) { out.complete = false; if (!out.why) out.why = state.why; }
+            /* Every nested skip is a report row. The walk has always collected
+               them and the caller has always thrown them away, which made a
+               partial directory copy indistinguishable from a complete one. */
+            state.kept.forEach(function (at, n) {
+                if (n < KEPT_ROWS) out.kept.push({ name: relName(out.to, at), at: at, why: KEPT_WHY });
+            });
+            if (state.kept.length > KEPT_ROWS) {
+                out.kept.push({ name: e.name, at: dst,
+                    why: (state.kept.length - KEPT_ROWS) + ' more file(s) under this directory were ' +
+                        'already at the destination and are kept, on top of the ' + KEPT_ROWS +
+                        ' named above. Nothing was merged and nothing was deleted.' });
+            }
+            /* A walk that copied nothing because the destination already had
+               every file is not a copy, and a row saying "copied, 0 files"
+               beside N kept rows says the opposite of what happened. */
+            if (state.pairs.length) {
+                out.copied.push({ name: e.name, from: src, to: dst, files: state.pairs.length });
+                out.pairs = out.pairs.concat(state.pairs);
+            }
+            $.log('ok', 'copied ' + src + ' → ' + dst + ' (' + state.pairs.length + ' file(s)' +
+                (state.kept.length ? ', ' + state.kept.length + ' already there' : '') + ')');
+        }
+
+        out.ok = out.failed.length === 0;
+        out.kept.forEach(function (k) { $.log('info', 'kept ' + k.at + ' — ' + k.why); });
+        out.failed.forEach(function (f) { $.log('err', 'could not copy ' + f.from + ' — ' + f.why); });
+        $.log(out.ok ? 'ok' : 'warn', 'move to ' + out.to + ': ' + out.copied.length + ' copied, ' +
+            out.kept.length + ' kept, ' + out.failed.length + ' failed. Nothing was deleted from ' +
+            out.from + '.');
+        return out;
+    };
+
+    /**
+     * Delete exactly the files a move copied, from exactly where it copied them
+     * from. This is "remove the old copy", it is a separate act, and it takes
+     * the result object so it can only ever touch files that verifiably arrived
+     * somewhere else.
+     *
+     * Directories are left behind even when they end up empty: removing a
+     * directory is a different and much less recoverable act than removing a
+     * file this function has just proved is duplicated.
+     */
+    store.dropSource = function (result) {
+        var fs = $.env.fs, out = { ok: false, removed: [], failed: [], why: '' };
+        if (!result || !result.pairs || !result.pairs.length) {
+            out.why = 'that move copied nothing, so there is no old copy to remove.';
+            return out;
+        }
+        if (!fs) { out.why = 'there is no filesystem here.'; return out; }
+        /* The same gate the move carries, because this is the half that
+           deletes. A result object outlives the answer that produced it — the
+           panel drops its report on 'paths:changed' but this function is
+           public — and unlinking inside a folder the answer no longer covers
+           is the worst version of the act the question is about. */
+        if ($.paths.consent !== 'granted' &&
+            result.pairs.some(function (pair) { return underSharedRoot(pair.from); })) {
+            out.why = 'those files are in ' + ($.paths.sharedRoot || 'the shared folder') +
+                ', and the answer for this game is "' + $.paths.consent + '". Nothing is read from ' +
+                'or deleted in that folder without a yes. Settings → Storage asks the question.';
+            return out;
+        }
+        if (!$.allowWrite('remove the files that were copied out of ' + result.from)) {
+            out.why = 'read-only mode';
+            return out;
+        }
+        result.pairs.forEach(function (pair) {
+            var gone = $.safe(function () {
+                if (!fs.existsSync(pair.to)) return false;   // never delete a source with no copy
+                if (fs.existsSync(pair.from)) fs.unlinkSync(pair.from);
+                return true;
+            }, 'remove ' + pair.from, false);
+            if (gone) { out.removed.push(pair.from); $.log('ok', 'deleted ' + pair.from); }
+            else out.failed.push(pair.from);
+        });
+        out.ok = out.failed.length === 0;
+        $.log(out.ok ? 'ok' : 'warn', 'old copy: ' + out.removed.length + ' file(s) removed, ' +
+            out.failed.length + ' left in place. Empty directories are left where they are.');
+        return out;
+    };
+
+    /* =====================================================================
+       ANSWERING THE STORAGE QUESTION (§2.5, §2.8)
+
+       Three one-call answers, so that the ordering — flush, record, re-resolve,
+       clear the write latches, then look — lives here rather than in whichever
+       panel is asking.
+
+       All three go through the same settling step, and that is the point of
+       this section rather than an implementation detail. Every answer can move
+       dataDir, and the moment it does, ONE of the two settings files is the one
+       in force and the other is not. Boot's 'paths:changed' cascade
+       deliberately does not re-read settings — "whoever moved the directory has
+       already dealt with them" — and only granting ever had. Declining
+       after granting left $.cfg holding the SHARED folder's settings while
+       dataDir pointed beside the game, so the next act as ordinary as switching
+       a tab wrote the shared folder's settings over the game's own file, with
+       no log line, no toast and no note.
+       ===================================================================== */
+
+    /* What the overlay is wearing, as opposed to what $.cfg says it should be.
+       Read either side of an adopt: these four are the settings that live
+       somewhere other than $.cfg once they are on screen. */
+    function lookOf() {
+        var ui = $.cfg.ui || {}, be = $.cfg.behaviour || {};
+        return { accent: ui.accent, scale: ui.scale, opacity: ui.opacity, readonly: !!be.readonly };
+    }
+
+    /**
+     * Put an adopted look on screen, and say what it changed.
+     *
+     * $.cfg is not the menu: accent, scale and opacity are CSS custom
+     * properties on the host and read-only is a class on it, and nothing in the
+     * mod re-reads any of the four from a settings load. The only repaint in
+     * the answer sequence is Boot's rerender on 'paths:changed', which fires
+     * from inside $.setConsent — BEFORE the adopt — and writes none of them.
+     *
+     * The sharing toggle already does this for one section, with a comment
+     * saying that without it "the overlay keeps its old look until the next
+     * launch and the toggle reads as broken". A whole settings file has the
+     * same hazard and a worse one: read-only can come on with no badge, and
+     * every mutating control then refuses with a toast for which the panel
+     * shows no standing reason.
+     */
+    function applyLook(before) {
+        var now = lookOf(), changed = [];
+        if (before.accent !== now.accent) changed.push('the accent colour');
+        if (before.scale !== now.scale) changed.push('the menu scale');
+        if (before.opacity !== now.opacity) changed.push('the opacity');
+        if (before.readonly !== now.readonly) {
+            changed.push(now.readonly ? 'read-only mode, which is now ON' : 'read-only mode, which is now off');
+        }
+        if (!changed.length) return changed;
+        /* No overlay means nothing is on screen to be wrong about, so nothing
+           is claimed either. */
+        if (!$.ui || !$.ui.apply) return [];
+        $.safe(function () {
+            $.ui.apply({
+                accent: now.accent, scale: now.scale, opacity: now.opacity, readonly: now.readonly
+            });
+            if ($.ui.rerender) $.ui.rerender();
+        }, 'apply the settings the answer adopted');
+        return changed;
+    }
+
+    /**
+     * The settings half of an answer: adopt what the directory now in force
+     * already has, or seed it from what is in use when it has nothing.
+     *
+     * Never a merge and never an overwrite, in either direction — the same
+     * rule the file migration follows, for the same reason. Both absolute
+     * paths are named, because "which of my two settings files am I using now"
+     * has to have an answer.
+     */
+    function settleSettings(was, answer) {
+        var out = { moved: false, adopted: false, applied: [], why: '' };
+        if ($.paths.dataDir === was) {
+            out.why = 'the data directory did not move, so the settings in use are the file they were ' +
+                'already in' + (was ? ' (' + was + ')' : '') + '.';
+            return out;
+        }
+        out.moved = true;
+        var before = lookOf();
+        if ($.paths.mode === 'fs' && store.exists(SETTINGS_FILE)) {
+            store.loadSettings();
+            $.emit('cfg', { path: '*', value: null });
+            out.adopted = true;
+            out.why = 'settings were already in ' + $.paths.dataDir +
+                (answer === 'granted' ? ', from a build that put them there without asking,' : '') +
+                ' and those are the ones now in use. The copy in ' + (was || 'its old place') +
+                ' is still there and nothing has overwritten it.';
+            out.applied = applyLook(before);
+            if (out.applied.length) {
+                out.why += ' That file also changed ' + out.applied.join(', ') +
+                    ', and the menu has been repainted to match.';
+            }
+        } else {
+            store.saveSettings();
+            store.flush();
+            out.why = ($.paths.dataDir || 'the directory now in use') + ' had no settings of its own, ' +
+                'so the ones already in use were written into it. ' + (was || 'the old directory') +
+                ' still has its own copy and nothing has overwritten it.';
+        }
+        return out;
+    }
+
+    /* Record the answer, then settle the settings under it. The toast is only
+       raised when the settling had something to say the caller's own toast
+       cannot: both the card and the Storage panel already say where the files
+       are going, and two toasts that say the same thing teach the reader to
+       dismiss both. */
+    function answerAndSettle(answer, opts) {
+        opts = opts || {};
+        var was = $.paths.dataDir;
+        var r = $.setConsent(answer, opts.consent);
+        if (!r.ok) {
+            return { ok: false, why: r.why, answer: r.answer, was: was, dataDir: was,
+                moved: false, adopted: false, applied: [] };
+        }
+        var s = settleSettings(was, answer);
+        var out = {
+            ok: true, answer: r.answer, from: r.from, where: r.where,
+            was: was, dataDir: $.paths.dataDir,
+            moved: s.moved, adopted: s.adopted, applied: s.applied,
+            why: s.why + (r.why ? ' ' + r.why : '')
+        };
+        $.log('ok', 'storage: using ' + ($.paths.dataDir || $.paths.mode) + ' — ' + out.why);
+        if (s.moved && $.ui && $.ui.toast) {
+            $.ui.toast({
+                title: s.adopted ? 'ADOPTED' : (opts.title || 'SETTINGS'),
+                msg: out.why, severity: 'info'
+            });
+        }
+        return out;
+    }
+
+    /**
+     * Yes.
+     *
+     * §2.5 is the honest part. Everyone upgrading from 2.1.0 has settings in
+     * the shared folder already, written without being asked, and the mod does
+     * NOT look there to find out whether they exist: that read is the thing
+     * being asked about. The first look happens here, after the answer, and
+     * what is found is ADOPTED rather than overwritten with whatever
+     * accumulated beside the game.
+     */
+    store.grantStorage = function () {
+        if (!$.allowWrite('allow GigaHack a folder of its own outside the game')) {
+            return { ok: false, why: 'read-only mode', answer: $.paths.consent };
+        }
+        return answerAndSettle('granted', { title: 'SHARED FOLDER' });
+    };
+
+    /**
+     * No. Deliberately NOT gated on read-only mode: refusing to record a
+     * refusal because the mod is in read-only mode would be the wrong way
+     * round, and the record is written beside the game either way.
+     *
+     * Symmetric with grant, and it has to be — see the settling step above.
+     */
+    store.declineStorage = function () {
+        return answerAndSettle('declined', { title: 'BESIDE THE GAME' });
+    };
+
+    /** Ask me again next launch. The card goes away for this launch only. */
+    store.deferStorage = function () {
+        return answerAndSettle('unasked', { consent: { defer: true }, title: 'BESIDE THE GAME' });
     };
 
     /* Load settings immediately — the shell needs them to build the window. */

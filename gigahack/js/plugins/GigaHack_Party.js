@@ -1036,17 +1036,27 @@
         var a = P.selected();
         if (!a) return emptyParty();
 
-        var vitals = [
-            ['hp', a.hp, a.mhp], ['mp', a.mp, a.mmp],
-            ['tp', a.tp, $.safe(function () { return a.maxTp(); }, 'maxTp', 100)]
-        ].map(function (v) {
+        /* The ceiling beside each vital is the game's, not the user's: a level,
+           a state or a piece of equipment moves it while this panel is open.
+           It is kept by hand so the live repaint can rewrite it without going
+           anywhere near the box in front of it. */
+        function vitalMax(key) {
+            return $.safe(function () {
+                return key === 'hp' ? a.mhp : key === 'mp' ? a.mmp : a.maxTp();
+            }, 'vital max ' + key, 0);
+        }
+        var vitalMaxCells = [];
+        var vitals = [['hp', a.hp], ['mp', a.mp], ['tp', a.tp]].map(function (v) {
+            var top = vitalMax(v[0]);
+            var maxCell = h('span', { class: 'mm-sub mm-mono', text: '/ ' + Math.floor(top) });
+            vitalMaxCells.push({ key: v[0], el: maxCell });
             return W.row(v[0].toUpperCase(), [
                 W.number({
-                    value: Math.floor(v[1]), min: 0, max: Math.max(1, Math.floor(v[2])), wide: true,
+                    value: Math.floor(v[1]), min: 0, max: Math.max(1, Math.floor(top)), wide: true,
                     label: v[0].toUpperCase(),
                     onChange: function (n) { P.setVital(a, v[0], n); U.rerender(); }
                 }),
-                h('span', { class: 'mm-sub mm-mono', text: '/ ' + Math.floor(v[2]) })
+                maxCell
             ]);
         });
 
@@ -1062,6 +1072,12 @@
                 text: text
             });
         }
+
+        /* The three read-only columns of each parameter row, kept by id. The
+           two boxes between them are deliberately NOT in here: they are what
+           the user types into, and a tick that rewrote them would take the
+           digits back out again mid-number. */
+        var paramCells = [];
 
         var paramRows = [];
         paramRows.push(h('div', { class: 'mm-row', style: 'min-height:14px' },
@@ -1101,6 +1117,10 @@
                 capCell.textContent = capText + ' ●';
             }
 
+            var baseCell = colSpan(COL.base, String(d.base));
+            var otherCell = colSpan(COL.other, (d.other >= 0 ? '+' : '') + d.other);
+            paramCells.push({ id: id, base: baseCell, other: otherCell, cap: capCell });
+
             paramRows.push(h('div', {
                 class: 'mm-row',
                 'data-mm-tip': P.paramName(id) + '|(base ' + d.base + ' + manual ' + d.manual +
@@ -1112,9 +1132,9 @@
             },
                 h('div', { class: 'mm-lab', text: P.paramName(id) }),
                 h('div', { class: 'mm-edge' },
-                    colSpan(COL.base, String(d.base)),
+                    baseCell,
                     manual,
-                    colSpan(COL.other, (d.other >= 0 ? '+' : '') + d.other),
+                    otherCell,
                     capCell,
                     final)));
         })(i);
@@ -1133,6 +1153,53 @@
         });
         degradeMark(exp, 'party.exp');
 
+        function nextText() {
+            return '→ ' + $.safe(function () { return a.isMaxLevel() ? 'max' : a.nextLevelExp(); }, 'next', '?');
+        }
+        var nextCell = h('span', { class: 'mm-sub mm-mono', text: nextText() });
+
+        /**
+         * What the read-only half of this panel is showing, in one string.
+         *
+         * The manual and final boxes are read here even though they are never
+         * repainted, because paramPlus is what "other" is computed FROM — a
+         * signature that skipped it would leave the equipment column stale
+         * after a change of gear. It costs eight paramBase/paramPlus/param
+         * reads once every 700ms, which is the same arithmetic the engine does
+         * for every window it draws.
+         */
+        function statsSignature() {
+            return $.safe(function () {
+                var s = a.level + '/' + a.mhp + '/' + a.mmp + '/' + a.maxTp() +
+                    '/' + (a.isMaxLevel() ? 'max' : a.nextLevelExp());
+                for (var i = 0; i < PARAM_N; i++) {
+                    s += '|' + a.paramBase(i) + ',' + a.paramPlus(i) + ',' + a.param(i);
+                }
+                return s;
+            }, 'stats signature', '');
+        }
+
+        /* Every control on this panel is seeded from the numbers beside it, so
+           the default hold — focus anywhere in the overlay — is the right one:
+           a repaint while somebody is typing a parameter in is the panel
+           arguing with them. The hold does not lose the change; it lands on
+           the first tick after the field is left. */
+        U.live(statsSignature, function () {
+            if (P.selected() !== a) return;      // a rebuild is already coming
+            for (var i = 0; i < paramCells.length; i++) {
+                var c = paramCells[i], d = P.decompose(a, c.id);
+                var capText = P.capText(d);
+                c.base.textContent = String(d.base);
+                c.other.textContent = (d.other >= 0 ? '+' : '') + d.other;
+                c.cap.textContent = d.atCap ? capText + ' ●' : capText;
+                c.cap.style.color = d.atCap ? 'var(--mm-warn)' : '';
+            }
+            for (var v = 0; v < vitalMaxCells.length; v++) {
+                vitalMaxCells[v].el.textContent = '/ ' + Math.floor(vitalMax(vitalMaxCells[v].key));
+            }
+            nextCell.textContent = nextText();
+        }, { name: 'actor stats' });
+
         return cols({ narrow: true, items: [actorList(U.rerender), membership()] }, [
             W.group(a.name() + ' · ' + $.safe(function () { return a.currentClass().name; }, 'class', '?'), [
                 W.row('Level', lvl, {
@@ -1145,10 +1212,7 @@
                 }),
                 W.row('EXP', [
                     exp,
-                    h('span', {
-                        class: 'mm-sub mm-mono',
-                        text: '→ ' + $.safe(function () { return a.isMaxLevel() ? 'max' : a.nextLevelExp(); }, 'next', '?')
-                    })
+                    nextCell
                 ], { tip: 'EXP|Written with changeExp, so the level moves to match.' }),
                 degradeNote('party.exp'),
                 offerNote('level'),
@@ -1252,6 +1316,38 @@
         function repaint() { table.mm.paint(rows()); }
         repaint();
 
+        /* Skills are learned on level-up and by events, so the "known" column
+           and — with the chip on — the row set itself move without anybody
+           touching this panel. `_skills` is the actor's own list of learned
+           ids; its length alone would miss a skill learned and another
+           forgotten inside one tick.
+
+           within: the table. The search box is not in the thing being
+           repainted and a list that stopped updating because its own filter
+           had the caret is not what anyone means by holding. */
+        var skillGroup = W.group('Skills · ' + a.name(), [
+            h('div', { class: 'mm-toolbar' },
+                W.search({ placeholder: 'search skills…', onInput: function (v) { q = v.trim(); repaint(); } }),
+                W.chip({ label: 'known', value: false, onChange: function (v) { learnedOnly = v; repaint(); } })),
+            table
+        ], { grow: true, tag: learnedTag() });
+
+        function learnedTag() {
+            return $.safe(function () { return a._skills.length + ' learned'; }, 'learned', '');
+        }
+        function skillSignature() {
+            return $.safe(function () { return String(a._skills); }, 'skill signature', '');
+        }
+        U.live(skillSignature, function () {
+            if (P.selected() !== a) return;
+            repaint();
+            skillGroup.mm.tag(learnedTag());
+        }, {
+            name: 'learned skills',
+            within: table,
+            when: function () { return !table.mm.isScrolling(); }
+        });
+
         var classes = $.safe(function () {
             return $dataClasses.filter(function (c) { return c && c.name; })
                 .map(function (c) { return c.id + ' · ' + c.name; });
@@ -1282,14 +1378,7 @@
                 }),
                 h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal', text: 'Irreversible — no undo entry.' })
             ], { tag: 'irreversible' })
-        ] }, [
-            W.group('Skills · ' + a.name(), [
-                h('div', { class: 'mm-toolbar' },
-                    W.search({ placeholder: 'search skills…', onInput: function (v) { q = v.trim(); repaint(); } }),
-                    W.chip({ label: 'known', value: false, onChange: function (v) { learnedOnly = v; repaint(); } })),
-                table
-            ], { grow: true, tag: $.safe(function () { return a._skills.length + ' learned'; }, 'learned', '') })
-        ]);
+        ] }, [skillGroup]);
     }
 
     /* -------------------------------------------------------------- States */
@@ -1298,13 +1387,31 @@
         if (!a) return emptyParty();
         var q = '';
 
-        var current = $.safe(function () { return a.states(); }, 'states', []) || [];
-        var currentRows = current.length ? current.map(function (s) {
-            return W.row(s.name, W.button({
-                label: 'remove', mutates: true,
-                onClick: function () { P.removeState(a, s.id); U.rerender(); }
-            }), { sub: '#' + s.id });
-        }) : [h('div', { class: 'mm-empty', text: 'no states' })];
+        /* The list of what is on the actor right now, in a container of its
+           own. A state is applied and ticked down by the game every battle
+           turn, so this is repainted — but only this: "clear all states" is
+           two clicks and lives outside the container, so a repaint cannot
+           reach in and take the first one back. */
+        var currentBox = h('div', { class: 'mm-stack-tight' });
+        function paintCurrent() {
+            var current = $.safe(function () { return a.states(); }, 'states', []) || [];
+            clear(currentBox);
+            U.add(currentBox, current.length ? current.map(function (s) {
+                return W.row(s.name, W.button({
+                    label: 'remove', mutates: true,
+                    onClick: function () { P.removeState(a, s.id); U.rerender(); }
+                }), { sub: '#' + s.id });
+            }) : [h('div', { class: 'mm-empty', text: 'no states' })]);
+            return current.length;
+        }
+        var activeGroup = W.group('Active', [
+            currentBox,
+            h('div', { class: 'mm-sep' }),
+            W.button({
+                label: 'clear all states', wide: true, variant: 'danger', mutates: true,
+                onClick: function () { P.clearStates(a); U.rerender(); }
+            })
+        ], { tag: paintCurrent() + '' });
 
         function rows() {
             return $.safe(function () {
@@ -1344,15 +1451,24 @@
         function repaint() { table.mm.paint(rows()); }
         repaint();
 
+        /* `_states` is the actor's own list of state ids. Its LENGTH is not
+           the signal: a state that expires as another lands leaves the count
+           where it was and the panel showing the one that has gone. */
+        U.live(function () {
+            return $.safe(function () { return String(a._states); }, 'state signature', '');
+        }, function () {
+            if (P.selected() !== a) return;
+            activeGroup.mm.tag(paintCurrent() + '');
+            table.mm.refresh();
+        }, {
+            name: 'actor states',
+            within: table,
+            when: function () { return !table.mm.isScrolling(); }
+        });
+
         return cols({ narrow: true, items: [
             actorList(U.rerender),
-            W.group('Active', currentRows.concat([
-                h('div', { class: 'mm-sep' }),
-                W.button({
-                    label: 'clear all states', wide: true, variant: 'danger', mutates: true,
-                    onClick: function () { P.clearStates(a); U.rerender(); }
-                })
-            ]), { tag: current.length + '' })
+            activeGroup
         ] }, [
             W.group('All states', [
                 h('div', { class: 'mm-toolbar' },
@@ -1376,17 +1492,27 @@
         var equipped = $.safe(function () { return a.equips(); }, 'equips', []) || [];
         if (equipSlot >= slots.length) equipSlot = 0;
 
-        var slotRows = slots.map(function (etypeId, i) {
-            var item = equipped[i];
-            var name = $.safe(function () { return $dataSystem.equipTypes[etypeId]; }, 'etype', 'slot') || ('slot ' + i);
-            var row = h('button', { class: 'mm-tree-row' + (i === equipSlot ? ' mm-on' : '') },
-                U.icon(item ? item.iconIndex : -1),
-                h('span', { style: 'flex:1 1 auto;overflow:hidden;text-overflow:ellipsis', text: name }),
-                h('span', { class: 'mm-sub mm-mono', text: item ? item.name : '—' }));
-            row.addEventListener('click', function () { equipSlot = i; U.rerender(); });
-            return row;
-        });
-        if (!slotRows.length) slotRows = [h('div', { class: 'mm-empty', text: 'no equip slots' })];
+        /* The slot list is a picture of what the actor is wearing, and an
+           event changes that without asking. It goes in a container of its own
+           so the live repaint rebuilds the rows — plain buttons, nothing armed
+           and nothing typed into — and leaves the group around them alone. */
+        var slotBox = h('div', { class: 'mm-stack-tight' });
+        function paintSlots() {
+            equipped = $.safe(function () { return a.equips(); }, 'equips', []) || [];
+            var rows = slots.map(function (etypeId, i) {
+                var item = equipped[i];
+                var name = $.safe(function () { return $dataSystem.equipTypes[etypeId]; }, 'etype', 'slot') || ('slot ' + i);
+                var row = h('button', { class: 'mm-tree-row' + (i === equipSlot ? ' mm-on' : '') },
+                    U.icon(item ? item.iconIndex : -1),
+                    h('span', { style: 'flex:1 1 auto;overflow:hidden;text-overflow:ellipsis', text: name }),
+                    h('span', { class: 'mm-sub mm-mono', text: item ? item.name : '—' }));
+                row.addEventListener('click', function () { equipSlot = i; U.rerender(); });
+                return row;
+            });
+            clear(slotBox);
+            U.add(slotBox, rows.length ? rows : [h('div', { class: 'mm-empty', text: 'no equip slots' })]);
+        }
+        paintSlots();
 
         var wantType = slots[equipSlot];
         function candidates() {
@@ -1434,9 +1560,34 @@
         function repaint() { table.mm.paint(candidates()); }
         repaint();
 
+        /* What is in the slots, by id, so a swap of one item for another of the
+           same name is still a change. equipSlots() is in it too: a class
+           change can hand this actor a different number of slots, and a slot
+           list that is one row short of the truth is worse than a stale name.
+           A change in the slot COUNT rebuilds the panel, because equipSlot may
+           now point past the end and the candidate filter is keyed on it. */
+        function equipSignature() {
+            return $.safe(function () {
+                var eq = a.equips(), s = String(a.equipSlots()) + '|';
+                for (var i = 0; i < eq.length; i++) s += (eq[i] ? eq[i].id : 0) + ',';
+                return s;
+            }, 'equip signature', '');
+        }
+        U.live(equipSignature, function () {
+            if (P.selected() !== a) return;
+            var now = $.safe(function () { return a.equipSlots(); }, 'equipSlots', []) || [];
+            if (now.length !== slots.length) { U.rerender(); return; }
+            paintSlots();
+            table.mm.refresh();
+        }, {
+            name: 'actor equipment',
+            within: table,
+            when: function () { return !table.mm.isScrolling(); }
+        });
+
         return cols({ narrow: true, items: [
             actorList(U.rerender),
-            W.group('Slots', slotRows, { tag: slots.length + '' }),
+            W.group('Slots', [slotBox], { tag: slots.length + '' }),
             W.group('Slot actions', [
                 W.button({
                     label: 'unequip this slot', wide: true, mutates: true,
@@ -1490,42 +1641,81 @@
             return String(db[field] == null ? '' : db[field]) !== String(live == null ? '' : live);
         }
 
+        /* Always present, never empty of an element: the marker is rewritten
+           from a tick, and a row that only grows its sub-span when the value
+           differs has nowhere to write "edited" into later. A single space is
+           the same width as nothing. */
         function dbTag(field, live) {
-            return changed(field, live) ? 'edited' : null;
+            return changed(field, live) ? 'edited' : ' ';
         }
+
+        /* The three fields the game itself can rewrite while this panel is
+           open, each with the value we last put in the box. An event that
+           renames the actor should show here — but only where the box still
+           holds what we wrote: the moment somebody has typed into it, it is
+           theirs, and a repaint that took a half-typed name away would be the
+           panel losing work rather than reporting it. */
+        var mirrored = [];
+        function mirror(input, read) {
+            mirrored.push({ el: input, read: read, was: input.mm.get() });
+            return input;
+        }
+
+        var nameField = mirror(W.text({
+            value: id.name || '', width: '150px', label: 'actor name',
+            onEnter: function (v) { P.setName(a, v); U.rerender(); }
+        }), function () { return (P.identity(a) || {}).name || ''; });
+
+        var nickField = mirror(W.text({
+            value: id.nickname || '', width: '150px', label: 'actor nickname',
+            onEnter: function (v) { P.setNickname(a, v); U.rerender(); }
+        }), function () { return (P.identity(a) || {}).nickname || ''; });
+
+        /* Every "edited" marker on the panel, so one pass can put them right.
+           `read` answers with the live value the marker is about. */
+        var markers = [];
+        function marked(row, field, read) {
+            markers.push({ lab: row.mm.label, field: field, read: read });
+            return row;
+        }
+
+        var nameRow = marked(W.row('Name', nameField,
+            { sub: dbTag('name', id.name), tip: 'Name|Enter commits. Saved with the game.' }),
+            'name', function () { return (P.identity(a) || {}).name; });
+        var nickRow = marked(W.row('Nickname', nickField, { sub: dbTag('nickname', id.nickname) }),
+            'nickname', function () { return (P.identity(a) || {}).nickname; });
+
+        var profileField = mirror(W.textarea({
+            value: id.profile || '', rows: 3, label: 'actor profile',
+            placeholder: 'two lines, as the status window draws it',
+            onCommit: function (v) { P.setProfile(a, v); }
+        }), function () { return (P.identity(a) || {}).profile || ''; });
+
+        var profileGroup = W.group('Profile', [
+            profileField,
+            h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
+                'Committed on blur. The status window draws two lines; more are stored ' +
+                    'but not shown.')
+        ], { tag: changed('profile', id.profile) ? 'edited' : 'database' });
 
         var left = [
             actorList(U.rerender),
             W.group('Name', [
-                W.row('Name', W.text({
-                    value: id.name || '', width: '150px', label: 'actor name',
-                    onEnter: function (v) { P.setName(a, v); U.rerender(); }
-                }), { sub: dbTag('name', id.name), tip: 'Name|Enter commits. Saved with the game.' }),
-                W.row('Nickname', W.text({
-                    value: id.nickname || '', width: '150px', label: 'actor nickname',
-                    onEnter: function (v) { P.setNickname(a, v); U.rerender(); }
-                }), { sub: dbTag('nickname', id.nickname) }),
+                nameRow,
+                nickRow,
                 h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
                     'Windows already drawn keep the old text until they refresh.')
             ], { tag: 'actor ' + a.actorId() }),
 
-            W.group('Profile', [
-                W.textarea({
-                    value: id.profile || '', rows: 3, label: 'actor profile',
-                    placeholder: 'two lines, as the status window draws it',
-                    onCommit: function (v) { P.setProfile(a, v); }
-                }),
-                h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
-                    'Committed on blur. The status window draws two lines; more are stored ' +
-                        'but not shown.')
-            ], { tag: dbTag('profile', id.profile) || 'database' })
+            profileGroup
         ];
 
         var right = [
             W.group('Face', [
-                W.row('File', imageField('faces', id.faceName, function (v) {
+                marked(W.row('File', imageField('faces', id.faceName, function (v) {
                     P.setFace(a, v, id.faceIndex || 0); U.rerender();
                 }), { sub: dbTag('faceName', id.faceName) }),
+                    'faceName', function () { return (P.identity(a) || {}).faceName; }),
                 W.row('Index', W.number({
                     value: id.faceIndex || 0, min: 0, max: 7, label: 'face index',
                     onChange: function (v) { P.setFace(a, id.faceName || '', v); }
@@ -1533,9 +1723,10 @@
             ], { tag: 'img/faces' }),
 
             W.group('Map sprite', [
-                W.row('File', imageField('characters', id.characterName, function (v) {
+                marked(W.row('File', imageField('characters', id.characterName, function (v) {
                     P.setSprite(a, v, id.characterIndex || 0); U.rerender();
                 }), { sub: dbTag('characterName', id.characterName) }),
+                    'characterName', function () { return (P.identity(a) || {}).characterName; }),
                 W.row('Index', W.number({
                     value: id.characterIndex || 0, min: 0, max: 7, label: 'sprite index',
                     onChange: function (v) { P.setSprite(a, id.characterName || '', v); }
@@ -1545,9 +1736,10 @@
             ], { tag: 'img/characters' }),
 
             W.group('Battler', [
-                W.row('File', imageField('sv_actors', id.battlerName, function (v) {
+                marked(W.row('File', imageField('sv_actors', id.battlerName, function (v) {
                     P.setBattler(a, v); U.rerender();
                 }), { sub: dbTag('battlerName', id.battlerName) }),
+                    'battlerName', function () { return (P.identity(a) || {}).battlerName; }),
                 h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
                     'Side-view battles only.')
             ], { tag: 'img/sv_actors', collapsed: true }),
@@ -1569,6 +1761,42 @@
                 })
             ])
         ];
+
+        /**
+         * Everything the game can rewrite under this panel, in one string.
+         *
+         * Six fields, all of them read off the actor rather than the database
+         * row, because the database row is what they are being COMPARED with
+         * and it does not move.
+         */
+        function identitySignature() {
+            return $.safe(function () {
+                var live = P.identity(a) || {};
+                return [live.name, live.nickname, live.profile, live.faceName,
+                    live.faceIndex, live.characterName, live.characterIndex,
+                    live.battlerName].join('');
+            }, 'identity signature', '');
+        }
+
+        U.live(identitySignature, function () {
+            if (P.selected() !== a) return;
+            var i;
+            for (i = 0; i < mirrored.length; i++) {
+                var m = mirrored[i], now = String(m.read());
+                // Theirs the moment they have typed in it. Leaving the box
+                // alone is the whole point; the marker beside it still tells
+                // them the game has moved on.
+                if (m.el.mm.get() !== m.was) continue;
+                if (now === m.was) continue;
+                m.el.mm.set(now);
+                m.was = now;
+            }
+            for (i = 0; i < markers.length; i++) {
+                var mk = markers[i], tag = dbTag(mk.field, mk.read());
+                if (mk.lab.lastChild) mk.lab.lastChild.textContent = '  ' + tag;
+            }
+            profileGroup.mm.tag(changed('profile', (P.identity(a) || {}).profile) ? 'edited' : 'database');
+        }, { name: 'actor identity' });
 
         return cols(left, right);
     }

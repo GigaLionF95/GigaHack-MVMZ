@@ -140,7 +140,7 @@ const SHOTS = path.resolve(__dirname, 'shots-' + ENGINE);
 
   const EXPECTED_ROWS = ['engine', 'renderer', 'chromium', 'host', 'filesystem', 'canvas id',
     'ColorManager', 'Sprite_Gauge', 'plugin commands', 'save format', 'save dir', 'updateMain',
-    'CSS gap', 'CSS clamp()', 'requestIdleCallback'];
+    'CSS gap', 'CSS clamp()', 'requestIdleCallback', 'clipboard'];
   EXPECTED_ROWS.forEach(r => {
     check('the boot report has a "' + r + '" row', caps.rows.indexOf(r) > -1, caps.rows.join('|'));
   });
@@ -2410,6 +2410,207 @@ const SHOTS = path.resolve(__dirname, 'shots-' + ENGINE);
     JSON.stringify({ n: histPanel.clicked, threw: histPanel.threw, errs: histPanel.newErrors }));
   await ev(() => { window.GigaHack.text.history.clear(); });
 
+  /* --- the history fills itself while it is being read -------------------- */
+  /* A history opened before a conversation used to show nothing of it, which
+     reads as broken rather than stale. Every assertion below drives the shell's
+     own 700ms hook list by hand, because that is what the clock does. */
+  const histLive = await ev(() => {
+    const G = window.GigaHack, T = G.text, H = T.history, U = G.ui;
+    const host = U.getHost();
+    const tick = () => host.tickHooks.slice().forEach(fn => { fn(1); });
+    const win = new Window_Message();
+    const say = (t) => { $gameMessage.clear(); $gameMessage.add(t); win.startMessage(); };
+    const bodyEl = () => document.querySelector('#mm-root .mm-body .mm-tbody');
+    const rows = () => document.querySelectorAll('#mm-root .mm-body .mm-tr').length;
+    const keptText = () => {
+      const labs = document.querySelectorAll('#mm-root .mm-lab');
+      for (let i = 0; i < labs.length; i++) {
+        // The value cell, not the whole row: the row also holds the label, and
+        // "Pages kept0" is a worse thing to write a regex against than "0".
+        if (labs[i].textContent === 'Pages kept') return labs[i].parentNode.children[1].textContent;
+      }
+      return '';
+    };
+
+    H.clear();
+    for (let i = 0; i < 40; i++) say('line ' + i);
+    U.setOpen(true);
+    G.cfg.ui.tab = 'game';
+    G.cfg.ui.sub = G.cfg.ui.sub || {};
+    G.cfg.ui.sub.game = 'History';
+    G.store.cfgSet('text.history.source', 'recorded here');
+    U.rerender();
+
+    /* The kind filter is deliberately held outside the builder so a rerender
+       does not lose it — which means the check above that set it to "answers"
+       is still in force here. Put it back the way a person would. */
+    const dd = document.querySelector('#mm-root .mm-toolbar .mm-dd');
+    dd.querySelector('.mm-dd-btn').click();
+    Array.prototype.slice.call(dd.querySelectorAll('.mm-opt'))
+      .filter(o => o.getAttribute('data-mm-v') === 'everything')[0].click();
+
+    const out = {};
+    const tableAtBuild = document.querySelector('#mm-root .mm-table');
+    out.built = rows();
+    out.keptAtBuild = /^40(\s|$)/.test(keptText());
+
+    /* A tick with nothing said must not repaint: the signal is the whole point
+       of the helper, and a panel that repaints 86 times a minute regardless is
+       what it exists to prevent. */
+    const firstRow = document.querySelector('#mm-root .mm-body .mm-tr');
+    tick();
+    out.idleKeptTheSameNode = document.querySelector('#mm-root .mm-body .mm-tr') === firstRow;
+
+    /* Said while the panel is open. The rows arrive and the panel is NOT
+       rebuilt — a rerender would have taken the scroll, the search and the
+       focus with it. */
+    /* Counted off the table's own row set, not off the DOM: the list is
+       virtualised, so only the window around the scroll position is rendered
+       and a DOM count stops moving long before the data does. */
+    say('and then the gate opened');
+    out.beforeTick = tableAtBuild.mm.rows().length;
+    tick();
+    out.afterTick = tableAtBuild.mm.rows().length;
+    out.sameTable = document.querySelector('#mm-root .mm-table') === tableAtBuild;
+    out.keptFollowed = /^41(\s|$)/.test(keptText());
+
+    /* Scrolled up to read something, the reader is left exactly where they are. */
+    const b = bodyEl();
+    b.scrollTop = 0;
+    say('another line, while they are reading further up');
+    tick();
+    out.scrolledUpStayed = b.scrollTop === 0;
+    out.scrolledUpStillGrew = rows() > 0 && H.count() === 42;
+
+    /* At the bottom, it follows the tail — otherwise every new line pushes the
+       one you are waiting for off the end. */
+    b.scrollTop = b.scrollHeight;
+    const bottomBefore = b.scrollHeight;
+    say('the line said last');
+    tick();
+    out.followedTail = b.scrollTop + b.clientHeight >= bottomBefore;
+    // And the line that was just said is one of the rows now rendered, which is
+    // the whole point of following: a tail you cannot read is not a tail.
+    out.tailShowsIt = /the line said last/.test(bodyEl().textContent);
+
+    /* Cleared while it is open. This is the one the total cannot answer:
+       clear() empties the buffer without advancing recSeq, so a panel keyed on
+       the total would go on showing lines that are gone. */
+    H.clear();
+    tick();
+    out.clearedRows = rows();
+    out.clearedEmpty = /nothing said yet/.test(document.querySelector('#mm-root .mm-body').textContent);
+    // "0", or "0  (n rolled off)" — the roll-off tally is not reset by a clear
+    // and saying it would be a lie about what the buffer has seen.
+    out.clearedKept = /^0(\s|$)/.test(keptText());
+
+    U.setOpen(false);
+    return out;
+  });
+  check('a page said while the history is open appears in it, without the panel being rebuilt',
+    histLive.built > 0 && histLive.afterTick === histLive.beforeTick + 1 &&
+    histLive.sameTable === true && histLive.idleKeptTheSameNode === true,
+    JSON.stringify(histLive));
+  check('the count beside the list moves with the list, so the two never disagree',
+    histLive.keptAtBuild === true && histLive.keptFollowed === true, JSON.stringify(histLive));
+  check('a reader scrolled up is left where they are; a reader at the tail is carried with it',
+    histLive.scrolledUpStayed === true && histLive.scrolledUpStillGrew === true &&
+    histLive.followedTail === true && histLive.tailShowsIt === true, JSON.stringify(histLive));
+  check('clearing the history while its panel is open empties the list and the count with it — the signal is what the buffer holds, not what was ever said',
+    histLive.clearedRows === 0 && histLive.clearedEmpty === true &&
+    histLive.clearedKept === true, JSON.stringify(histLive));
+
+  /* --- U.live, the rule those panels all share ---------------------------- */
+  /* Written against the helper rather than through a panel, because every hold
+     below is a case a panel cannot get into on demand. */
+  const live = await ev(() => {
+    const G = window.GigaHack, U = G.ui;
+    const host = U.getHost();
+    const out = {};
+    let signal = 0, paints = 0;
+    const scope = document.createElement('div');
+    const field = document.createElement('input');
+    scope.appendChild(field);
+    host.root.appendChild(scope);
+    const outside = document.createElement('input');
+    host.root.appendChild(outside);
+
+    /* Opened FIRST: opening rebuilds the tab, and rebuilding empties the hook
+       list every panel registers into. Then the hook is held by reference, so
+       a later rebuild cannot take it away mid-check. */
+    U.setOpen(true);
+    const before = host.tickHooks.length;
+    const handle = U.live(() => signal, () => { paints++; }, { name: 'check', within: scope });
+    out.registered = host.tickHooks.length === before + 1 && handle.live === true;
+    const tick = host.tickHooks[host.tickHooks.length - 1];
+
+    tick();
+    out.noChangeNoPaint = paints === 0;
+
+    signal = 1; tick();
+    out.changePaints = paints === 1;
+
+    signal = 2; tick(); tick(); tick();
+    out.paintsOncePerChange = paints === 2;
+
+    /* Closed: the 700ms clock keeps running whether or not anyone can see it. */
+    U.setOpen(false);
+    signal = 3; tick();
+    out.closedHeld = paints === 2 && handle.held() === 'the menu is closed';
+    U.setOpen(true);
+    tick();
+    out.heldThenPainted = paints === 3;      // the hold did not consume the signal
+
+    /* Focus inside the thing being repainted — a cell mid-edit. */
+    field.focus();
+    signal = 4; tick();
+    out.typingHeld = paints === 3 && /typing/.test(handle.held());
+    field.blur();
+
+    /* Focus elsewhere in the overlay is not the same claim: a list must not
+       stop updating because its own search box happens to hold the caret. */
+    outside.focus();
+    tick();
+    out.outsideDidNotHold = paints === 4;
+    outside.blur();
+
+    /* A popup anchored to a row that is about to be rebuilt loses its anchor. */
+    host.popup = { el: null };
+    signal = 5; tick();
+    out.popupHeld = paints === 4 && /menu is open/.test(handle.held());
+    host.popup = null;
+
+    /* The caller's own guard, with the caller's own words for it. */
+    let allow = false;
+    const h2 = U.live(() => signal, () => { paints++; },
+      { name: 'check2', when: () => allow, whyNot: 'it is mid-gesture' });
+    const tick2 = host.tickHooks[host.tickHooks.length - 1];
+    signal = 6; tick2();
+    out.guardHeld = h2.held() === 'it is mid-gesture' && paints === 4;
+    allow = true; tick2();
+    out.guardReleased = paints === 5;
+
+    /* stop() is final. */
+    h2.stop();
+    signal = 7; tick2();
+    out.stopped = paints === 5;
+
+    scope.remove(); outside.remove();
+    U.setOpen(false);
+    return out;
+  });
+  check('a live panel repaints once per change and not at all without one',
+    live.registered === true && live.noChangeNoPaint === true &&
+    live.changePaints === true && live.paintsOncePerChange === true, JSON.stringify(live));
+  check('a live repaint is held while the menu is closed, and the change it missed is not lost',
+    live.closedHeld === true && live.heldThenPainted === true, JSON.stringify(live));
+  check('a live repaint holds for an edit inside the thing it repaints, and not for focus elsewhere in the overlay',
+    live.typingHeld === true && live.outsideDidNotHold === true, JSON.stringify(live));
+  check('a live repaint holds while a popup is open, and while the panel says it is mid-gesture',
+    live.popupHeld === true && live.guardHeld === true && live.guardReleased === true,
+    JSON.stringify(live));
+  check('a stopped live repaint stays stopped', live.stopped === true, JSON.stringify(live));
+
   /* --- Forge: computed and PERSISTED id bases, membership-based isCustom -- */
   const forge = await ev(() => {
     const F = window.GigaHack.forge;
@@ -3012,8 +3213,14 @@ const SHOTS = path.resolve(__dirname, 'shots-' + ENGINE);
         G.cfg.ui.sub[tab] = name;
         G.ui.rerender();
         document.querySelectorAll('#mm-root .mm-col-narrow .mm-lab').forEach(el => {
-          // Trimmed is fine; squeezed under about nine characters is not.
-          if (el.scrollWidth > el.clientWidth + 1 && el.clientWidth < 60) {
+          /* Clipped, and narrow because the thing beside it took the width.
+             Both halves matter. The threshold was 60px and "In use now",
+             squeezed to "In use n…" at 62px by a three-line reason sitting in
+             the edge, went straight under it; 96 is still far below the 157px
+             a sidebar column gives a label, so a label that is simply longer
+             than its column — which is a different complaint, and one every
+             one of those rows answers with a tooltip — is not swept up here. */
+          if (el.scrollWidth > el.clientWidth + 1 && el.clientWidth < 96) {
             out.push(tab + '/' + name + ' "' + el.textContent.trim().slice(0, 28) + '" ' +
               el.clientWidth + '/' + el.scrollWidth);
           }
@@ -3163,7 +3370,9 @@ const SHOTS = path.resolve(__dirname, 'shots-' + ENGINE);
   /* Some checks provoke an error on purpose. Those are the assertion, not a
      defect, and each exemption names the check that causes it. */
   const realConsoleErrors = consoleErrors.filter(t =>
-    // the console tab's "a throwing expression is reported" check
+    // the console tab's "a throwing expression is reported" check, and the
+    // addon fixtures whose setup and whose event handler are made to throw so
+    // that being stopped, named and given a line number is itself checked
     !/deliberate test error/.test(t) &&
     // the two saves that are made to fail on purpose
     !/disk full/.test(t) && !/quick save to slot \d+ failed/.test(t) &&

@@ -919,6 +919,168 @@ module.exports = async function (ctx) {
   await shot('kit-loadouts');
 
   /* =========================================================================
+     8b — LIVE
+
+     Both panels describe the party as it is RIGHT NOW: the difference table is
+     a preview of an apply, and the picker's "have" column is the party's
+     stock. Both were computed once and then frozen, so an event that changed
+     the actor left the preview describing a state that no longer existed.
+     Every assertion drives the shell's 700ms hook list by hand.
+     ====================================================================== */
+  const loadLive = await ev(() => {
+    const G = window.GigaHack, K = G.kit, U = G.ui;
+    const host = U.getHost();
+    const tick = () => host.tickHooks.slice().forEach(fn => fn(1));
+    const out = {};
+
+    const a = window.__kitBare($gameParty._actors[0]);
+    a._paramPlus = [0, 0, 0, 0, 0, 0, 0, 0];
+    K.list().forEach(k => K.remove(k.name));
+    G.party.select(a);
+    /* Recorded from the actor exactly as they are, so the difference starts
+       empty and every row that appears below is something that MOVED. */
+    K.save(a, 'live probe');
+
+    U.setOpen(true);
+    G.cfg.ui.tab = 'player';
+    G.cfg.ui.sub = G.cfg.ui.sub || {};
+    G.cfg.ui.sub.player = 'Loadouts';
+    U.rerender();
+
+    /* The difference is against the SELECTED kit, and a kit is selected by
+       clicking its row — on a cell that is not the name, because that one is
+       an edit cell and swallows the click to open an editor. */
+    const kitRow = document.querySelector('#mm-root .mm-tbody .mm-tr');
+    kitRow.children[1].click();
+
+    const tables = document.querySelectorAll('#mm-root .mm-table');
+    const diff = tables[tables.length - 1];
+    out.tables = tables.length;
+    out.picked = K.list().length;
+    out.built = diff.mm.rows().length;
+
+    /* The "now" cell of the first difference row: reading the whole table as
+       one string puts the price beside the count and a regex then matches the
+       wrong digits. */
+    const nowCell = () => {
+      const tr = diff.mm.body.querySelector('.mm-tr');
+      return tr ? tr.children[2].textContent : '';
+    };
+
+    const emptyNode = diff.mm.body.firstChild;
+    tick();
+    out.idleKeptTheSameNode = diff.mm.body.firstChild === emptyNode;
+
+    /* A parameter bonus handed out by an event. */
+    a._paramPlus[0] = 1;
+    out.beforeTick = diff.mm.rows().length;
+    tick();
+    out.afterTick = diff.mm.rows().length;
+    out.sameTable = document.querySelectorAll('#mm-root .mm-table')[out.tables - 1] === diff;
+    out.showsOne = nowCell();
+
+    /* The same row, a different number: the row SET does not move, so a signal
+       keyed on how many rows there are would see nothing at all. */
+    a._paramPlus[0] = 5;
+    tick();
+    out.rowsAfterValueChange = diff.mm.rows().length;
+    out.showsFive = nowCell();
+
+    /* The slot row beside it is read live too — a class change is the case it
+       exists for, and the panel's own tip says equipSlots() is read per
+       actor. Class 5 is the fixture's dual-wielder. */
+    const slotLabel = (function () {
+      const labs = document.querySelectorAll('#mm-root .mm-lab');
+      for (let i = 0; i < labs.length; i++) {
+        if (labs[i].textContent === 'Slots') return labs[i].parentNode.children[1];
+      }
+      return null;
+    }());
+    out.slotsAtBuild = slotLabel ? slotLabel.textContent : '';
+    a._classId = 5;
+    a.refresh();
+    tick();
+    out.slotsFollowed = slotLabel ? slotLabel.textContent : '';
+
+    K.list().forEach(k => K.remove(k.name));
+    U.setOpen(false);
+    return out;
+  });
+  check('a kit\'s difference from the actor is recomputed while the panel is open, without the panel being rebuilt',
+    loadLive.built === 0 && loadLive.beforeTick === 0 && loadLive.afterTick === 1 &&
+    loadLive.sameTable === true && loadLive.idleKeptTheSameNode === true &&
+    loadLive.showsOne === '1', JSON.stringify(loadLive));
+  check('a difference row whose number changes repaints even though the row set did not',
+    loadLive.rowsAfterValueChange === 1 && loadLive.showsFive === '5', JSON.stringify(loadLive));
+  check('and the slot row follows the actor\'s class, because equipSlots() is what decides whether a kit fits',
+    loadLive.slotsAtBuild !== loadLive.slotsFollowed && /dual wield/.test(loadLive.slotsFollowed),
+    JSON.stringify({ built: loadLive.slotsAtBuild, after: loadLive.slotsFollowed }));
+
+  const shopLive = await ev(() => {
+    const G = window.GigaHack, K = G.kit, U = G.ui;
+    const host = U.getHost();
+    const tick = () => host.tickHooks.slice().forEach(fn => fn(1));
+    const out = {};
+
+    G.store.cfgSet('shop.kind', 'item');
+    $gameParty._items = {};
+
+    U.setOpen(true);
+    G.cfg.ui.tab = 'items';
+    G.cfg.ui.sub = G.cfg.ui.sub || {};
+    G.cfg.ui.sub.items = 'Shop';
+    U.rerender();
+
+    const picker = document.querySelectorAll('#mm-root .mm-table')[0];
+    /* "owned only" the way a person turns it on, so the filter under test is
+       the panel's own and not a second copy of it written here. */
+    const chip = document.querySelector('#mm-root .mm-chip');
+    out.chipLabel = chip ? chip.textContent : '';
+    chip.click();
+    out.emptyWhenNothingOwned = picker.mm.rows().length;
+
+    /* The "have" cell of the first row, not the row as one string: the price
+       sits beside it and a regex over the pair matches the wrong digits. */
+    const haveCell = () => {
+      const tr = picker.mm.body.querySelector('.mm-tr');
+      return tr ? tr.children[5].textContent : '';
+    };
+
+    const idle = picker.mm.body.firstChild;
+    tick();
+    out.idleKeptTheSameNode = picker.mm.body.firstChild === idle;
+
+    /* An event hands the party an item while the picker is open. */
+    const item = K.shop.pool('item', '')[0];
+    $gameParty.gainItem(item, 1);
+    out.beforeTick = picker.mm.rows().length;
+    tick();
+    out.afterTick = picker.mm.rows().length;
+    out.samePicker = document.querySelectorAll('#mm-root .mm-table')[0] === picker;
+    out.haveAfterGain = haveCell();
+
+    /* More of the same item: the row set is identical and only the number in
+       the "have" column moves. */
+    $gameParty.gainItem(item, 4);
+    tick();
+    out.rowsAfterCountChange = picker.mm.rows().length;
+    out.haveText = haveCell();
+
+    chip.click();
+    $gameParty._items = {};
+    U.setOpen(false);
+    return out;
+  });
+  check('an item the party gains while the shop picker is open appears in it, without the panel being rebuilt',
+    shopLive.chipLabel === 'owned only' && shopLive.emptyWhenNothingOwned === 0 &&
+    shopLive.beforeTick === 0 && shopLive.afterTick === 1 &&
+    shopLive.samePicker === true && shopLive.idleKeptTheSameNode === true,
+    JSON.stringify(shopLive));
+  check('and the "have" column follows a count that changes without the row set changing',
+    shopLive.rowsAfterCountChange === 1 && shopLive.haveAfterGain === '1' &&
+    shopLive.haveText === '5', JSON.stringify(shopLive));
+
+  /* =========================================================================
      9 — THE SOURCE ITSELF
      ====================================================================== */
   check('the module never assigns a prototype method directly — every observer goes through $.install with a reason',

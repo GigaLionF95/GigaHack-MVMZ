@@ -158,6 +158,117 @@
         return out;
     };
 
+    /* --------------------------------------------- has anything been saved
+       The game writes slots on its own — an autosave, an event that calls save
+       — and nothing tells this module when, so the slot table polls. What it
+       polls MUST NOT be the index itself on an engine that has to fetch the
+       index to answer.
+
+       Asking every slot costs one array walk where the index is memory
+       resident and a full re-read where it is not, because $.eng.savefileInfo
+       caches per ENGINE FRAME and a 700ms wall clock lands on a new frame
+       every single time. Every tick was therefore a cache miss and a
+       DataManager.loadGlobalInfo(): the index file read and parsed, then an
+       existence probe for every one of the twenty savefiles to prune it — a
+       syscall per slot plus the index, on the render thread, eighty-six times
+       a minute, for as long as the panel is open. None of it is visible on an
+       engine that answers from memory, which is why it survived every test
+       written against one.
+
+       Three probes, cheapest first. Each is O(1) in the number of slots and
+       each answers the same question — "could a row have changed" — so the
+       shape of the answer never has to be interpreted, only compared.
+       ------------------------------------------------------------------ */
+
+    /* Asked as a capability, never as an engine name: an index that answers
+       from memory is cheap to walk whoever put it there. */
+    function indexInMemory() {
+        return !!($.caps._hasFn && $.caps._hasFn('DataManager.savefileInfo'));
+    }
+
+    /**
+     * The index file's mtime and size — an existence test and a stat, with no
+     * read and no parse behind either.
+     *
+     * Tested rather than caught, because $.safe logs every throw and a game
+     * with no saves yet would write a line about a missing file every 700ms
+     * for as long as the panel stayed open.
+     *
+     * A file that is not there is an ANSWER ('none'), not a failure: no index
+     * means no saves, and the first one written makes the file appear. null
+     * means the question could not be put — no filesystem (a browser build,
+     * where the index is in web storage and there are no syscalls to save), a
+     * storage layer that resolves no path for it, or one that has a filesystem
+     * and does not keep the index on it. That last one is why isLocalMode is
+     * asked: a stat of a file the engine never writes would report "nothing
+     * has changed" forever, which is the failure this whole probe exists to
+     * avoid, dressed up as an optimisation.
+     */
+    function indexFileStamp() {
+        return $.safe(function () {
+            var f = $.env.fs, p = $.eng.savePath(0);
+            if (!f || !p) return null;
+            if (typeof StorageManager !== 'undefined' &&
+                typeof StorageManager.isLocalMode === 'function' &&
+                !StorageManager.isLocalMode()) return null;
+            if (!f.existsSync(p)) return 'none';
+            var st = f.statSync(p);
+            return 'stat:' + st.mtimeMs + ':' + st.size;
+        }, 'index file stamp', null);
+    }
+
+    /**
+     * The raw index as the storage layer hands it over — one read instead of a
+     * read plus a probe per savefile, and no prune.
+     *
+     * Only where that read is synchronous and really is text: the id-keyed
+     * StorageManager.load belongs to the engine whose index is not memory
+     * resident, and anything else (a plugin that made it return a Promise, or
+     * an object) is not comparable, so it says so rather than freezing the
+     * panel on `[object Promise]`.
+     */
+    function rawIndex() {
+        return $.safe(function () {
+            if (typeof StorageManager === 'undefined' ||
+                typeof StorageManager.load !== 'function') return null;
+            var raw = StorageManager.load(0);
+            if (raw === null || raw === undefined) return 'raw:none';
+            if (typeof raw !== 'string') return null;
+            return 'raw:' + raw;
+        }, 'raw save index', null);
+    }
+
+    /**
+     * A cheap "have the files on disk moved" probe for the slot table.
+     *
+     * The value is opaque and only ever compared with the previous one. Every
+     * branch below moves when the slot table's content could have moved, and
+     * the one thing none of them sees is a save FILE deleted from outside the
+     * running game: the index still names it, and the engine's own prune —
+     * which is most of what the expensive path was paying for — does not write
+     * the index back, so nothing on disk changes. The row goes on showing that
+     * save until something writes the index. Reopening the panel re-reads
+     * everything.
+     */
+    S.slotSignature = function () {
+        if (!indexInMemory()) {
+            var stamp = indexFileStamp();
+            if (stamp !== null) return stamp;
+            var raw = rawIndex();
+            if (raw !== null) return raw;
+            // Neither probe could answer. The walk below is the honest answer
+            // and it is expensive; a panel is worth more than a saved read.
+        }
+        return $.safe(function () {
+            var out = '';
+            for (var i = 1; i <= S.maxSlots(); i++) {
+                var info = S.info(i);
+                out += (info ? (info.timestamp || 0) + ':' + (info.playtime || '') : '-') + '|';
+            }
+            return out;
+        }, 'slot signature', '');
+    };
+
     /**
      * One save or load at a time.
      *
@@ -670,6 +781,28 @@
         });
         table.mm.paint(S.slots());
 
+        /* The panel already repaints from its OWN write's callback. What it
+           could not see was a slot the GAME wrote — an autosave, or an event
+           that saves — which left a row claiming a file that had been replaced
+           minutes ago. Only the table is repainted: the quick-slot box beside
+           it is typed into, and "load it" is two clicks.
+
+           The table is virtual, so a paint keeps the reader's scroll position;
+           isScrolling() is a real guard here for the same reason.
+
+           A "load" that was already armed IS disarmed by this, and that is the
+           right way round: the only thing that repaints these rows is the file
+           under one of them changing, and "discard progress?" asked about a
+           save that has since been overwritten is a question about the wrong
+           file. The signal is the index moving, so nothing else can trigger
+           it — and it costs a stat, not a re-read of the index per tick; see
+           slotSignature for what each engine actually pays. */
+        U.live(S.slotSignature, function () { table.mm.paint(S.slots()); }, {
+            name: 'save slots',
+            within: table,
+            when: function () { return !table.mm.isScrolling(); }
+        });
+
         var left = [
             W.group('Quick save', [
                 W.row('Slot', W.number({
@@ -996,9 +1129,19 @@
         var exportOptions = used.map(function (r) { return 'slot ' + r.id + (r.playtime ? ' · ' + r.playtime : ''); });
         var exportPick = exportOptions.length ? exportOptions[0] : null;
 
+        /* The clock the player recognises, and it ticks once a second in the
+           running game. The Hours and Minutes boxes beside it are seeded from
+           the same number and are what somebody types into, so the readout is
+           repainted and they are not — the row says what the game holds, the
+           boxes say what is about to be written to it. */
+        var playtimeRow = kv('Playtime', S.playtimeText());
+        U.live(S.playtimeText, function () {
+            playtimeRow.lastChild.textContent = S.playtimeText();
+        }, { name: 'playtime', within: playtimeRow });
+
         var left = [
             W.group('Playtime & count', [
-                kv('Playtime', S.playtimeText()),
+                playtimeRow,
                 W.row('Hours', W.number({
                     value: Math.floor(S.playtimeSeconds() / 3600), min: 0, max: 999, label: 'playtime hours',
                     onChange: function (v) {

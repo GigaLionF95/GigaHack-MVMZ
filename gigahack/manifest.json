@@ -1,6 +1,6 @@
 {
   "name": "GigaHack",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "engines": [
     "MV",
     "MZ"
@@ -142,6 +142,10 @@
     {
       "name": "GigaHack_Build",
       "description": "what this build costs to run, and how its plugins are configured"
+    },
+    {
+      "name": "GigaHack_Addons",
+      "description": "user-supplied addons: read their header, run them when enabled, revoke on disable"
     },
     {
       "name": "GigaHack_Boot",

@@ -745,7 +745,7 @@ var GIGAHACK_MODULES = ['Core', 'Caps', 'Store', 'Profile', 'UI', 'Shell', 'Hook
   'Compat', 'Index', 'Vars', 'Inv', 'Party', 'Backup', 'Map', 'Events', 'Battle', 'Text',
   'Forge', 'Player', 'Encounters', 'Gallery', 'Steam', 'Save', 'Console',
   'Trace', 'Snapshot', 'Quest', 'Media', 'Screen', 'Auto', 'Kit', 'Keys', 'Build',
-  'Boot'];
+  'Addons', 'Boot'];
 
 /* ---------------------------------------------------------------------------
    PLUGIN PARAMETERS.

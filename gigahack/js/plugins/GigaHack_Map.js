@@ -386,6 +386,21 @@
         m.places = bookmarks;
         $.store.write('bookmarks.json', m);
     }
+    /**
+     * Read the list again from wherever the store now points.
+     *
+     * The list is loaded once at module load and then only written back. That
+     * was correct while the data directory was fixed for the life of the
+     * process; it is not, now that answering the storage question moves it.
+     * Without this, the first pin added after a move writes the OLD directory's
+     * list over the new directory's file — a silent overwrite of a file the
+     * user has never seen. Boot calls it on paths:changed.
+     */
+    M.reloadBookmarks = function () {
+        loadBookmarks();
+        return bookmarks.length;
+    };
+
     M.bookmarks = function () { return bookmarks.slice(); };
     M.addBookmark = function (name) {
         var p = M.currentPos();
@@ -417,6 +432,14 @@
     // rebuilding the tab, which would otherwise throw the (scrolled) tree away.
     var refreshPanel = function () { };
     var refreshTree = function () { };
+
+    /* The two value nodes of the "Here" group, re-pointed by targetPanel() on
+       every one of its rebuilds. They are held rather than looked up because
+       the live repaint must not touch anything ELSE in that column: the X and
+       Y boxes below them are typed into, and "teleport" is a two-click button.
+       Null before the panel has been built once, and after it has been
+       replaced by another tab. */
+    var hereMapEl = null, herePosEl = null;
 
     function selectMap(id) {
         selected = { id: id, name: M.mapName(id) };
@@ -544,7 +567,41 @@
         refreshTree = function () { table.mm.refresh(); };
         refreshPanel();
 
+        /* Where the player IS moves without this panel being touched: an event
+           transfers them, or they walk out of the room. Two things go stale
+           with it — the readouts at the top of the left column, and the green
+           "here" label in the tree, which otherwise still points at the map
+           they left.
+
+           Only the map changing repaints the tree, because refreshing it
+           rebuilds every visible row and there is no reason to do that once a
+           step. The left column is NOT rebuilt at all: refreshPanel() would
+           replace the X and Y boxes and the teleport button along with it. */
+        var lastMap = M.currentMapId();
+        U.live(function () {
+            var p = M.currentPos();
+            return M.currentMapId() + ':' + p.x + ',' + p.y;
+        }, function () {
+            var p = M.currentPos(), here = M.currentMapId();
+            if (hereMapEl) {
+                hereMapEl.textContent = hereText();
+                // Assigning null would put the string "null" in the tooltip.
+                if (here) hereMapEl.title = hereText(); else hereMapEl.removeAttribute('title');
+            }
+            if (herePosEl) herePosEl.textContent = p.x + ',' + p.y;
+            if (here !== lastMap) { lastMap = here; refreshTree(); }
+        }, {
+            name: 'map position',
+            within: left,
+            when: function () { return !table.mm.isScrolling(); }
+        });
+
         return h('div', { class: 'mm-body' }, left, h('div', { class: 'mm-col' }, group));
+    }
+
+    function hereText() {
+        var here = M.currentMapId();
+        return here ? here + ' · ' + M.mapName(here) : '—';
     }
 
     function targetPanel() {
@@ -552,18 +609,20 @@
         var here = M.currentMapId();
         var out = [];
 
+        hereMapEl = h('div', {
+            // A project names its own maps and some of those names are long.
+            class: 'mm-edge mm-edge--shrink mm-path mm-mono mm-hi',
+            text: hereText(), title: here ? hereText() : null
+        });
+        herePosEl = h('div', { class: 'mm-edge mm-mono mm-hi', text: pos.x + ',' + pos.y });
+
         out.push(W.group('Here', [
             h('div', { class: 'mm-row' },
                 h('div', { class: 'mm-lab', text: 'Map' }),
-                // A project names its own maps and some of those names are long.
-                h('div', {
-                    class: 'mm-edge mm-edge--shrink mm-path mm-mono mm-hi',
-                    text: here ? here + ' · ' + M.mapName(here) : '—',
-                    title: here ? here + ' · ' + M.mapName(here) : null
-                })),
+                hereMapEl),
             h('div', { class: 'mm-row' },
                 h('div', { class: 'mm-lab', text: 'Position' }),
-                h('div', { class: 'mm-edge mm-mono mm-hi', text: pos.x + ',' + pos.y })),
+                herePosEl),
             W.button({
                 label: 'bookmark this spot', wide: true, _ungated: true,
                 onClick: function () {

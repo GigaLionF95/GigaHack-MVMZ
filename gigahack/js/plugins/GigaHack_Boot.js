@@ -305,6 +305,54 @@
         return lines;
     };
 
+    /* ---------------------------------------------------------------------
+       When the data directory moves under everybody
+
+       Answering the storage question — or moving the folder from the Storage
+       panel — repoints $.paths.dataDir while the game is running. Every read
+       and write in the store resolves the directory at call time, so the store
+       itself needs nothing. What does need telling are the modules that read a
+       file ONCE, at load, and only ever write it back afterwards: their
+       in-memory copy belongs to the directory that was just left, and the next
+       write puts it over a file in the new one that the user has never seen.
+       That is a silent overwrite of somebody's data, which is the worst thing
+       in this codebase's book, so the invalidation lives in one place — here,
+       the last file to load — rather than in six modules that would each have
+       to remember.
+
+       NOT invalidated, and each for a stated reason:
+         · The settings themselves. Whoever moved the directory has already
+           dealt with them — granting adopts or seeds, declining and deferring
+           re-read from the directory now in force, and moving copies — and a
+           second read here would race the write that is still debounced,
+           reload the defaults over the top of it, and then persist THOSE.
+         · Hooks' manifest cache and Steam's app id are keyed on the GAME
+           folder, which has not moved.
+         · The index is not rebuilt, only re-persisted: it describes the game's
+           database, which has not changed, and a rebuild would report
+           "incomplete" to every query for as long as it ran. And never
+           $.index.clear(), which deletes a cache file that is now the NEW
+           directory's.
+       ------------------------------------------------------------------ */
+    $.on('paths:changed', function (e) {
+        var did = [];
+        function ask(label, fn) {
+            if (!fn) return;
+            $.safe(function () { fn(); did.push(label); }, 'reload after a data-directory change: ' + label);
+        }
+        ask('map bookmarks', $.map && $.map.reloadBookmarks);
+        ask('pinned variables and switches', $.vars && $.vars.reloadMarks);
+        ask('console snippets', $.console && $.console.reload);
+        ask('loadouts and the shop', $.kit && $.kit.reload);
+        ask('the Forge library', $.forge && $.forge.load);
+        ask('the addon index', $.addons && $.addons.rescan);
+        ask('actor portraits', $.party && $.party.clearImageCache);
+        ask('the boot index', $.index && $.index.persist);
+        $.log('ok', 'data directory is now ' + ((e && e.now) || $.paths.dataDir) +
+            ' — re-read ' + did.length + ' thing(s) from it: ' + did.join(', '));
+        if (U && U.rerender) $.safe(U.rerender, 'rerender after a data-directory change');
+    });
+
     /* Last file in the load order, so this is the first moment at which
        "did every module run" has an answer. Loud on purpose: a module that
        silently is not there is the failure this exists to end. */

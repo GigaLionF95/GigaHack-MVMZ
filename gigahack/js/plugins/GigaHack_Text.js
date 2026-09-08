@@ -300,11 +300,33 @@
             split but far better than eating dialogue that merely ends in a
             colon.
 
-       Detection scans the whole log, so it is cached against its length: a log
-       only grows, and re-deriving this on every repaint of a virtual table
-       would be the most expensive thing in the panel.
+       Detection scans the whole log, so it is cached against logStamp(): a
+       re-derivation on every repaint of a virtual table would be the most
+       expensive thing in the panel.
        ------------------------------------------------------------------ */
     var speakerCache = { key: '', index: null };
+
+    /**
+     * "Has the game's log moved" in three property reads.
+     *
+     * NOT raw.length. An adapter's log is a ring capped at maxLogs(), and once
+     * it saturates — the steady state, not the empty one anybody tests — the
+     * count is pinned forever, so a line arriving as another rolls off looks
+     * like nothing happening. That is the defect HANDOFF §3 records, and it is
+     * why the speaker cache and the History panel's repaint signal are both
+     * this and not a count.
+     *
+     * Both ENDS are stamped with the count: below saturation the count moves;
+     * at saturation every push changes the head as well as the tail. What it
+     * cannot see is a push whose new head AND new tail are each the same
+     * LENGTH as the ones they replaced — the log belongs to the game and
+     * carries no revision counter to ask for instead, so the panel is as live
+     * as the adapter can honestly make it and no more.
+     */
+    function logStamp(raw) {
+        var n = raw.length;
+        return n + '/' + String(raw[0] || '').length + '/' + String(raw[n - 1] || '').length;
+    }
 
     function speakerIndex(raw) {
         var ad = backlogAdapter();
@@ -314,8 +336,8 @@
         }
         /* Not raw.length alone: an adapter log is capped too, so once it saturates
            the length stops changing and the detection would freeze at whatever it
-           concluded then. The last line stamps the content as well. */
-        var cacheKey = raw.length + '/' + String(raw[raw.length - 1] || '').length;
+           concluded then. logStamp() carries both ends with the count. */
+        var cacheKey = logStamp(raw);
         if (speakerCache.key === cacheKey) return speakerCache.index;
 
         var tally = {}, best = null, bestN = 0, candidates = 0, i, m, n;
@@ -339,6 +361,25 @@
         var ad = backlogAdapter();
         if (!ad) return null;
         return speakerIndex($.safe(function () { return ad.read() || []; }, 'backlog read', []) || []);
+    };
+
+    /**
+     * The repaint signal for a panel showing the game's own backlog.
+     *
+     * T.backlog().length is the wrong answer twice over: it saturates with the
+     * ring (see logStamp), and it is not even the raw count — backlog() drops
+     * lines that strip to empty and consumes speaker headers, so a header
+     * rolling off as a line arrives is invisible before saturation too. It
+     * also re-strips and re-allocates the whole log to produce the number,
+     * which is not what a 700ms clock should be spending.
+     *
+     * One ad.read(), then O(1). Empty string where there is no adapter, so a
+     * panel that asks anyway simply never repaints.
+     */
+    T.backlogStamp = function () {
+        var ad = backlogAdapter();
+        if (!ad) return '';
+        return logStamp($.safe(function () { return ad.read() || []; }, 'backlog read', []) || []);
     };
 
     T.backlog = function () {
@@ -512,6 +553,13 @@
     var rec = [];            // the ring buffer, oldest first
     var recSeq = 0;          // total ever recorded — numbering stays stable
     var recDropped = 0;      // how many rolled off the front
+    /* Bumped by every path that changes what the buffer HOLDS, which is not the
+       same question as how much has been said. A panel watching recSeq would
+       never notice a clear — the total does not move when the buffer empties —
+       and would go on showing lines that are gone. Watching the length is worse
+       still: once the ring is full, which is the steady state, the length is
+       pinned and a page rolling off looks like nothing happening at all. */
+    var recRev = 0;
     var pendingLines = [];   // the fallback path's part-built page
     var pageOpen = false;    // a page is showing and has already been recorded
     var pageRaw = '';        // what that page said, for the second-start test
@@ -571,6 +619,7 @@
         rec.push(r);
         var over = rec.length - histMax();
         if (over > 0) { rec.splice(0, over); recDropped += over; }
+        recRev++;
         return r;
     }
 
@@ -937,6 +986,10 @@
 
         count: function () { return rec.length; },
         dropped: function () { return recDropped; },
+
+        /** Changes whenever the buffer's CONTENTS change — the live panels' signal. */
+        revision: function () { return recRev; },
+
         speakerMode: speakerMode,
 
         max: function () { return histMax(); },
@@ -944,7 +997,7 @@
             var v = Math.max(REC_MIN, Math.min(REC_MAX, Math.floor(n)));
             $.store.cfgSet('text.history.max', v);
             var over = rec.length - v;
-            if (over > 0) { rec.splice(0, over); recDropped += over; }
+            if (over > 0) { rec.splice(0, over); recDropped += over; recRev++; }
             return v;
         },
 
@@ -957,10 +1010,12 @@
             pageOpen = false;
             pageRaw = '';
             conventionCache = { key: -1, on: false };
+            recRev++;
             $.undo.push('cleared ' + before.length + ' recorded lines', function () {
                 rec = before.slice();
                 recDropped = droppedBefore;
                 conventionCache = { key: -1, on: false };
+                recRev++;
             });
             return before.length;
         },
@@ -1408,6 +1463,20 @@
     function buildHistory() {
         var src = historySource();
         var mine = src === SRC_MOD;
+        /* Assigned by sideRecorded(), read by the live repaint. The count and
+           the list have to move together or they disagree, which is the same
+           defect a dropped empty row produced: a number saying one thing and a
+           list showing another, with no gap anywhere to notice. */
+        var keptEl = null;
+        /* The same field on the other source's side panel, for the same
+           reason. Two different cells because the two logs count different
+           things: ours counts records including the ones that stripped to
+           nothing, the game's counts the rows it will show. */
+        var linesKeptEl = null;
+        function keptText() {
+            var lost = T.history.dropped();
+            return T.history.count() + (lost ? '  (' + lost + ' rolled off)' : '');
+        }
 
         /* The one case where the panel has nothing at all to offer: our own
            recorder could not install AND this game has no backlog either. It
@@ -1489,7 +1558,28 @@
                 return (r.find || (r.speaker + ' ' + r.text).toLowerCase()).indexOf(needle) > -1;
             });
         }
-        function repaint() { table.mm.paint(rows()); }
+        /* Following the tail is the whole behaviour of an append-only log: a
+           reader sitting at the bottom wants to stay there as lines arrive, and
+           a reader who scrolled up to find something wants to be left exactly
+           where they are. "At the bottom" is measured with a few pixels of
+           slack, because a fractional row height leaves a remainder that no
+           scroll ever closes and a strict test would then never follow at all. */
+        var TAIL_SLACK = 4;
+        function atTail() {
+            var b = table.mm.body;
+            if (!b || !b.clientHeight) return true;      // nothing to scroll yet
+            return b.scrollHeight - b.scrollTop - b.clientHeight <= TAIL_SLACK;
+        }
+        function repaint(follow) {
+            var tail = follow && atTail();
+            table.mm.paint(rows());
+            if (!tail) return;
+            var b = table.mm.body;
+            b.scrollTop = b.scrollHeight;
+            // paint() restored the offset it had before; moving it afterwards
+            // leaves the virtual window rendered for the old one.
+            table.mm.refresh();
+        }
         repaint();
 
         function asText(list) {
@@ -1549,12 +1639,51 @@
 
         var side = mine ? sideRecorded() : sideAdapter();
 
+        /* The list is the one panel in the mod that fills itself while it is
+           being read: a history opened before a conversation used to show
+           nothing of it, and looked broken rather than stale. The signal is the
+           recorder's revision, not its total — see the note beside recRev — and
+           the repaint is the same call a keystroke in the search box already
+           makes, so the filter, the search text and the source selector are
+           honoured by construction rather than by a second code path.
+
+           The game's own backlog gets the same treatment through
+           T.backlogStamp(), which is what the recorder's revision is for a log
+           we do not own: NOT the row count, which is pinned the moment the
+           game's ring saturates and costs a strip of every line to ask for.
+           Where there is no adapter the panel is simply not live and nothing
+           pretends otherwise. */
+        if (mine) {
+            U.live(function () { return T.history.revision(); }, function () {
+                repaint(true);
+                if (keptEl) keptEl.textContent = keptText();
+            }, {
+                name: 'dialogue history', within: table,
+                when: function () { return !table.mm.isScrolling(); }
+            });
+        } else if (T.backlogAvailable()) {
+            U.live(T.backlogStamp, function () {
+                repaint(true);
+                // The count beside the list is derived from the same log, so
+                // leaving it behind would put two answers to one question on
+                // the same screen — the defect this whole file is against.
+                if (linesKeptEl) linesKeptEl.textContent = String(T.backlog().length);
+            }, {
+                name: 'the game’s backlog', within: table,
+                when: function () { return !table.mm.isScrolling(); }
+            });
+        }
+
         return cols({ narrow: true, items: side },
             [W.group('Lines', [toolbar, table], { grow: true })]);
 
         /* --------------------------------------------- the recorder's side */
         function sideRecorded() {
-            var kept = T.history.count(), lost = T.history.dropped();
+            keptEl = h('div', {
+                class: 'mm-edge mm-edge--shrink mm-edge--wrap mm-mono mm-sub mm-breakall',
+                text: keptText()
+            });
+            var kept = T.history.count();
             return [
                 W.group('Recording', [
                     W.toggleRow('Record what is said', {
@@ -1570,7 +1699,8 @@
                         tip: 'Speaker from|A name box where the build has one, otherwise a "Name:" ' +
                             'opener once enough pages use one. Detected, never assumed.'
                     }),
-                    kv('Pages kept', kept + (lost ? '  (' + lost + ' rolled off)' : '')),
+                    h('div', { class: 'mm-row' },
+                        h('div', { class: 'mm-lab', text: 'Pages kept' }), keptEl),
                     W.row('Keep', W.number({
                         value: T.history.max(), min: REC_MIN, max: REC_MAX, step: 50, wide: true,
                         label: 'History size', _ungated: true,
@@ -1610,9 +1740,11 @@
             var ad = T.backlogAdapter();
             var canUndo = !!(ad && typeof ad.restore === 'function');
             var idx = T.speakerIndex();
+            var keptRow = kv('Lines kept', T.backlog().length);
+            linesKeptEl = keptRow.lastChild;
             return [
                 W.group('The game’s backlog', [
-                    kv('Lines kept', T.backlog().length),
+                    keptRow,
                     // Which colour index the game uses for a speaker header is
                     // detected, not assumed — and where nothing convincing turns
                     // up there is simply no split, which is worth saying because

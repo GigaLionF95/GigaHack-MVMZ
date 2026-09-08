@@ -1519,6 +1519,213 @@ module.exports = async function (ctx) {
   });
 
   /* =======================================================================
+     LIVE
+
+     Both panels show a screen the GAME is still writing to, so both were
+     wrong the moment anything happened. Every assertion here drives the
+     shell's own 700ms hook list by hand, because that is what the clock does,
+     and each one is written so that taking the repaint out turns it red.
+     ==================================================================== */
+  const picLive = await ev(() => {
+    const G = window.GigaHack, U = G.ui;
+    const host = U.getHost();
+    const tick = () => host.tickHooks.slice().forEach(fn => fn(1));
+    const cellText = (label) => {
+      const labs = document.querySelectorAll('#mm-root .mm-lab');
+      for (let i = 0; i < labs.length; i++) {
+        if (labs[i].textContent === label) return labs[i].parentNode.children[1].textContent;
+      }
+      return '';
+    };
+    const out = {};
+
+    window.__unstickAll();
+    $gameScreen.clearPictures();
+    $gameScreen.showPicture(1, 'first', 0, 10, 20, 100, 100, 255, 0);
+    G.store.cfgSet('screen.pictures.filter', 'in use');
+    G.store.cfgSet('screen.pictures.preview', false);
+
+    U.setOpen(true);
+    G.cfg.ui.tab = 'game';
+    G.cfg.ui.sub = G.cfg.ui.sub || {};
+    G.cfg.ui.sub.game = 'Pictures';
+    U.rerender();
+
+    const table = document.querySelector('#mm-root .mm-table');
+    out.built = table.mm.rows().length;
+    out.usedAtBuild = cellText('In use');
+
+    /* A tick with nothing moved must not repaint: the signal is the point of
+       the helper, and a table rebuilt 86 times a minute regardless is what it
+       exists to prevent. */
+    const firstRow = document.querySelector('#mm-root .mm-tbody .mm-tr');
+    tick();
+    out.idleKeptTheSameNode =
+      document.querySelector('#mm-root .mm-tbody .mm-tr') === firstRow;
+
+    /* The game shows a second picture while the panel is open. */
+    $gameScreen.showPicture(2, 'second', 0, 30, 40, 100, 100, 255, 0);
+    out.beforeTick = table.mm.rows().length;
+    tick();
+    out.afterTick = table.mm.rows().length;
+    out.sameTable = document.querySelector('#mm-root .mm-table') === table;
+    out.usedFollowed = cellText('In use');
+
+    /* And a picture that MOVES without the slot set changing at all — the row
+       count is identical and only the numbers in it are different, which is
+       the case a signal keyed on "how many rows" would miss entirely. */
+    /* Through the engine's own move, over a duration, because that is how a
+       picture actually travels: an instant move is a write the engine's
+       updateMove never applies at all. */
+    $gameScreen.movePicture(1, 0, 111, 222, 100, 100, 255, 0, 4, 0);
+    for (let i = 0; i < 8; i++) $gameScreen.updatePictures();
+    const p1 = $gameScreen.picture(1);
+    out.movedTo = Math.round(p1._x) + ',' + Math.round(p1._y);
+    out.rowsWhenMoved = table.mm.rows().length;
+    tick();
+    out.moved = document.querySelector('#mm-root .mm-tbody').textContent.indexOf(out.movedTo) > -1;
+
+    /* A battle starting moves which RANGE picture(n) reads, and the sentence
+       saying so sits beside the list: a list of battle-range slots under a
+       line reading "map range" is the panel contradicting itself. */
+    out.rangeOnMap = cellText('Reading');
+    window.__inBattle = true;
+    tick();
+    out.rangeInBattle = cellText('Reading');
+    window.__inBattle = false;
+    tick();
+
+    /* Held while a cell is being edited: an edit cell is an <input> that lives
+       inside the thing the repaint replaces. */
+    const cell = document.querySelector('#mm-root .mm-tbody .mm-td-val');
+    if (cell) cell.click();
+    const input = document.querySelector('#mm-root .mm-cellinput');
+    out.editing = !!input;
+    if (input) input.value = 'half typed';
+    $gameScreen.showPicture(3, 'third', 0, 0, 0, 100, 100, 255, 0);
+    tick();
+    out.editSurvived = !!document.querySelector('#mm-root .mm-cellinput') &&
+      document.querySelector('#mm-root .mm-cellinput').value === 'half typed';
+    out.heldWhileEditing = table.mm.rows().length === out.afterTick + 1;
+    if (input) {
+      // Escape, not blur: a blur commits, and committing 'half typed' would
+      // rename slot 1 behind the rest of this file.
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    }
+
+    /* And the held change is not lost — it lands on the first tick after the
+       reader lets go. */
+    tick();
+    out.afterRelease = table.mm.rows().length;
+
+    $gameScreen.clearPictures();
+    U.setOpen(false);
+    return out;
+  });
+  check('a picture shown while the Pictures panel is open appears in it, without the panel being rebuilt',
+    picLive.built === 1 && picLive.beforeTick === 1 && picLive.afterTick === 2 &&
+    picLive.sameTable === true && picLive.idleKeptTheSameNode === true,
+    JSON.stringify(picLive));
+  check('a picture that only MOVES repaints the row it is in, so a slot list that never changes length ' +
+    'still tells the truth',
+    picLive.rowsWhenMoved === 2 && picLive.movedTo === '111,222' && picLive.moved === true,
+    JSON.stringify(picLive));
+  check('the slot counts beside the list move with the list, so the two never disagree',
+    /^1(\s|$)/.test(picLive.usedAtBuild) && /^2(\s|$)/.test(picLive.usedFollowed),
+    JSON.stringify({ built: picLive.usedAtBuild, after: picLive.usedFollowed }));
+  check('and a battle starting moves the range the list says it is reading, because slot 1 in battle ' +
+    'is a different picture from slot 1 on the map',
+    /^map range/.test(picLive.rangeOnMap) && /^battle range/.test(picLive.rangeInBattle),
+    JSON.stringify({ map: picLive.rangeOnMap, battle: picLive.rangeInBattle }));
+  check('a picture cell being edited is not repainted out from under the typing, and the change it ' +
+    'held for arrives on the next tick',
+    picLive.editing === true && picLive.editSurvived === true &&
+    picLive.heldWhileEditing === false && picLive.afterRelease === 3,
+    JSON.stringify(picLive));
+
+  const logLive = await ev(() => {
+    const G = window.GigaHack, U = G.ui, S = G.screen;
+    const host = U.getHost();
+    const tick = () => host.tickHooks.slice().forEach(fn => fn(1));
+    const cellText = (label) => {
+      const labs = document.querySelectorAll('#mm-root .mm-lab');
+      for (let i = 0; i < labs.length; i++) {
+        if (labs[i].textContent === label) return labs[i].parentNode.children[1].textContent;
+      }
+      return '';
+    };
+    const out = {};
+
+    window.__unstickAll();
+    S.clearLog();
+    G.store.cfgSet('screen.log.max', 20);
+    $gameScreen.startTint([10, 10, 10, 0], 0);
+
+    U.setOpen(true);
+    G.cfg.ui.tab = 'game';
+    G.cfg.ui.sub = G.cfg.ui.sub || {};
+    G.cfg.ui.sub.game = 'Screen log';
+    U.rerender();
+
+    const table = document.querySelector('#mm-root .mm-table');
+    out.built = table.mm.rows().length;
+    out.recordedAtBuild = cellText('Recorded');
+
+    const firstRow = document.querySelector('#mm-root .mm-tbody .mm-tr');
+    tick();
+    out.idleKeptTheSameNode =
+      document.querySelector('#mm-root .mm-tbody .mm-tr') === firstRow;
+
+    /* The game tints the screen while the log is open. */
+    $gameScreen.startTint([-20, -20, -20, 0], 0);
+    out.beforeTick = table.mm.rows().length;
+    tick();
+    out.afterTick = table.mm.rows().length;
+    out.sameTable = document.querySelector('#mm-root .mm-table') === table;
+    out.recordedFollowed = cellText('Recorded');
+
+    /* Past the ring's own limit: "kept" pins at 20 and stops saying anything,
+       so a signal keyed on it alone would freeze here — which is the steady
+       state a running game spends its life in, not a corner case. */
+    for (let i = 0; i < 30; i++) $gameScreen.startShake(1, 1, 1);
+    tick();
+    out.saturatedKept = S.logCounts().kept;
+    out.saturatedRows = table.mm.rows().length;
+    const seen = table.mm.rows()[0].id;
+    $gameScreen.startShake(2, 2, 2);
+    tick();
+    out.newestMovedPastSaturation = table.mm.rows()[0].id > seen;
+    out.keptText = cellText('Kept');
+    out.droppedText = cellText('Dropped');
+
+    /* Emptied while it is open: the list and the three counts go with it. */
+    S.clearLog();
+    tick();
+    out.clearedRows = table.mm.rows().length;
+    out.clearedRecorded = cellText('Recorded');
+
+    G.store.cfgSet('screen.log.max', 200);
+    window.__unstickAll();
+    S.clearLog();
+    U.setOpen(false);
+    return out;
+  });
+  check('a screen write recorded while the Screen log is open appears in it, without the panel being rebuilt',
+    logLive.built === 1 && logLive.beforeTick === 1 && logLive.afterTick === 2 &&
+    logLive.sameTable === true && logLive.idleKeptTheSameNode === true,
+    JSON.stringify(logLive));
+  check('the log keeps updating after its ring has filled — the signal is what was recorded, not what is kept',
+    logLive.saturatedKept === 20 && logLive.saturatedRows === 20 &&
+    logLive.newestMovedPastSaturation === true, JSON.stringify(logLive));
+  check('the three counts beside the log move with it, so the list and the numbers never disagree',
+    /^1(\s|$)/.test(logLive.recordedAtBuild) && /^2(\s|$)/.test(logLive.recordedFollowed) &&
+    /^20(\s|$)/.test(logLive.keptText) && !/^0(\s|$)/.test(logLive.droppedText),
+    JSON.stringify(logLive));
+  check('clearing the screen log while its panel is open empties the list and the counts with it',
+    logLive.clearedRows === 0 && /^0(\s|$)/.test(logLive.clearedRecorded),
+    JSON.stringify(logLive));
+
+  /* =======================================================================
      REGISTRATION
      ==================================================================== */
   const panels = await ev(() => window.GigaHack.ui.panelNames('game'));

@@ -311,6 +311,11 @@
 #mm-root .mm-row.mm-off{opacity:.42;pointer-events:none}
 #mm-root .mm-lab{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--mm-fs-sm);color:var(--mm-text)}
 #mm-root .mm-row:hover .mm-lab{color:var(--mm-text-hi)}
+/* A label allowed to take a second line rather than an ellipsis. For a row
+   whose LABEL is the long half and whose value is short and rigid — a cache
+   name beside "12 entries · ~3.40 MB" — clipping loses the only part that
+   says what the number is about. */
+#mm-root .mm-lab--wrap{white-space:normal;overflow:visible;text-overflow:clip}
 #mm-root .mm-sub{font-size:var(--mm-fs-xs);color:var(--mm-text-dim)}
 #mm-root .mm-edge{display:flex;align-items:center;flex:0 0 auto}
 #mm-root .mm-edge>*+*{margin-left:var(--mm-sp-1)}
@@ -1631,7 +1636,8 @@
 
     function mmRow(label, controls, opts) {
         opts = opts || {};
-        var lab = h('div', { class: 'mm-lab' }, label, opts.sub ? h('span', { class: 'mm-sub', text: '  ' + opts.sub }) : null);
+        var lab = h('div', { class: 'mm-lab' + (opts.labelClass ? ' ' + opts.labelClass : '') },
+            label, opts.sub ? h('span', { class: 'mm-sub', text: '  ' + opts.sub }) : null);
         // opts.edgeClass is how a row says its value is a STRING of unknown
         // length rather than a control. The classes have to land on the EDGE —
         // that is the flex:0 0 auto box — so putting them on the child does
@@ -1652,7 +1658,8 @@
             value: opts.value, onChange: opts.onChange, label: label,
             disabled: opts.disabled, _ungated: opts._ungated, _noMark: true
         });
-        var lab = h('div', { class: 'mm-lab' }, label, opts.sub ? h('span', { class: 'mm-sub', text: '  ' + opts.sub }) : null);
+        var lab = h('div', { class: 'mm-lab' + (opts.labelClass ? ' ' + opts.labelClass : '') },
+            label, opts.sub ? h('span', { class: 'mm-sub', text: '  ' + opts.sub }) : null);
         var edge = h('div', { class: 'mm-edge' + (opts.edgeClass ? ' ' + opts.edgeClass : '') });
         if (opts.extra) add(edge, opts.extra);
         if (opts.keybind) edge.appendChild(mmKeybind(opts.keybind === true ? {} : opts.keybind));
@@ -2060,6 +2067,28 @@
     /** A whole row: label on the left, the value handled by mmPath on the right. */
     function mmPathRow(label, value, opts) {
         opts = opts || {};
+        var full = (value === null || value === undefined) ? '' : String(value);
+
+        /* No path, and a sentence saying why. The sentence does NOT go in the
+           edge: it is three lines long, the edge is allowed to shrink, and the
+           label is what gives way — "In use now" came out as "In use n…" while
+           the reason beside it read perfectly. A reason nobody asked for is
+           worth less than a label somebody is looking for, so the row keeps its
+           two halves and the reason goes underneath, where it has the width. */
+        if (!full && !opts.fallback && opts.why) {
+            var row2 = h('div', { class: 'mm-row', tip: opts.tip || null },
+                h('div', { class: 'mm-lab', text: label }),
+                h('div', { class: 'mm-edge mm-sub', text: 'none' }));
+            var note = h('div', {
+                class: 'mm-sub',
+                style: 'color:var(--mm-warn);white-space:normal;padding:0 2px 3px',
+                text: opts.why
+            });
+            var wrap = h('div', {}, row2, note);
+            wrap.mm = { refit: function () { }, full: function () { return ''; }, set: function () { } };
+            return wrap;
+        }
+
         var edge = mmPath(value, opts);
         var row = h('div', { class: 'mm-row', tip: opts.tip || null },
             h('div', { class: 'mm-lab', text: label }), edge);
@@ -2351,6 +2380,95 @@
         return out;
     };
     U.getHost = function () { return HOST; };
+
+    /**
+     * Repaint part of an open panel when something the GAME owns has changed.
+     *
+     *   U.live(function () { return T.history.revision(); }, repaint);
+     *
+     * `signal` is asked on every tick and must be cheap; `paint` runs only when
+     * its answer differs from the last one acted on. Registration goes into the
+     * host's own hook lists, which are cleared on the next tab render, so a
+     * panel registers on every build and never has to clean up after itself.
+     *
+     * The four holds below are the difference between a live panel and one that
+     * fights its reader. A hold does NOT consume the signal — the last value
+     * acted on is left where it was — so the repaint happens on the first tick
+     * after the user lets go, rather than being lost with the tick it landed on:
+     *
+     *   · the overlay is closed       — the 700ms clock runs whether or not
+     *                                   anyone can see the panel
+     *   · focus is inside opts.within — a cell being edited is an input that
+     *                                   lives in the thing being repainted, and
+     *                                   repainting it takes the edit away. Pass
+     *                                   the smallest element the paint touches:
+     *                                   the default is the whole overlay, which
+     *                                   is safe and also stops a list updating
+     *                                   while its own search box merely holds
+     *                                   focus — which is not what anyone means.
+     *   · a popup is open             — a dropdown anchored to a row that is
+     *                                   about to be rebuilt loses its anchor
+     *   · opts.when() said no         — a virtual table mid-gesture, usually;
+     *                                   table.mm.isScrolling() is written for it
+     *
+     * opts.fast puts it on the frame hook instead of the clock. Use that only
+     * for something a person would call laggy at 700ms — everything textual is
+     * fine on the clock, and a per-frame repaint of a table is not free.
+     */
+    /* A signal is compared with ===, and nothing can ever equal this object. */
+    var INVALID = {};
+
+    U.live = function (signal, paint, opts) {
+        opts = opts || {};
+        var host = HOST;
+        if (!host || !host.tickHooks) {
+            // Before the shell mounts there is nowhere to register. Say so once
+            // rather than returning a handle that quietly never fires.
+            $.log('warn', 'live repaint for "' + (opts.name || 'a panel') +
+                '" was not registered: the overlay host does not exist yet');
+            return { stop: function () { }, invalidate: function () { }, live: false };
+        }
+        var label = opts.name || 'live panel';
+        var stopped = false;
+        var seen = $.safe(signal, label + ' signal', null);
+
+        function editingInside() {
+            var scope = opts.within || host.root;
+            var el = document.activeElement;
+            if (!el || !scope || !scope.contains(el)) return false;
+            var tag = (el.tagName || '').toLowerCase();
+            return tag === 'input' || tag === 'textarea' || el.isContentEditable === true;
+        }
+
+        /** Why the last tick did nothing, in words, for a panel that says so. */
+        var hold = '';
+        function tick() {
+            if (stopped) return;
+            hold = '';
+            if (!U.isOpen || !U.isOpen()) { hold = 'the menu is closed'; return; }
+            if (host.popup) { hold = 'a menu is open over it'; return; }
+            if (editingInside()) { hold = 'you are typing in it'; return; }
+            if (opts.when && !$.safe(opts.when, label + ' guard', false)) {
+                hold = opts.whyNot || 'you are scrolling it';
+                return;
+            }
+            var now = $.safe(signal, label + ' signal', seen);
+            if (now === seen) return;
+            seen = now;
+            $.safe(paint, label + ' repaint');
+        }
+
+        (opts.fast ? host.fastHooks : host.tickHooks).push(tick);
+        return {
+            stop: function () { stopped = true; },
+            /** Repaint on the next tick whatever the signal says. */
+            invalidate: function () { seen = INVALID; },
+            /** Empty while it is keeping up; otherwise why it is not. */
+            held: function () { return hold; },
+            live: true
+        };
+    };
+
     U.toast = mmToast;
     U.logRow = mmLog;
     /**
@@ -2386,6 +2504,45 @@
             }
             return false;
         }, 'clipboard', false);
+    };
+
+    /**
+     * Read the clipboard, or say why it cannot be read.
+     *
+     * The counterpart to copyText and deliberately NOT its mirror image: the
+     * write has a synchronous path and the read does not, so this one answers
+     * through a callback and copyText's plain `true` stays what it is. Both
+     * orders are the same: nw.Clipboard first, because a desktop build runs
+     * from file://, which is not a secure context, and navigator.clipboard is
+     * gated behind one.
+     *
+     * cb(err, text) is called exactly once, with an err whose message is
+     * already written for the user — every caller shows it verbatim.
+     */
+    U.readText = function (cb) {
+        var c = ($.caps && $.caps.clipboard) ? $.caps.clipboard() : { read: false, via: null, why: '' };
+        if (!c.read) {
+            cb(new Error(c.why || 'there is no clipboard to read here. Paste into the box instead.'), null);
+            return;
+        }
+        if (c.via === 'nw.Clipboard') {
+            var text = $.safe(function () { return nw.Clipboard.get().get('text'); }, 'clipboard read', null);
+            if (typeof text === 'string') cb(null, text);
+            else cb(new Error('the clipboard answered with nothing readable as text.'), null);
+            return;
+        }
+        $.safe(function () {
+            var p = navigator.clipboard.readText();
+            if (!p || typeof p.then !== 'function') {
+                cb(new Error('the clipboard returned nothing that can be waited on.'), null);
+                return;
+            }
+            p.then(function (t) { cb(null, String(t == null ? '' : t)); },
+                function (e) {
+                    cb(new Error('the clipboard refused the read — ' + ((e && e.message) || e) +
+                        '. Paste into the box instead.'), null);
+                });
+        }, 'clipboard read');
     };
 
     U.cols = cols;

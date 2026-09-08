@@ -950,6 +950,139 @@ module.exports = async function (ctx) {
     /Seeding is off every time the game starts/.test(rngText), rngText.slice(0, 200));
   await shot('trace-rng');
 
+  /* --- live ---------------------------------------------------------------
+     The Journal is written into by every other panel in the mod, and the RNG
+     counters are the fastest-moving figures in it. Both were painted once.
+     Driven through the shell's own 700ms hook list, because that is the clock
+     they now run on. */
+  const journalLive = await ev(() => {
+    const G = window.GigaHack, J = G.journal, U = G.ui;
+    const host = U.getHost();
+    const tick = () => host.tickHooks.slice().forEach(fn => fn(1));
+    const cellText = (label) => {
+      const labs = document.querySelectorAll('#mm-root .mm-lab');
+      for (let i = 0; i < labs.length; i++) {
+        if (labs[i].textContent === label) return labs[i].parentNode.children[1].textContent;
+      }
+      return '';
+    };
+    const out = {};
+
+    J.clear();
+    G.undo.clear();
+    G.vars.setVar(5, 111);
+
+    U.setOpen(true);
+    G.cfg.ui.tab = 'debug';
+    G.cfg.ui.sub = G.cfg.ui.sub || {};
+    G.cfg.ui.sub.debug = 'Journal';
+    U.rerender();
+
+    const table = document.querySelector('#mm-root .mm-table');
+    out.built = table.mm.rows().length;
+    out.recordedAtBuild = cellText('writes recorded');
+    out.depthAtBuild = cellText('undo depth');
+
+    const firstRow = table.mm.body.querySelector('.mm-tr');
+    tick();
+    out.idleKeptTheSameNode = table.mm.body.querySelector('.mm-tr') === firstRow;
+
+    /* Another panel writes to the game while this one is open — which is the
+       whole reason the journal exists. */
+    G.vars.setVar(5, 222);
+    out.beforeTick = table.mm.rows().length;
+    tick();
+    out.afterTick = table.mm.rows().length;
+    out.sameTable = document.querySelector('#mm-root .mm-table') === table;
+    out.recordedFollowed = cellText('writes recorded');
+    out.depthFollowed = cellText('undo depth');
+
+    /* The undo stack cleared under the reader. No row arrives and none leaves,
+       so a signal counting rows or pushes sees nothing at all — while every
+       "undo to here" button in the table has just stopped working. */
+    G.undo.clear();
+    tick();
+    out.reversibleAfterClear = cellText('reversible now');
+    out.depthAfterClear = cellText('undo depth');
+    out.rowsAfterClear = table.mm.rows().length;
+    out.undoableAfterClear = table.mm.rows().filter(r => r.undoable).length;
+
+    J.clear();
+    G.undo.clear();
+    U.setOpen(false);
+    return out;
+  });
+  check('a write made from another panel appears in the journal while it is open, without the panel being rebuilt',
+    journalLive.built === 1 && journalLive.beforeTick === 1 && journalLive.afterTick === 2 &&
+    journalLive.sameTable === true && journalLive.idleKeptTheSameNode === true &&
+    journalLive.recordedAtBuild === '1' && journalLive.recordedFollowed === '2',
+    JSON.stringify(journalLive));
+  check('the undo stack being cleared under the reader empties "reversible now" — the signal is the ' +
+    'journal\'s own revision, not how many rows it holds or how many writes it has seen',
+    journalLive.depthFollowed === '2' && journalLive.rowsAfterClear === 2 &&
+    journalLive.reversibleAfterClear === '0' && journalLive.depthAfterClear === '0' &&
+    journalLive.undoableAfterClear === 0, JSON.stringify(journalLive));
+
+  const rngLive = await ev(() => {
+    const G = window.GigaHack, U = G.ui;
+    const host = U.getHost();
+    const tick = () => host.tickHooks.slice().forEach(fn => fn(1));
+    const cellText = (label) => {
+      const labs = document.querySelectorAll('#mm-root .mm-lab');
+      for (let i = 0; i < labs.length; i++) {
+        if (labs[i].textContent === label) return labs[i].parentNode.children[1].textContent;
+      }
+      return '';
+    };
+    const out = {};
+
+    G.rng.clear();
+    G.rng.watch(true);
+
+    U.setOpen(true);
+    G.cfg.ui.tab = 'debug';
+    G.cfg.ui.sub = G.cfg.ui.sub || {};
+    G.cfg.ui.sub.debug = 'RNG';
+    U.rerender();
+
+    const table = document.querySelector('#mm-root .mm-table');
+    out.built = table.mm.rows().length;
+    out.sessionAtBuild = cellText('rolls this session');
+
+    const empty = table.mm.body.firstChild;
+    tick();
+    out.idleKeptTheSameNode = table.mm.body.firstChild === empty;
+
+    /* The game rolls while the panel is open. */
+    for (let i = 0; i < 3; i++) Math.random();
+    out.beforeTick = table.mm.rows().length;
+    tick();
+    out.afterTick = table.mm.rows().length;
+    out.sameTable = document.querySelector('#mm-root .mm-table') === table;
+    out.sessionFollowed = cellText('rolls this session');
+    out.recordedFollowed = cellText('recorded');
+
+    /* Cleared: every counter goes back to zero and the list with it. */
+    G.rng.clear();
+    tick();
+    out.clearedRows = table.mm.rows().length;
+    out.clearedSession = cellText('rolls this session');
+
+    G.rng.watch(false);
+    G.rng.clear();
+    U.setOpen(false);
+    return out;
+  });
+  check('a roll made while the RNG panel is open reaches both the counters and the list, without the ' +
+    'panel being rebuilt',
+    rngLive.built === 0 && rngLive.beforeTick === 0 && rngLive.afterTick === 3 &&
+    rngLive.sameTable === true && rngLive.idleKeptTheSameNode === true &&
+    rngLive.sessionAtBuild === '0' && rngLive.sessionFollowed === '3' &&
+    rngLive.recordedFollowed === '3', JSON.stringify(rngLive));
+  check('clearing the recorder while the panel is open empties a list that had filled, and the counters with it',
+    rngLive.afterTick === 3 && rngLive.sessionFollowed === '3' &&
+    rngLive.clearedRows === 0 && rngLive.clearedSession === '0', JSON.stringify(rngLive));
+
   /* --- no game world ------------------------------------------------------- */
   const noWorld = await ev(async () => {
     const G = window.GigaHack;

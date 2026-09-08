@@ -101,6 +101,33 @@
         return name;
     };
 
+    /**
+     * Take a panel back off a tab.
+     *
+     * Registration replaces by name, so nothing needed this until something
+     * could be turned OFF at runtime. An addon that is disabled has to leave
+     * no trace in the strip: a sub-tab that opens onto an empty body is worse
+     * than one that is gone, because there is nothing in it to say why.
+     *
+     * Returns false when there was no such panel, which is not an error — a
+     * disable that runs twice is the normal shape of a teardown.
+     */
+    U.removePanel = function (tabId, name) {
+        var def = null;
+        TABDEFS.forEach(function (t) { if (t.id === tabId) def = t; });
+        if (!def || !panels[tabId]) return false;
+        var before = panels[tabId].length;
+        panels[tabId] = panels[tabId].filter(function (p) { return p.name !== name; });
+        if (panels[tabId].length === before) return false;
+        U.tab(tabDef(def));
+        // The sub-tab that was showing may be the one that just went. The shell
+        // falls back to the first panel on the tab when the remembered sub name
+        // no longer matches, so this only has to stop pointing at a ghost.
+        var sub = ($.cfg.ui.sub || {})[tabId];
+        if (sub === name) $.store.cfgSet('ui.sub.' + tabId, panels[tabId].length ? panels[tabId][0].name : '');
+        return true;
+    };
+
     U.panelNames = function (tabId) {
         return (panels[tabId] || []).map(function (p) { return p.name; });
     };
@@ -140,16 +167,22 @@
     U.debugPanel = function (name, build, order) { return U.panel('debug', name, build, order == null ? 50 : order); };
 
     function kv(label, value, tip) {
-        return h('div', { class: 'mm-row', tip: tip || null },
-            h('div', { class: 'mm-lab', text: label }),
-            // The value is unbounded — a path, a project's own name for
-            // something, a joined list — so the edge is allowed to shrink and
-            // wrap. Without that it pushes the label out and is then clipped
-            // by the column, and neither half can be read.
-            h('div', {
-                class: 'mm-edge mm-edge--shrink mm-edge--wrap mm-mono mm-sub mm-selectable mm-breakall',
-                text: String(value)
-            }));
+        // The value is unbounded — a path, a project's own name for
+        // something, a joined list — so the edge is allowed to shrink and
+        // wrap. Without that it pushes the label out and is then clipped
+        // by the column, and neither half can be read.
+        var val = h('div', {
+            class: 'mm-edge mm-edge--shrink mm-edge--wrap mm-mono mm-sub mm-selectable mm-breakall',
+            text: String(value)
+        });
+        var row = h('div', { class: 'mm-row', tip: tip || null },
+            h('div', { class: 'mm-lab', text: label }), val);
+        /* Held by the three panels here that repaint one figure rather than
+           rebuilding the group it sits in. The write is skipped when the text
+           is already right, so a tick that changed nothing does not drop a
+           selection the reader has made inside the value. */
+        row.mm = { set: function (v) { if (val.textContent !== String(v)) val.textContent = String(v); } };
+        return row;
     }
 
     /**
@@ -329,17 +362,49 @@
             })]
             : [h('div', { class: 'mm-empty', text: 'save paths unavailable (' + $.paths.mode + ' mode)' })];
 
-        // This panel is a snapshot. When the tab is built during boot (the
-        // persisted tab happened to be Debug) the database is not loaded yet,
-        // so several rows read "loading…" until refreshed.
+        /* The Engine group is the one part of this panel that is not a
+           snapshot, and until 2.2 it was the only part that pretended to be:
+           it carried the tag 'live' while the scene name was read once. Two
+           failures came out of that. The scene changes on every map, battle
+           and menu transition, so the row disagreed with the shell's own
+           footer within a second of walking through a door. And when the tab
+           was built during boot — the persisted tab happened to be Debug —
+           the three database rows read "loading…" and went on reading it for
+           the rest of the session, because nothing ever asked again.
+
+           Four text nodes, one signal, and nothing else on the panel moves:
+           $.caps, $.paths and the save paths are boot facts and repainting
+           them would be churn. */
+        function engineNow() {
+            return {
+                game: soft(function () { return $dataSystem.gameTitle; }, 'loading…'),
+                vars: soft(function () { return $dataSystem.variables.length - 1; }, 'loading…'),
+                switches: soft(function () { return $dataSystem.switches.length - 1; }, 'loading…'),
+                scene: soft(function () { return SceneManager._scene.constructor.name; }, '—')
+            };
+        }
+        var now = engineNow();
+        var gameRow = kv('Game', now.game);
+        var varsRow = kv('Variables', now.vars);
+        var switchRow = kv('Switches', now.switches);
+        var sceneRow = kv('Scene', now.scene);
         var engine = [
-            kv('Game', soft(function () { return $dataSystem.gameTitle; }, 'loading…')),
+            gameRow,
             kv('Mod version', $.version),
-            kv('Variables', soft(function () { return $dataSystem.variables.length - 1; }, 'loading…')),
-            kv('Switches', soft(function () { return $dataSystem.switches.length - 1; }, 'loading…')),
-            kv('Scene', soft(function () { return SceneManager._scene.constructor.name; }, '—')),
+            varsRow,
+            switchRow,
+            sceneRow,
+            // Still here, and no longer an admission: the four rows above keep
+            // up on their own, and everything else on this panel — the
+            // capability table, the resolved paths, the save files — is read
+            // once per build on purpose. This is how those get read again.
             h('div', { class: 'mm-inline', style: 'padding:4px 2px' },
-                W.button({ label: 'refresh', wide: true, _ungated: true, onClick: function () { U.rerender(); } }))
+                W.button({
+                    label: 'refresh', wide: true, _ungated: true,
+                    tip: 'Refresh|Rebuilds the panel. The rows above do not need it; the paths, the ' +
+                        'capability table and the save files are read once per build.',
+                    onClick: function () { U.rerender(); }
+                }))
         ];
 
         var compat = U.compatReport();
@@ -365,9 +430,25 @@
             }), { tag: p.notes.length + '' })
             : null;
 
+        var engineGroup = W.group('Engine', engine, { tag: 'live' });
+        /* `within` is the Engine group and not the whole overlay: the default
+           holds a repaint while focus is anywhere in the UI, and the plugin
+           filter box two panels away is not a reason to stop reading the scene
+           name. Nothing inside this group can take focus. */
+        U.live(function () {
+            var v = engineNow();
+            return v.game + '|' + v.vars + '|' + v.switches + '|' + v.scene;
+        }, function () {
+            var v = engineNow();
+            gameRow.mm.set(v.game);
+            varsRow.mm.set(v.vars);
+            switchRow.mm.set(v.switches);
+            sceneRow.mm.set(v.scene);
+        }, { name: 'debug/Environment engine', within: engineGroup });
+
         return cols(
             [capsGroup, W.group('Environment', pathRows, { tag: 'runtime' }), dirGroup, notes],
-            [W.group('Engine', engine, { tag: 'live' }), W.group('Save files', save, { tag: 'read-only' }), compatGroup]
+            [engineGroup, W.group('Save files', save, { tag: 'read-only' }), compatGroup]
         );
     }
 
@@ -675,32 +756,550 @@
         });
         table.mm.paint(list);
 
+        /* This panel does not own its own list. A backup is taken before every
+           dangerous action anywhere in the mod — a teleport, an instant win, a
+           forge write — so the list can grow while the reader is looking at
+           it, and the count beside it would then contradict the rows.
+
+           TWO DIRECTORIES, TWO SIGNALS, BECAUSE THEY CHANGE DIFFERENTLY.
+
+           A backup arrives as a whole new directory whose name carries a
+           timestamp, so a listing of names answers the only question the hook
+           has about B.dir(), and the expensive read — B.list() parses a JSON
+           file per backup — happens once, on the tick that says yes.
+
+           The save directory does not work like that. A save WRITTEN OVER AN
+           EXISTING SLOT — an autosave, or an event that saves to a slot that
+           already has a file — adds and removes no name at all, so a listing
+           of names is byte-identical and the "Newest" row (B.saveFiles()
+           sorted by mtime) goes on naming the wrong file under a group tagged
+           'live'. So this one asks B.saveStamp(), which is the fold Backup
+           already uses to decide whether a set of files is the same set — one
+           rule, in the module that owns it, rather than a second copy here.
+
+           That costs one statSync per save file, and it is the price of the
+           claim rather than a free lunch: U.live asks the signal only after
+           its holds, so nothing here runs while the overlay is closed or the
+           list is being scrolled, and the list the signal builds is kept for
+           the paint so the tick that repaints does not list the directory
+           twice. A blind signal under a 'live' tag would be cheaper and would
+           be a lie. */
+        function dirKey(dir) {
+            if (!dir || !$.env.fs) return '';
+            return $.safe(function () {
+                var names = $.env.fs.readdirSync(dir);
+                return names.length + ':' + names.slice().sort().join(',');
+            }, 'list ' + dir, '');
+        }
+        var lastSaves = saves;
+        function saveKey() {
+            // The list is kept for the paint, so the tick that repaints does
+            // not list the directory a second time to draw what it just read.
+            lastSaves = B.saveFiles();
+            return B.saveStamp(lastSaves);
+        }
+        /* table.mm.isScrolling() is the house guard and it is a no-op here:
+           its only writer is a scroll listener installed inside the virtual
+           branch, and this table is not virtual (a row carries a two-click
+           restore button, and virtual mode rebuilds rows on scroll, which
+           would disarm one mid-confirm). So the gesture is watched here
+           instead — a plain table's paint clears the body, and scrollTop goes
+           with it. */
+        var scrolledAt = 0;
+        table.mm.body.addEventListener('scroll', function () { scrolledAt = Date.now(); });
+
+        var savesRow = kv('Files', saves.length);
+        var newestRow = kv('Newest', saves[0] ? saves[0].name : '—');
+        var savesGroup = W.group('Saves on disk', [
+            kv('Folder', B.saveDir() || '—'),
+            savesRow,
+            newestRow
+        ], { tag: 'live' });
+
+        var backupGroup = W.group('Backups', [
+            kv('Folder', B.dir() || '—'),
+            kv('Kept', $.store.cfgGet('behaviour.backupKeep', 20)),
+            W.button({
+                label: 'back up now', wide: true, _ungated: true,
+                onClick: function () {
+                    var r = B.make('manual', true);
+                    U.toast({
+                        title: r.created ? 'BACKED UP' : 'NOT BACKED UP',
+                        msg: r.created ? r.entry.name : (r.why || r.skipped),
+                        severity: r.created ? 'ok' : 'warn'
+                    });
+                    U.rerender();
+                }
+            }),
+            null
+        ], { tag: list.length + '' });
+
+        U.live(function () { return dirKey(B.dir()) + '|' + saveKey(); }, function () {
+            /* The list the signal has just built, not a second listing of the
+               same directory one line later. */
+            savesRow.mm.set(lastSaves.length);
+            newestRow.mm.set(lastSaves[0] ? lastSaves[0].name : '—');
+            var nowList = B.list();
+            backupGroup.mm.tag(nowList.length + '');
+            table.mm.paint(nowList);
+        }, {
+            name: 'debug/Backups',
+            /* Every row carries a two-click "restore", and the paint rebuilds
+               every row: a backup taken by any other panel between the two
+               clicks would throw the armed state away under the reader's
+               cursor, and the second click would land on a fresh unarmed
+               button. Trace → Journal holds off for exactly this. */
+            when: function () {
+                return Date.now() - scrolledAt > 400 && !table.querySelector('.mm-armed');
+            },
+            whyNot: 'you are scrolling the list, or a restore is armed and waiting for its second click'
+        });
+
         return cols({ narrow: true, items: [
-            W.group('Saves on disk', [
-                kv('Folder', B.saveDir() || '—'),
-                kv('Files', saves.length),
-                kv('Newest', saves[0] ? saves[0].name : '—')
-            ], { tag: 'live' }),
-            W.group('Backups', [
-                kv('Folder', B.dir() || '—'),
-                kv('Kept', $.store.cfgGet('behaviour.backupKeep', 20)),
-                W.button({
-                    label: 'back up now', wide: true, _ungated: true,
-                    onClick: function () {
-                        var r = B.make('manual', true);
-                        U.toast({
-                            title: r.created ? 'BACKED UP' : 'NOT BACKED UP',
-                            msg: r.created ? r.entry.name : (r.why || r.skipped),
-                            severity: r.created ? 'ok' : 'warn'
-                        });
-                        U.rerender();
-                    }
-                }),
-                null
-            ], { tag: list.length + '' })
+            savesGroup,
+            backupGroup
         ] }, [
             W.group('Restore', [table], { grow: true, tag: 'newest first' })
         ]);
+    }
+
+    /* =====================================================================
+       STORAGE
+
+       Where GigaHack's own files are, who decided that, and how to change it.
+
+       Every refusal on this panel names itself, because they are not the same
+       refusal: no filesystem at all, no home directory to put a shared folder
+       in, an answer that has not been given yet, an answer that was "no", a
+       destination that already has the file, and read-only mode. A control
+       greyed with "unavailable" collapses six different situations into one,
+       and five of the six are things the reader could act on.
+
+       Nothing here reads the shared folder while the answer is anything but
+       granted — including to find out whether it holds anything. That read is
+       the thing the question is about.
+       ===================================================================== */
+
+    /* The last store.moveTo result, kept so its per-file report survives the
+       rerender that follows it. A move is the one action on this panel whose
+       outcome is a list rather than a state, and a toast cannot hold a list. */
+    var lastMove = null;
+
+    /** Can this build show a folder in a file manager, and if not, why not. */
+    function revealAvailable() {
+        return $.safe(function () {
+            return !!($.env.nwjs && typeof nw !== 'undefined' && nw.Shell &&
+                typeof nw.Shell.showItemInFolder === 'function');
+        }, 'reveal available', false);
+    }
+    function revealWhy() {
+        if (!$.env.nwjs) {
+            return 'there are no Node APIs on this build, so there is no desktop shell to ask. ' +
+                ($.caps.fsWhy || '');
+        }
+        return 'this build\'s desktop shell does not offer showItemInFolder, so nothing here can ' +
+            'open a file manager for you. The path is above and can be copied.';
+    }
+    function revealButton(label, dir, noDirWhy) {
+        var why = !dir ? noDirWhy : (revealAvailable() ? '' : revealWhy());
+        return W.button({
+            label: label, _ungated: true, disabled: !!why,
+            tip: why ? 'Unavailable|' + why : 'Open|Shows this folder in your file manager.',
+            onClick: function () {
+                var ok = $.safe(function () { nw.Shell.showItemInFolder(dir); return true; },
+                    'show ' + dir + ' in the file manager', false);
+                if (!ok) U.toast({ title: 'COULD NOT OPEN', msg: revealWhy(), severity: 'warn' });
+            }
+        });
+    }
+
+    function explain(text) {
+        return h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal', text: text });
+    }
+
+    var ANSWER_TEXT = {
+        granted: 'allowed — a folder of its own, outside the game',
+        declined: 'refused — everything stays beside the game',
+        unasked: 'not answered yet — behaves exactly as if refused',
+        moot: 'there is nothing to answer'
+    };
+
+    /* --------------------------------------------------------- the answer */
+    function answerGroup() {
+        var p = $.paths, rec = $.consentRecord();
+        var rows = [
+            kv('Answer', ANSWER_TEXT[p.consent] || p.consent),
+            explain(p.consentWhy)
+        ];
+        if (rec) {
+            rows.push(kv('Given', rec.at || 'at an unrecorded time'));
+            rows.push(kv('By version', rec.version || 'unknown'));
+            rows.push(kv('Times asked', rec.asked || 1));
+            rows.push(W.pathRow('Recorded in', rec._where, {
+                why: 'the answer is in memory only for this launch',
+                tip: 'Recorded in|Beside the game, never in the shared folder: an answer in a shared ' +
+                    'folder could reach another game, which is the one thing it exists to prevent.'
+            }));
+        } else if (p.consent !== 'moot') {
+            rows.push(explain('Nothing has been recorded for this game yet.'));
+        }
+        if (p.consent !== 'moot' && $.consentDeferred && $.consentDeferred()) {
+            rows.push(explain('You asked to be asked again next launch, so the card does not appear again ' +
+                'in this one.'));
+        }
+
+        /* The answer that is in force is marked ON rather than removed. Two
+           buttons and no mark reads as a choice nobody has made yet, and
+           taking the current one away would remove the only way to re-run the
+           grant — which is what adopts a shared folder somebody has just
+           restored from a backup by hand. */
+        function markCurrent(btn, answer) {
+            if (p.consent === answer) {
+                btn.classList.add('mm-on');
+                btn.setAttribute('data-mm-tip', 'In force|This is the answer for this game. ' +
+                    'Pressing it again re-runs it.');
+            }
+            return btn;
+        }
+
+        rows.push(h('div', { class: 'mm-inline', style: 'padding:4px 2px' },
+            markCurrent(W.button({
+                label: 'Use the shared folder', variant: 'prime', mutates: true,
+                disabled: p.consent === 'moot',
+                tip: p.consent === 'moot' ? 'Unavailable|' + p.consentWhy
+                    : 'Allow|Settings and addons move to a folder of GigaHack\'s own. Nothing is ' +
+                      'copied by this on its own — the move below does that, and it never deletes.',
+                onClick: function () { $.safe(function () { $.store.grantStorage(); }, 'grant storage'); }
+            }), 'granted'),
+            markCurrent(W.button({
+                label: 'Keep everything beside the game', _ungated: true,
+                disabled: p.consent === 'moot',
+                tip: p.consent === 'moot' ? 'Unavailable|' + p.consentWhy
+                    : 'Refuse|Nothing outside the game folder is read or written.',
+                onClick: function () {
+                    $.safe(function () { $.store.declineStorage(); }, 'decline storage');
+                    U.toast({ title: 'BESIDE THE GAME', msg: $.paths.dataDir || $.paths.mode, severity: 'ok' });
+                }
+            }), 'declined'),
+            W.button({
+                label: 'Show the question again', _ungated: true,
+                disabled: p.consent === 'moot',
+                tip: p.consent === 'moot' ? 'Unavailable|' + p.consentWhy
+                    : 'Ask|Puts the first-launch card back on screen. It answers nothing by itself.',
+                onClick: function () {
+                    var r = U.showStorageCard();
+                    if (!r.shown) U.toast({ title: 'NOT ASKED', msg: r.why, severity: 'warn', ms: 6000 });
+                }
+            })));
+
+        rows.push(explain('The answer is per game and is written beside THIS game. Answering here says ' +
+            'nothing about any other game on this machine: copy GigaHack into a second game and it ' +
+            'asks again there. That is structural — a file beside one game cannot reach another.'));
+        rows.push(explain('GigaHack 2.1.0 and earlier wrote to the shared folder without asking. If you ' +
+            'used it before, what it saved is still there and is adopted rather than overwritten the ' +
+            'moment you allow this.'));
+
+        return W.group('The answer', rows, { tag: $.paths.consent });
+    }
+
+    /* ------------------------------------------------------ the locations */
+    function whereGroup() {
+        var p = $.paths;
+        return W.group('Where the data is now', [
+            kv('Persistence', p.mode + (p.fallbackUsed ? ' (fallback)' : ''),
+                'Persistence|fs = JSON files on disk. localStorage / memory mean there was no ' +
+                'writable directory to use.'),
+            W.pathRow('In use now', p.dataDir, {
+                why: 'there is no directory in ' + p.mode + ' mode — ' + ($.caps.fsWhy || 'no filesystem here.'),
+                tip: 'In use|Everything below is written here, this launch.'
+            }),
+            kv('Outside the game folder', p.outsideGameFolder ? 'yes' : 'no',
+                'Outside|Whether a game update or a reinstall would take these files with it.'),
+            h('div', { class: 'mm-inline', style: 'padding:4px 2px' },
+                revealButton('open this folder', p.dataDir,
+                    'there is no directory to open in ' + p.mode + ' mode.'))
+        ], { tag: p.mode });
+    }
+
+    function locationsGroup() {
+        var p = $.paths;
+        var sharedWhy = p.consent === 'granted' ? '' :
+            'computed but never touched: ' + p.consentWhy;
+        return W.group('The two locations', [
+            W.pathRow('Beside the game', p.localDir, {
+                why: 'no writable directory was found beside the game.',
+                tip: 'Beside the game|Needs no permission — GigaHack is already installed here.'
+            }),
+            W.pathRow('A folder of its own', p.sharedDir, {
+                why: 'there is no application-data folder to reach from this build.',
+                tip: 'Shared folder|Survives a game update or a reinstall.'
+            }),
+            W.pathRow('Shared between games', p.sharedCommonDir, {
+                why: 'there is no application-data folder to reach from this build.',
+                tip: 'Common folder|Holds only the sections you choose to share.'
+            }),
+            sharedWhy ? explain(sharedWhy) : null,
+            h('div', { class: 'mm-inline', style: 'padding:4px 2px' },
+                revealButton('open the shared folder',
+                    p.consent === 'granted' ? p.sharedDir : null,
+                    'nothing outside the game folder is opened until the answer is yes. ' + p.consentWhy))
+        ], { tag: p.consent === 'granted' ? 'in use' : 'not in use' });
+    }
+
+    /* ---------------------------------------------------------- the move */
+    function moveGroup() {
+        var p = $.paths;
+        /* ONE reason, for BOTH buttons. The consent clause used to be folded
+           into the "to the shared folder" button only, so "copy everything back
+           beside the game" stayed live while the answer was unasked — and
+           store.moveTo would then read, stat and copy the whole file list OUT
+           of a folder nobody had agreed to, with "remove the old copy"
+           underneath it. Coming back out of that folder reads it, which is the
+           act the question is about, so the greying is symmetric too. */
+        var noDirs = '';
+        if (p.mode !== 'fs') {
+            noDirs = 'persistence is in ' + p.mode + ' mode here, so there are no directories to move ' +
+                'anything between. ' + ($.caps.fsWhy || '');
+        } else if (!p.localDir || !p.sharedDir) {
+            noDirs = 'one of the two locations could not be resolved on this build (beside the game: ' +
+                (p.localDir || 'unknown') + ', shared: ' + (p.sharedDir || 'unknown') + ').';
+        } else if (p.consent !== 'granted') {
+            noDirs = 'the shared folder needs an answer that has not been given (' + p.consent + '). ' +
+                'The answer is above, and it greys both directions: copying back out of that folder ' +
+                'reads it, which is the act the question is about.';
+        }
+
+        function move(target) {
+            return function () {
+                lastMove = $.safe(function () { return $.store.moveTo(target); }, 'move to ' + target, null);
+                if (!lastMove) return;
+                U.toast({
+                    title: lastMove.ok ? 'COPIED' : 'NOT COPIED',
+                    msg: lastMove.copied.length + ' copied, ' + lastMove.kept.length + ' kept, ' +
+                        lastMove.failed.length + ' failed. Nothing was deleted.' +
+                        (lastMove.why ? ' ' + lastMove.why : ''),
+                    severity: lastMove.ok ? 'ok' : 'warn', ms: 7000
+                });
+                U.rerender();
+            };
+        }
+
+        var rows = [
+            explain('Copies. A file the destination already has is kept and said so, per file — a merge ' +
+                'nobody asked for is worse than a stated skip. Nothing is deleted; removing the old ' +
+                'copy is the separate button under the report.'),
+            h('div', { class: 'mm-inline', style: 'padding:4px 2px' },
+                W.button({
+                    label: 'copy everything to the shared folder', mutates: true,
+                    disabled: !!noDirs,
+                    tip: noDirs ? 'Unavailable|' + noDirs : 'Copy|' + p.localDir + ' → ' + p.sharedDir,
+                    onClick: move('shared')
+                }),
+                W.button({
+                    label: 'copy everything back beside the game', mutates: true,
+                    disabled: !!noDirs,
+                    tip: noDirs ? 'Unavailable|' + noDirs : 'Copy|' + p.sharedDir + ' → ' + p.localDir,
+                    onClick: move('local')
+                }))
+        ];
+        if (noDirs) rows.push(explain(noDirs));
+
+        if (lastMove) {
+            var report = [];
+            lastMove.copied.forEach(function (c) {
+                report.push({ state: 'copied', name: c.name, detail: c.files + ' file(s) → ' + c.to });
+            });
+            lastMove.kept.forEach(function (k) {
+                report.push({ state: 'kept', name: k.name, detail: k.why + ' (' + k.at + ')' });
+            });
+            lastMove.failed.forEach(function (f) {
+                report.push({ state: 'failed', name: f.name, detail: f.why });
+            });
+            var table = W.table({
+                key: 'storage.move',
+                cols: [
+                    { label: '', w: '0 0 50px' },
+                    { label: 'file', w: '0 0 108px' },
+                    { label: 'what happened', w: '1 1 0' }
+                ],
+                empty: 'that move had nothing to do',
+                render: function (r) {
+                    return [
+                        h('span', {
+                            class: 'mm-cell mm-sub',
+                            style: 'color:' + (r.state === 'failed' ? 'var(--mm-danger)'
+                                : r.state === 'kept' ? 'var(--mm-warn)' : 'var(--mm-ok)'),
+                            text: r.state
+                        }),
+                        h('span', { class: 'mm-cell mm-selectable', text: r.name }),
+                        h('span', { class: 'mm-cell mm-sub', style: 'white-space:normal', text: r.detail })
+                    ];
+                }
+            });
+            table.mm.paint(report);
+            rows.push(table);
+            if (!lastMove.complete) rows.push(explain(lastMove.why));
+            rows.push(W.button({
+                label: 'remove the old copy', variant: 'danger', mutates: true, wide: true,
+                disabled: !lastMove.pairs.length,
+                confirmLabel: 'delete ' + lastMove.pairs.length + ' file(s)?',
+                tip: lastMove.pairs.length
+                    ? 'Remove|Deletes exactly the ' + lastMove.pairs.length + ' file(s) that move copied, ' +
+                      'from exactly where it copied them from, and only where the copy is there.'
+                    : 'Unavailable|That move copied nothing, so there is no old copy to remove.',
+                onClick: function () {
+                    var r = $.safe(function () { return $.store.dropSource(lastMove); }, 'drop the old copy', null);
+                    if (!r) return;
+                    /* A refusal removed nothing and left nothing behind to
+                       count, so it gets its own sentence: "0 removed, 0 left in
+                       place" says the opposite of what happened when the files
+                       are all still there. */
+                    var refused = !r.ok && !r.removed.length && !r.failed.length && r.why;
+                    U.toast({
+                        title: refused ? 'NOT REMOVED' : (r.ok ? 'REMOVED' : 'NOT ALL REMOVED'),
+                        msg: refused ? r.why
+                            : r.removed.length + ' removed, ' + r.failed.length + ' left in place. ' +
+                              (r.why || 'Empty directories are left where they are.'),
+                        severity: r.ok ? 'ok' : 'warn', ms: 6000
+                    });
+                    U.rerender();
+                }
+            }));
+        }
+        return W.group('Moving the files', rows, {
+            tag: lastMove ? (lastMove.copied.length + ' copied') : 'copies, never deletes'
+        });
+    }
+
+    /* ---------------------------------------------- shared between games */
+    var SHARE_TEXT = {
+        ui: 'The menu\'s size, scale, opacity and accent. About the person, not the game.',
+        behaviour: 'Pause while open, read-only, confirmations. About the person, not the game.',
+        hotkeys: 'Off by default: a hotkey default is derived from the keys THIS game leaves free, ' +
+            'and a key that is free in one game is claimed in another. A shared bind is applied only ' +
+            'where this game has not claimed the key, and every skip is listed below with its claimant.'
+    };
+
+    function sharedGroup() {
+        var avail = $.store.sharedAvailable();
+        var why = $.store.sharedWhy();
+        var writers = avail ? $.store.sharedWriters() : {};
+        var rows = [];
+
+        if (!avail) rows.push(explain(why));
+
+        $.store.sharedSections().forEach(function (s) {
+            /* The file's own record first: sharedSections() carries who this
+               game ADOPTED from, which is the same answer until somebody
+               writes again, and "who last wrote it" is the question that makes
+               a setting nobody here changed attributable. */
+            var wrote = writers[s.section] || s.wroteIt || null;
+            var note = SHARE_TEXT[s.section] || '';
+            if (wrote && wrote.game) note += '  Last written by ' + wrote.game + '.';
+            rows.push(W.toggleRow(s.section, {
+                value: s.on, disabled: !avail && !s.on, sub: wrote && wrote.game ? 'from ' + wrote.game : '',
+                tip: s.section + '|' + note,
+                onChange: function (on) {
+                    var r = $.safe(function () { return $.store.setShared(s.section, on); },
+                        'share ' + s.section, null);
+                    if (!r) return;
+                    if (!r.ok) {
+                        U.toast({ title: 'NOT SHARED', msg: r.why, severity: 'warn', ms: 6000 });
+                        U.rerender();
+                        return;
+                    }
+                    /* Adopting another game's `ui` changes the accent and the
+                       scale in $.cfg, and nothing else re-reads those: without
+                       this the overlay keeps its old look until the next
+                       launch and the toggle reads as broken. */
+                    if (s.section === 'ui') {
+                        U.apply({ accent: $.cfg.ui.accent, scale: $.cfg.ui.scale, opacity: $.cfg.ui.opacity });
+                    }
+                    if (s.section === 'behaviour') U.apply({ readonly: $.cfg.behaviour.readonly });
+                    U.toast({
+                        title: r.adopted ? 'ADOPTED' : (on ? 'SHARED' : 'THIS GAME\'S OWN'),
+                        msg: r.why, severity: 'ok', ms: 7000
+                    });
+                    U.rerender();
+                }
+            }));
+            rows.push(explain(note));
+        });
+
+        var rep = $.store.sharedHotkeyReport();
+        if (rep) {
+            if (rep.reason) rows.push(explain(rep.reason));
+            rep.applied.forEach(function (a) {
+                rows.push(kv(a.id, 'took ' + (a.code ? U.prettyCode(a.code) : 'unbound') + ' from the shared set'));
+            });
+            rep.skipped.forEach(function (a) {
+                rows.push(h('div', { class: 'mm-row' },
+                    h('div', { class: 'mm-lab', text: a.id }),
+                    h('div', {
+                        class: 'mm-edge mm-edge--shrink mm-edge--wrap mm-sub',
+                        style: 'color:var(--mm-warn)',
+                        text: U.prettyCode(a.code) + ' not taken — this game claims it (' + a.claimedBy + ')'
+                    })));
+            });
+            if (rep.skipped.length) {
+                rows.push(explain('GigaHack sees a key before the game does, so taking a claimed key would ' +
+                    'take the game\'s own action away. Settings → Hotkeys binds something else.'));
+            }
+        }
+
+        if (avail) {
+            rows.push(W.pathRow('Shared file', $.store.sharedFile(), {
+                why: 'there is no cross-game file on this build'
+            }));
+        }
+        return W.group('Shared between games', rows, { tag: avail ? 'available' : 'unavailable' });
+    }
+
+    /* ------------------------------------------------ what is in there */
+    function contentsGroup() {
+        var table = W.table({
+            key: 'storage.files',
+            cols: [
+                { label: 'name', w: '0 0 116px' },
+                { label: 'what', w: '1 1 0' },
+                { label: 'travels', w: '0 0 74px' }
+            ],
+            empty: 'the store owns nothing on this build',
+            render: function (e) {
+                return [
+                    h('span', { class: 'mm-cell mm-mono mm-selectable', text: e.name + (e.dir ? '/' : '') }),
+                    h('span', { class: 'mm-cell mm-sub', style: 'white-space:normal', text: e.what }),
+                    h('span', {
+                        class: 'mm-cell mm-sub',
+                        text: e.local ? 'stays' : e.transient ? 'rebuilt' : 'moves'
+                    })
+                ];
+            },
+            onRow: function (tr, e) {
+                if (e.local) tr.setAttribute('data-mm-tip', e.name + '|Stays beside this game whatever ' +
+                    'the answer is. An answer in a shared folder could reach another game.');
+                else if (e.transient) tr.setAttribute('data-mm-tip', e.name + '|Rebuilt from nothing at ' +
+                    'the next launch, so a copy of it would only ever be stale.');
+            }
+        });
+        table.mm.paint($.store.files());
+        return W.group('What this folder holds', [
+            table,
+            explain('One list, read by the move, by this table and by the folder readout — three copies ' +
+                'of it would disagree within a month.')
+        ], { grow: true, tag: $.store.files().length + ' entries' });
+    }
+
+    function buildStorage() {
+        if (!$.setConsent || !$.store || !$.store.sharedSections) {
+            return todo('UNAVAILABLE', 'this build\'s storage layer cannot answer the question', [
+                'Debug → Environment says where settings are being written in the meantime.'
+            ]);
+        }
+        return cols(
+            [whereGroup(), answerGroup(), locationsGroup()],
+            [moveGroup(), sharedGroup(), contentsGroup()]
+        );
     }
 
     /* =====================================================================
@@ -710,6 +1309,25 @@
     U.panel('settings', 'Behaviour', function () { return buildBehaviour(); }, 20);
     U.panel('settings', 'Hotkeys', function () { return buildHotkeys(); }, 30);
     U.panel('settings', 'Profiles', function () { return buildProfiles(); }, 40);
+    U.panel('settings', 'Storage', function () { return buildStorage(); }, 50);
+
+    /* An answer given on the first-launch card, or a directory relocated from
+       anywhere, changes every line this panel prints. Gated on tab AND sub the
+       way every other cross-panel refresh in this codebase is: Settings
+       carries five other panels, and rebuilding one of those because the
+       storage answer moved would take a half-typed profile name or an open
+       keybind capture with it. */
+    function refreshStorageIfShowing() {
+        /* The move report names a source and a destination, and the answer
+           that just changed is what decides which two directories those are.
+           Keeping it would print a move between places nothing goes any more. */
+        lastMove = null;
+        if (!U.isOpen()) return;
+        if ($.cfg.ui.tab !== 'settings') return;
+        if (($.cfg.ui.sub || {}).settings !== 'Storage') return;
+        U.rerender();
+    }
+    $.on('paths:changed', refreshStorageIfShowing);
 
 
     /* =====================================================================
@@ -1327,56 +1945,83 @@
                 ['See the log — the call threw.']);
         }
 
-        /* --- status --------------------------------------------------- */
-        var statusRows = [
-            kv('Phase', st.phase, 'Phase|idle · building · ready · failed · disabled'),
-            kv('Progress', Math.round((st.progress || 0) * 100) + '%' + (st.stage ? '  —  ' + st.stage : '')),
-            kv('Built', st.built ? new Date(st.built).toLocaleString() : '—'),
-            kv('Source', st.fromCache ? 'loaded from cache' : 'built this session')
-        ];
-        if (st.error) {
-            statusRows.push(h('div', { class: 'mm-sub mm-selectable', style: 'padding:2px;white-space:normal;color:var(--mm-danger)', text: String(st.error) }));
+        /* --- status ---------------------------------------------------
+           The index builds in the background, and this is the panel that
+           watches it do so. Painted once, it showed "building · 40%" until
+           somebody pressed a button labelled "refresh" whose entire body was
+           U.rerender() — which is a panel admitting in a control that it does
+           not update. The button is gone and the rows update themselves.
+
+           Every readout here is a held text node, a group tag or a table
+           paint. Nothing in this panel that a person can be inside — the
+           rebuild button's armed state, the benchmark table — is rebuilt by
+           the tick. */
+        function progressText(s) {
+            return Math.round((s.progress || 0) * 100) + '%' + (s.stage ? '  —  ' + s.stage : '');
         }
-        statusRows.push(h('div', { class: 'mm-inline', style: 'padding:4px 2px' },
-            W.button({
-                label: 'refresh', _ungated: true,
-                onClick: function () { U.rerender(); }
-            }),
-            W.button({
-                label: 'Rebuild index', variant: 'danger', mutates: true,
-                confirmLabel: 'rebuild it?',
-                tip: 'Rebuild|Reads the database again. Nothing in the game is touched.',
-                onClick: function () {
-                    $.safe(function () { X.rebuild(); }, 'index rebuild');
-                    U.toast({ title: 'REBUILDING', msg: 'the index is being rebuilt in the background', severity: 'ok' });
-                    U.rerender();
-                }
-            })));
+        var phaseRow = kv('Phase', st.phase, 'Phase|idle · building · ready · failed · disabled');
+        var progressRow = kv('Progress', progressText(st));
+        var builtRow = kv('Built', st.built ? new Date(st.built).toLocaleString() : '—');
+        var sourceRow = kv('Source', st.fromCache ? 'loaded from cache' : 'built this session');
+        var errorRow = h('div', {
+            class: 'mm-sub mm-selectable',
+            style: 'padding:2px;white-space:normal;color:var(--mm-danger)',
+            text: st.error ? String(st.error) : ''
+        });
+        errorRow.style.display = st.error ? '' : 'none';
+
+        var statusRows = [
+            phaseRow, progressRow, builtRow, sourceRow, errorRow,
+            h('div', { class: 'mm-inline', style: 'padding:4px 2px' },
+                W.button({
+                    label: 'Rebuild index', variant: 'danger', mutates: true,
+                    confirmLabel: 'rebuild it?',
+                    tip: 'Rebuild|Reads the database again. Nothing in the game is touched. The rows ' +
+                        'above follow it while it runs.',
+                    onClick: function () {
+                        $.safe(function () { X.rebuild(); }, 'index rebuild');
+                        U.toast({ title: 'REBUILDING', msg: 'the index is being rebuilt in the background', severity: 'ok' });
+                    }
+                }))
+        ];
 
         /* --- counts --------------------------------------------------- */
-        var countRows = [];
-        if (st.counts) {
-            Object.keys(st.counts).forEach(function (k) {
-                if (st.counts[k] === null || st.counts[k] === undefined) return;
-                countRows.push(kv(k, st.counts[k]));
-            });
+        function countsInto(box, s) {
+            var rows = [];
+            if (s.counts) {
+                Object.keys(s.counts).forEach(function (k) {
+                    if (s.counts[k] === null || s.counts[k] === undefined) return;
+                    rows.push(kv(k, s.counts[k]));
+                });
+            }
+            if (!rows.length) rows.push(h('div', { class: 'mm-empty', text: 'nothing indexed yet' }));
+            U.clear(box);
+            rows.forEach(function (r) { box.appendChild(r); });
         }
-        if (!countRows.length) countRows.push(h('div', { class: 'mm-empty', text: 'nothing indexed yet' }));
 
-        /* --- notes: why a query would be incomplete ------------------- */
-        var notes = (st.notes || []).map(function (n) {
-            return h('div', { class: 'mm-sub mm-selectable', style: 'padding:2px;white-space:normal', text: n });
-        });
-        var notesGroup = notes.length
-            ? W.group('Notes', notes.concat([
-                h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
-                    'Every incomplete query carries one of these as its reason.')
-            ]), { tag: notes.length + '' })
-            : null;
+        /* --- notes: why a query would be incomplete -------------------
+           Always built, even when there are none. A group that appears the
+           moment the first note arrives is a shape change, and a shape change
+           is a rebuild of the whole tab — which would take the rebuild
+           button's armed state and the benchmark results with it. */
+        function notesInto(box, s) {
+            var list = s.notes || [];
+            U.clear(box);
+            if (!list.length) {
+                box.appendChild(h('div', { class: 'mm-empty', text: 'no query has reported a reason to be incomplete' }));
+                return;
+            }
+            list.forEach(function (n) {
+                box.appendChild(h('div', { class: 'mm-sub mm-selectable', style: 'padding:2px;white-space:normal', text: n }));
+            });
+            box.appendChild(h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
+                'Every incomplete query carries one of these as its reason.'));
+        }
 
         /* --- timings -------------------------------------------------- */
         var timings = $.safe(function () { return X.timings(); }, 'index timings', []);
         var timingTable = W.table({
+            key: 'index.timings',
             cols: [
                 { label: 'stage', w: '1 1 0' },
                 { label: 'ms', w: '0 0 62px', cls: 'mm-td-num' }
@@ -1387,7 +2032,13 @@
             }
         });
         timingTable.mm.paint(timings);
-        var total = timings.reduce(function (a, r) { return a + (r.ms || 0); }, 0);
+        function totalOf(rows) { return rows.reduce(function (a, r) { return a + (r.ms || 0); }, 0); }
+        function costText(rows, s) {
+            return 'Slowest first. Total ' + totalOf(rows) + 'ms' +
+                (s.fromCache ? ' when it was last built — this session loaded the cache.' : '.');
+        }
+        var total = totalOf(timings);
+        var costNote = h('div', { class: 'mm-sub', style: 'padding:4px 2px;white-space:normal', text: costText(timings, st) });
 
         /* --- benchmark ------------------------------------------------ */
         var benchRows = lastBench || [];
@@ -1424,17 +2075,44 @@
             benchTable
         ], { grow: true, tag: benchRows.length ? benchRows.length + ' measured' : 'not run' });
 
+        var statusGroup = W.group('Status', statusRows, { tag: st.phase });
+        var countsGroup = W.group('Contents', [], { tag: 'counts' });
+        var notesGroup = W.group('Notes', [], { tag: (st.notes || []).length + '' });
+        var costGroup = W.group('Build cost', [timingTable, costNote], { tag: total + 'ms' });
+        countsInto(countsGroup.mm.body, st);
+        notesInto(notesGroup.mm.body, st);
+
+        /* One signal for the whole panel. `built` and `error` are in it because
+           a build that finishes and one that fails both leave the phase at a
+           value it could already have had, and `notes.length` because a note
+           can arrive without the phase moving at all. */
+        U.live(function () {
+            var s = $.safe(function () { return X.status(); }, 'index status', null);
+            if (!s) return 'unreadable';
+            return s.phase + '|' + s.progress + '|' + s.stage + '|' + s.built + '|' +
+                (s.error || '') + '|' + (s.notes || []).length + '|' + (s.fromCache ? 1 : 0);
+        }, function () {
+            var s = $.safe(function () { return X.status(); }, 'index status', null);
+            if (!s) return;
+            phaseRow.mm.set(s.phase);
+            progressRow.mm.set(progressText(s));
+            builtRow.mm.set(s.built ? new Date(s.built).toLocaleString() : '—');
+            sourceRow.mm.set(s.fromCache ? 'loaded from cache' : 'built this session');
+            errorRow.textContent = s.error ? String(s.error) : '';
+            errorRow.style.display = s.error ? '' : 'none';
+            statusGroup.mm.tag(s.phase);
+            countsInto(countsGroup.mm.body, s);
+            notesGroup.mm.tag((s.notes || []).length + '');
+            notesInto(notesGroup.mm.body, s);
+            var t = $.safe(function () { return X.timings(); }, 'index timings', []);
+            timingTable.mm.paint(t);
+            costNote.textContent = costText(t, s);
+            costGroup.mm.tag(totalOf(t) + 'ms');
+        }, { name: 'debug/Index', within: statusGroup });
+
         return cols(
-            [W.group('Status', statusRows, { tag: st.phase }),
-             W.group('Contents', countRows, { tag: 'counts' }),
-             notesGroup],
-            [W.group('Build cost', [
-                timingTable,
-                h('div', { class: 'mm-sub', style: 'padding:4px 2px;white-space:normal' },
-                    'Slowest first. Total ' + total + 'ms' +
-                    (st.fromCache ? ' when it was last built — this session loaded the cache.' : '.'))
-            ], { tag: total + 'ms' }),
-             benchGroup]
+            [statusGroup, countsGroup, notesGroup],
+            [costGroup, benchGroup]
         );
     }
 

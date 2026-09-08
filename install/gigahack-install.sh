@@ -29,13 +29,46 @@
 #=============================================================================
 set -eu
 
-VERSION="2.1.0"
+VERSION="2.2.0"
 BEGIN_MARK="// >>> GigaHack ${VERSION} BEGIN — installed automatically; edit at your own risk"
 END_MARK="// <<< GigaHack END"
 ANY_BEGIN="// >>> GigaHack"
 BACKUP_SUFFIX=".gigahack-backup"
 
 SRC="$(cd "$(dirname "$0")" && pwd)"
+
+# Temp files this run is holding, so an interrupt does not leave them behind.
+#
+# It already has. A game folder on this machine still carries a 137KB
+# plugins.js.gigahack-tmp10 and three empty .err files from a run that was
+# killed between writing them and cleaning up — the normal paths all remove
+# them, and none of the normal paths ran. Nothing looked for them afterwards
+# either, so they sat there for weeks: litter in somebody else's game folder,
+# which is the one place this script has no business leaving anything.
+#
+# Newline-separated, never space-separated. A game folder path has spaces in
+# it, and word-splitting on space is how "A New Dawn 5.3.2 mac" became three
+# targets, each confidently reported as not a game folder.
+GH_TMPS=""
+tmp_track() { GH_TMPS="$GH_TMPS$1
+"; }
+cleanup_tmps() {
+	[ -n "$GH_TMPS" ] || return 0
+	printf '%s' "$GH_TMPS" | while IFS= read -r f; do
+		[ -n "$f" ] && rm -f "$f"
+	done
+}
+trap cleanup_tmps EXIT INT TERM
+
+# Everything a killed run of this script could have left beside plugins.js.
+# One list, because verify reports them and uninstall removes them and two
+# copies of a glob would drift.
+strays_beside() {
+	for f in "$1".gigahack-tmp* "$1".gigahack-ent* "$1".gigahack-strip*; do
+		[ -e "$f" ] || continue
+		printf '%s\n' "$f"
+	done
+}
 
 # Find the payload by MANIFEST, never by the presence of js/plugins.
 #
@@ -326,6 +359,13 @@ do_verify() {
 			| grep -q '"name"'; then last=0; fi
 	fi
 
+	# Anything a killed run left beside plugins.js. It does not stop the game
+	# — PluginManager reads plugins.js and nothing else — so nothing would ever
+	# have said so, which is exactly why it is said here.
+	strays="$(strays_beside "$root/js/plugins.js")"
+	nstray=0
+	if [ -n "$strays" ]; then nstray="$(printf '%s\n' "$strays" | grep -c .)"; fi
+
 	if [ -n "$missing" ]; then bad "missing:$missing"; fi
 	if [ -n "$unreadable" ]; then
 		bad "present but NOT READABLE by the game:$unreadable"
@@ -337,6 +377,12 @@ do_verify() {
 	elif [ "$last" -eq 0 ]; then
 		bad "GigaHack is listed but NOT LAST in js/plugins.js."
 		bad "Plugins after it wrap our hooks and can undo what the menu does. Re-run this installer."
+	fi
+
+	if [ "$nstray" -gt 0 ]; then
+		step "$nstray leftover file(s) from an interrupted run are sitting in js/ — harmless to the"
+		step "game, and removed by:  $0 --uninstall \"$root\"   (or delete them by hand)"
+		printf '%s\n' "$strays" | while IFS= read -r f; do [ -n "$f" ] && step "  $f"; done
 	fi
 
 	if [ -z "$missing" ] && [ -z "$unreadable" ] && [ "$listed" -eq 1 ] && [ "$last" -eq 1 ]; then
@@ -395,6 +441,7 @@ do_install() {
 	tmp="$pj.gigahack-tmp$$"
 	ent="$pj.gigahack-ent$$"
 	strip="$pj.gigahack-strip$$"
+	tmp_track "$tmp"; tmp_track "$tmp.err"; tmp_track "$ent"; tmp_track "$strip"
 	build_entries > "$ent"
 	strip_block "$pj" > "$strip"
 	if ! insert_block "$ent" "$strip" > "$tmp" 2>"$tmp.err"; then
@@ -463,11 +510,20 @@ do_uninstall() {
 		# awk's sub() — awk has no capture groups, so it wrote the literal
 		# text "]\1" into plugins.js and the game would not boot.
 		tmp="$pj.gigahack-tmp$$"
+		tmp_track "$tmp"
 		strip_block "$pj" > "$tmp"
 		mv "$tmp" "$pj"
 		step "GigaHack entries removed from js/plugins.js (no backup was present)"
 	else
 		step "js/plugins.js had no GigaHack entries"
+	fi
+
+	# And anything an interrupted run left behind, which nothing else removes.
+	nstray=0
+	strays_beside "$pj" | while IFS= read -r f; do [ -n "$f" ] && rm -f "$f"; done
+	nstray="$(strays_beside "$pj" | grep -c . || true)"
+	if [ "$nstray" -ne 0 ]; then
+		bad "$nstray leftover file(s) beside js/plugins.js could not be removed"
 	fi
 	ok=$((ok + 1))
 }

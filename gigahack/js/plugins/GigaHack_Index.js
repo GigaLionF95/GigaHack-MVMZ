@@ -591,6 +591,26 @@
         return X.build({ force: true });
     };
 
+    /**
+     * Write what is already built into wherever the store now points.
+     *
+     * Not a rebuild. The index describes the GAME's database, and the data
+     * directory moving says nothing about the game — so re-deriving it would
+     * spend a second of frames to reach the same answer, and would leave every
+     * query reporting "incomplete" while it ran, which reads as a broken index
+     * rather than a busy one. What actually needs doing is leaving a copy in
+     * the new directory so the next launch finds one. Returns false when there
+     * is nothing built to write, which is not an error.
+     */
+    X.persist = function () {
+        if (!data) return false;
+        return $.safe(function () {
+            if (!$.store) return false;
+            $.store.write(FILE, data);
+            return true;
+        }, 'index cache write', false);
+    };
+
     X.clear = function () {
         data = null;
         state.phase = 'idle';

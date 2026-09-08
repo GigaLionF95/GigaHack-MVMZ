@@ -12,8 +12,8 @@
 set -euo pipefail
 
 REPO="GigaLionF95/GigaHack-MVMZ"
-TAG="v2.1.0"
-TITLE="GigaHack MV/MZ 2.1.0"
+TAG="v2.2.0"
+TITLE="GigaHack MV/MZ 2.2.0"
 
 # Arguments are passed straight through to build-release.sh. The only one that
 # matters is --fast, which skips the browser suite when Playwright and its
@@ -109,6 +109,33 @@ INST_VER="$(sed -n 's/^VERSION="\([^"]*\)".*/\1/p' install/gigahack-install.sh |
 PS_VER="$(sed -n "s/^\\\$Version *= *'\([^']*\)'.*/\1/p" install/gigahack-install.ps1 | head -1)"
 [ "$PS_VER" = "$VER" ] || die "the PowerShell installer says $PS_VER but the manifest says $VER."
 
+# The check totals come out of the logs the build just wrote, not out of a
+# number typed here. Every count in this project that was typed somewhere went
+# stale, and a release commit claiming a figure nobody re-ran is the worst place
+# for that to happen. Where the logs are absent — a --fast publish skips the
+# browser suite knowingly — the sentence says so rather than inventing a total.
+sum_suites() {
+	total=0; seen=0
+	for e in mz mv mv-modded; do
+		f="dist/logs/suite-$e.txt"
+		[ -f "$f" ] || continue
+		n="$(sed -n 's/.*\] \([0-9][0-9]*\)\/[0-9][0-9]* checks passed.*/\1/p' "$f" | tail -1)"
+		[ -n "$n" ] || continue
+		total=$((total + n)); seen=$((seen + 1))
+	done
+	[ "$seen" -eq 3 ] || return 1
+	printf '%s' "$total"
+}
+INSTALLER_N="$(./test-installers.sh 2>/dev/null | sed -n 's/^\([0-9][0-9]*\) passed.*/\1/p' | tail -1)"
+LINT_N="$(node gigahack-test/lint.js 2>/dev/null | sed -n 's/^lint: \([0-9][0-9]*\) files clean/\1/p')"
+if SUITE_N="$(sum_suites)"; then
+	SUITE_LINE="$SUITE_N checks across stock MZ, stock MV and MV with a modelled third-party
+plugin stack, plus ${INSTALLER_N:-?} installer checks and a build lint over ${LINT_N:-?} files."
+else
+	SUITE_LINE="The browser suite was not run for this build, so no total is claimed here;
+${INSTALLER_N:-?} installer checks and a build lint over ${LINT_N:-?} files did run."
+fi
+
 # --- 2. commit --------------------------------------------------------------
 step "Committing"
 git add -A
@@ -117,12 +144,11 @@ if git diff --cached --quiet; then
 else
     git commit -m "GigaHack MV/MZ $VER
 
-A mod menu for any RPG Maker MV or MZ game. 35 modules, six tabs, 68 panels, an
+A mod menu for any RPG Maker MV or MZ game. 36 modules, six tabs, 71 panels, an
 engine capability table, a per-game profile system, a boot index, and a plugin
 compatibility layer that names what is degrading a control and why.
 
-2961 checks across stock MZ, stock MV and MV with a modelled third-party plugin
-stack, plus 113 installer checks and a build lint over 36 files."
+$SUITE_LINE"
 fi
 
 # A commit made by an earlier run under the wrong identity is still local — the

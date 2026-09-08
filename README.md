@@ -10,7 +10,7 @@ differences are asked for as capabilities rather than read off a version
 string, and everything a game can be that the mod cannot handle is reported by
 name rather than left to fail quietly.
 
-35 plugin files, about 51,100 lines, six tabs, 68 panels. MIT licensed; see
+36 plugin files, about 58,400 lines, six tabs, 71 panels. MIT licensed; see
 [`NOTICE.md`](NOTICE.md). RPG Maker is a product of Gotcha Gotcha Games and
 KADOKAWA — this is an unofficial, unaffiliated tool.
 
@@ -40,7 +40,11 @@ It touches exactly three things:
 - `js/plugins.js.gigahack-backup` — a copy of the original, written once on
   the first install and never overwritten afterwards.
 
-Nothing else is written, ever.
+Nothing else is written by the installer, ever.
+
+The mod itself keeps its own files in one folder — where that folder is, is the
+question it asks on first launch; see *Where GigaHack keeps its own files*
+below. It never writes into `js/`, `data/`, `img/` or `audio/`.
 
 **It edits `js/plugins.js`, and it has to.** Every GigaHack hook is an alias:
 it saves the engine's original method and calls it. A plugin that loads after
@@ -137,7 +141,52 @@ hidden; and what this build costs to run, per frame hook.
 **Settings** — appearance, read-only mode, confirmation and backup guards,
 GigaHack's own hotkeys, the game's own key map — editable for games that ship no
 rebinding, and refusing any edit that would leave no way back to a menu — and
-named settings profiles that can be exported and imported as JSON.
+named settings profiles that can be exported and imported as JSON. Storage says
+where the mod keeps its own files and lets you move them. Addons is where a
+JavaScript file somebody wrote for one particular game gets brought in, read,
+and turned on.
+
+### Addons
+
+GigaHack works on any game without knowing anything about it, which is also the
+limit: it cannot know that this game's variable 412 is the affection score, or
+that its shop needs a switch set first. An addon is a JavaScript file that does
+know, written by whoever plays the game.
+
+An addon can add panels on any of the six tabs, hotkeys that appear in Settings
+alongside the mod's own, console calls, and a game profile; it can subscribe to
+the map changing, a battle starting, a line being said, a save being loaded;
+and it gets its own settings file. Bring one in by pasting it, from the
+clipboard, from a link, from a file, or by dropping it in the addons folder.
+
+Every source ends in the same place — a review that shows what actually
+arrived, its header, its size and its fingerprint, before anything runs.
+**Nothing is enabled by being imported**, a link is never re-fetched on its own,
+and an addon that throws is stopped, named, and given the line number. It is
+still arbitrary JavaScript running with the game's privileges, exactly like any
+RPG Maker plugin, and the panel says so where it matters rather than implying a
+sandbox that does not exist.
+
+`gigahack/addons/README.md` is how to write one; the panel's "start from a
+template" button puts a working skeleton on the clipboard.
+
+### Where GigaHack keeps its own files
+
+Its settings, its addons, its save backups and its console snippets go either
+beside the game or in a folder of its own in this account's application-data
+directory. **It asks, once per game, on the first launch.** A folder of its own
+survives a game update or a reinstall, which a folder inside the game does not,
+and it can hold one library of addons that several games share.
+
+The answer is written **beside the game**, never in the shared folder, so it
+cannot travel: copy GigaHack into a second game and it asks again there. That
+is structural rather than a promise — a file beside one game cannot reach
+another. Until it is answered, nothing outside the game folder is read,
+written, or created.
+
+GigaHack 2.1.0 and earlier chose the shared folder without asking. An install
+upgrading from it finds those settings again the moment the question is
+answered with a yes; nothing is moved or deleted either way.
 
 ---
 
@@ -239,15 +288,15 @@ There is no build step. The plugin files are the deliverable.
 cd gigahack-test
 npm install                # playwright, once
 
-npm run lint               # build lint, 35 modules + 1 shipped profile
-npm test                   # stock MZ 1.9.0        — 970 checks
-npm run test:mv            # stock MV 1.6.1        — 981 checks
-npm run test:mv-modded     # MV + modelled plugins — 1010 checks
+npm run lint               # build lint, 36 modules + 1 shipped profile
+npm test                   # stock MZ 1.9.0        — 1271 checks
+npm run test:mv            # stock MV 1.6.1        — 1285 checks
+npm run test:mv-modded     # MV + modelled plugins — 1314 checks
 npm run test:all           # lint plus all three
 ```
 
 ```sh
-./test-installers.sh       # 113 installer checks
+./test-installers.sh       # 121 installer checks
 ```
 
 Exit code is the contract: 0 clean, 1 any failure. The three engine runs share

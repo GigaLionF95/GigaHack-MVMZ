@@ -882,6 +882,63 @@ module.exports = async function (ctx) {
     degrade.gated === true && degrade.says === true, JSON.stringify(degrade).slice(0, 220));
 
   /* =========================================================================
+     10b — LIVE
+
+     The reads column is the only evidence anywhere that a plugin looks at its
+     parameters again after load — a counter that ticks while the game runs,
+     and it was painted once. Driven through the shell's own 700ms hook list,
+     because that is the clock the panel now runs on.
+     ====================================================================== */
+  const paramLive = await ev(() => {
+    const G = window.GigaHack, U = G.ui;
+    const host = U.getHost();
+    const tick = () => host.tickHooks.slice().forEach(fn => fn(1));
+    const out = {};
+
+    window.__buildCfg('build.params.q', 'battle_hud');
+    U.setOpen(true);
+    G.cfg.ui.tab = 'debug';
+    G.cfg.ui.sub = G.cfg.ui.sub || {};
+    G.cfg.ui.sub.debug = 'Parameters';
+    U.rerender();
+
+    const table = document.querySelector('#mm-root .mm-table');
+    /* The reads cell of the first row by column index, not by reading the row
+       as one string: the value beside it is the project's own and could be any
+       number at all. */
+    const cellOf = (i) => {
+      const tr = table.mm.body.querySelector('.mm-tr');
+      return tr ? tr.children[i].textContent : '';
+    };
+    out.rows = table.mm.rows().length;
+    out.readsAtBuild = cellOf(3);
+    out.effectAtBuild = cellOf(4);
+
+    const firstRow = table.mm.body.querySelector('.mm-tr');
+    tick();
+    out.idleKeptTheSameNode = table.mm.body.querySelector('.mm-tr') === firstRow;
+
+    /* Exactly what a plugin that re-reads its own parameters does. */
+    PluginManager.parameters('battle_hud_3');
+    out.readsBeforeTick = cellOf(3);
+    tick();
+    out.readsAfterTick = cellOf(3);
+    out.effectAfterTick = cellOf(4);
+    out.sameTable = document.querySelector('#mm-root .mm-table') === table;
+
+    window.__buildCfg('build.params.q', '');
+    U.setOpen(false);
+    return out;
+  });
+  check('a plugin re-reading its parameters while the Parameters panel is open moves the reads ' +
+    'column, without the panel being rebuilt',
+    paramLive.rows > 0 && paramLive.idleKeptTheSameNode === true &&
+    paramLive.readsBeforeTick === paramLive.readsAtBuild &&
+    Number(paramLive.readsAfterTick) === Number(paramLive.readsAtBuild) + 1 &&
+    paramLive.sameTable === true && paramLive.effectAfterTick === 'live',
+    JSON.stringify(paramLive));
+
+  /* =========================================================================
      11 — THE PANELS
      ====================================================================== */
   await ev(() => { window.__buildCfg('build.params.q', ''); });

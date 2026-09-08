@@ -116,6 +116,40 @@
         return $.safe(function () { return $gameParty.numItems(item); }, 'numItems', 0);
     };
 
+    /**
+     * A cheap "has anything the party carries moved" probe, for a panel that
+     * has to decide whether to repaint.
+     *
+     * It reads the three containers directly rather than counting over the
+     * database, because the containers hold one entry per STACK OWNED — tens
+     * of them — while the database runs to four figures on a large game, and a
+     * signal that walked the database once a tick would cost more than the
+     * repaint it exists to avoid.
+     *
+     * A rolling hash rather than a sum: a sum cannot tell "one potion used" and
+     * "one elixir found" in the same tick apart from nothing happening at all,
+     * which is the one answer that leaves a wrong number on screen. Not a
+     * checksum and not called one — a collision leaves a count stale until the
+     * next change, and the counts move constantly.
+     */
+    I.revision = function () {
+        return $.safe(function () {
+            var hash = $gameParty.gold() | 0;
+            var boxes = [$gameParty._items, $gameParty._weapons, $gameParty._armors];
+            for (var b = 0; b < boxes.length; b++) {
+                var box = boxes[b];
+                hash = (hash * 33 + 7) | 0;
+                if (!box) continue;
+                for (var id in box) {
+                    if (!Object.prototype.hasOwnProperty.call(box, id)) continue;
+                    hash = (hash * 33 + (+id || 0)) | 0;
+                    hash = (hash * 33 + (box[id] | 0)) | 0;
+                }
+            }
+            return hash;
+        }, 'inventory revision', 0);
+    };
+
     /* =====================================================================
        CAPS
        Read live, per item, immediately before the write that depends on them.
@@ -749,6 +783,22 @@
         }
         repaint();
 
+        /* The "have" column is the party's count, and the game changes it every
+           time an item is used, bought, sold or handed over by an event. With
+           the "owned" chip on, the row SET moves with it too, which is why the
+           whole list is repainted rather than the cells: the table is virtual,
+           so a paint keeps the scroll position.
+
+           within: the table. Its "have" cells become live inputs on a click and
+           repainting one mid-edit takes the keystrokes with it — but the search
+           box above is not in the thing being repainted, and a list that froze
+           because its own filter held the caret is not what "hold" means. */
+        U.live(I.revision, repaint, {
+            name: kind + ' counts',
+            within: table,
+            when: function () { return !table.mm.isScrolling(); }
+        });
+
         var toolbar = h('div', { class: 'mm-toolbar' },
             W.search({
                 placeholder: 'search ' + I.list(kind).length + ' ' + kind + 's…',
@@ -853,10 +903,22 @@
     /** The gold block, shared by the sidebar and the Gold sub-tab. */
     function goldRows(step) {
         var cap = I.goldCap();
+
+        /* Gold moves on every sale, every battle and every event that hands
+           some over, so the readout is live — and only the readout. The box
+           under it is seeded from the same number and is what somebody types
+           into; rewriting that from a clock would take a half-typed amount
+           away. This runs for the Gold panel and for the sidebar of the three
+           item panels, because both are built from here. */
+        var currentEl = h('div', { class: 'mm-edge mm-mono mm-hi', text: String(I.gold()) });
+        var currentRow = h('div', { class: 'mm-row' },
+            h('div', { class: 'mm-lab', text: 'Current' }),
+            currentEl);
+        U.live(I.gold, function () { currentEl.textContent = String(I.gold()); },
+            { name: 'gold', within: currentRow });
+
         return [
-            h('div', { class: 'mm-row' },
-                h('div', { class: 'mm-lab', text: 'Current' }),
-                h('div', { class: 'mm-edge mm-mono mm-hi', text: String(I.gold()) })),
+            currentRow,
             h('div', { class: 'mm-row', 'data-mm-tip': 'Cap|gainGold clamps to maxGold, ' +
                 'read live — a plugin may replace it.' },
                 h('div', { class: 'mm-lab', text: 'This game\'s cap' }),
@@ -967,6 +1029,34 @@
     /* ------------------------------------------------------------ Gold sub */
     function buildGold() {
         var cap = I.goldCap();
+
+        /* One row per kind, counting what the party actually carries. This is
+           the one readout here that costs a walk over the whole database, so
+           it is done in the paint and never in the signal: I.revision() reads
+           the party's own containers, which hold one entry per stack owned. */
+        var totalCells = [];
+        function totalsRow(kind, label) {
+            var cell = h('div', { class: 'mm-edge mm-mono mm-sub', text: totalsText(kind) });
+            totalCells.push({ kind: kind, el: cell });
+            return h('div', { class: 'mm-row' }, h('div', { class: 'mm-lab', text: label }), cell);
+        }
+        function totalsText(kind) {
+            var owned = I.list(kind).filter(function (o) { return I.count(o) > 0; });
+            var units = owned.reduce(function (n, o) { return n + I.count(o); }, 0);
+            return owned.length + ' kinds · ' + units + ' units';
+        }
+        var totalsGroup = W.group('Totals', [
+            totalsRow('item', 'Items'),
+            totalsRow('weapon', 'Weapons'),
+            totalsRow('armor', 'Armors')
+        ], { tag: 'carried' });
+
+        U.live(I.revision, function () {
+            for (var i = 0; i < totalCells.length; i++) {
+                totalCells[i].el.textContent = totalsText(totalCells[i].kind);
+            }
+        }, { name: 'carried totals', within: totalsGroup });
+
         return cols([
             W.group('Gold', goldRows(1).concat([
                 h('div', { class: 'mm-sep' }),
@@ -982,17 +1072,7 @@
                 h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
                     'Anything above the cap does not stick until the cap is raised.')
             ]), { tag: 'cap ' + (cap === null ? '?' : cap) })
-        ], [
-            W.group('Totals', [
-                ['item', 'Items'], ['weapon', 'Weapons'], ['armor', 'Armors']
-            ].map(function (p) {
-                var owned = I.list(p[0]).filter(function (o) { return I.count(o) > 0; });
-                var units = owned.reduce(function (n, o) { return n + I.count(o); }, 0);
-                return h('div', { class: 'mm-row' },
-                    h('div', { class: 'mm-lab', text: p[1] }),
-                    h('div', { class: 'mm-edge mm-mono mm-sub', text: owned.length + ' kinds · ' + units + ' units' }));
-            }), { tag: 'carried' })
-        ]);
+        ], [totalsGroup]);
     }
 
     /* -------------------------------------------------------- registration */

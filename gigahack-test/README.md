@@ -5,7 +5,7 @@ The automated test suite for GigaHack MV/MZ. Headless Chromium, no game required
 
 ```sh
 npm install            # playwright, once
-npm run lint           # the build lint (26 files)
+npm run lint           # the build lint (37 files: 36 modules + the profiles)
 npm test               # stock RPG Maker MZ 1.9.0
 npm run test:mv        # stock RPG Maker MV 1.6.1
 npm run test:mv-modded # MV plus a modelled third-party plugin stack
@@ -29,21 +29,76 @@ overwrites the MZ shots and a visual regression is attributable to one of them.
 | `harness-mv.html` | The same shell — **MV** |
 | `harness-mv-modded.html` | The same shell — **MV + a modelled plugin stack** |
 | `stubs/core.js` | Everything identical on both engines |
+| `stubs/x-<area>.js` | Shared surface added per area — interpreter, window, equipment, input, screen, audio, images, misc |
 | `stubs/engine-mz.js` | The divergent MZ surface |
 | `stubs/engine-mv.js` | The divergent MV surface |
+| `stubs/x-<area>-{mv,mz}.js` | That area's engine differences |
 | `stubs/plugins-mv.js` | A modelled third-party plugin stack |
 | `stubs/fixtures.js` | `$data*`, `$game*`, the scene fixture, and a virtual filesystem |
-| `run.js` | The Playwright driver and every assertion |
+| `stubs/x-node.js` | **The one stub that is not an engine stub** — an in-memory Node, loaded by no harness. See below |
+| `stubs/README.md` | Where the stubs' knowledge comes from, and what is deliberately not in them |
+| `run.js` | The Playwright driver, the shared assertions and the check-file loader |
+| `checks/*.js` | Mostly one file per feature module, plus a few for behaviour that spans them. See below |
 | `lint.js` | The build lint: alias discipline, CSS floor, JS floor, game coupling |
+| `verify-live.js` | Not part of a run: loads a **real** installed game's engine, `plugins.js` and data, then GigaHack on top, and prints what the mod concluded about that game |
 
 There is no build step and no test framework. `run.js` boots one of the three
 shells in headless Chromium, pokes at `window.GigaHack`, and asserts.
 
+### An assertion lives beside the module it is about
+
+`run.js` holds the boot, the shared helpers (`check`, `ev`, `shot`), the
+cross-cutting sweeps and the screenshots. Everything that belongs to one feature
+module lives in `checks/`, one file per module — and one per piece of behaviour
+that spans several of them. Each exports a function taking the same context
+`run.js` builds: same `check()`, same `ev()`, same engine flags, so a check
+written there is indistinguishable from one written in `run.js`, and a module's
+checks are not in the middle of a 3000-line file that everything else also
+edits.
+
+**A file that throws fails one check rather than taking the run down.** A broken
+new feature must not hide the state of everything else.
+
+| File | What it covers |
+|---|---|
+| `addons.js` | Addons. Almost every claim is a NEGATIVE one — the body did not run while the header was read, nothing was enabled by being imported — and "we did not run it" and "we ran it and it did nothing" leave the same empty room, so every fixture marks `window` when its body runs and the checks assert on the mark |
+| `auto.js` | Auto. Triggers driven through real writes on real switches; every clock measured independently rather than assumed of a named engine |
+| `build.js` | Build. Frame cost counted through the mod's own frame entry point, against the hook list the loop really calls |
+| `keys.js` | Keys. Rebinds asked of the engine's own `Input`, not of the module's bookkeeping |
+| `kit.js` | Kit. Driven against the fixture's deliberately disagreeing classes — sealed, locked, single-weapon-type, dual-wield |
+| `live-core.js` | No module of its own: the **older** modules' panels, retrofitted with `U.live`. Drives the shell's 700ms hook list by hand and asserts both halves of the contract — the readout follows the game, and the controls beside it do not move |
+| `media.js` | Media |
+| `paths.js` | `$.paths`, the storage answer and `$.net`. Runs the production resolver against a filesystem that records every call, on a disk carrying two game folders under one shared root |
+| `quest.js` | Quest |
+| `relocate.js` | What everything else does when the data directory moves under it — the modules that read a file once at load and only write it back afterwards. Uses the disk model `paths.js` publishes |
+| `screen.js` | Screen |
+| `snapshot.js` | Snapshot |
+| `storage-ui.js` | The storage question on screen, driven the way a person drives it, plus three more panels made live |
+| `trace.js` | Trace |
+
+Five of those are new in this release: `paths.js`, `storage-ui.js` and
+`relocate.js` for the storage question and where the mod's own files go,
+`addons.js` for the addon loader, and `live-core.js` for the panels that were
+painted once and had to become live.
+
+The directory is read in **sorted order**, and two files depend on that.
+`addons.js` sorts first, so anything it failed to clean up would be inherited by
+every other check file and by `run.js`'s own global sweeps — which is why its
+last block asserts its own cleanup. `relocate.js` uses the disk model
+`paths.js` publishes on `window`, and sorts after it.
+
 ### Load order is explicit, and that is the point
 
 ```
-stubs/core.js → stubs/engine-{mv,mz}.js → [stubs/plugins-mv.js] → stubs/fixtures.js → the 26 plugin tags → __engineBoot()
+stubs/core.js → the shared stubs/x-*.js → stubs/engine-{mv,mz}.js
+  → that engine's stubs/x-*-{mv,mz}.js → [stubs/plugins-mv.js]
+  → stubs/fixtures.js → the 36 plugin tags → __engineBoot()
 ```
+
+A file that is a floor another should override loads before it; `x-misc.js`
+says so in its own header, and got that wrong once by being wired last.
+`stubs/x-node.js` appears nowhere in that chain — it is injected per check, and
+the section below says why.
 
 The 1.x harness was one 1377-line file, and it was order- and
 hoisting-sensitive by construction: an assignment to `ImageManager.loadCharacter`
@@ -66,7 +121,7 @@ INTERFACE is reproduced exactly, because names, constants, data tables, call
 order and return values are fact rather than expression; its implementation is
 not, and no engine source is redistributed here. See `stubs/README.md`.
 **Where a stub simplifies,
-the simplification is the bug it will hide.** Eleven real defects got through
+the simplification is the bug it will hide.** Twelve real defects got through
 the 1.x suite precisely because the harness was politer than the engine, and
 every one of them is still true:
 
@@ -153,7 +208,7 @@ additions and a section's range must not stop at its last named entry.
 
 ### `stubs/plugins-mv.js` — the modelled stack
 
-Seven behaviours, each the smallest thing that reproduces what the compat layer
+Eight behaviours, each the smallest thing that reproduces what the compat layer
 has to survive:
 
 1. a framework that **overwrites without aliasing** — `maxGold`, `maxItems`
@@ -171,13 +226,51 @@ has to survive:
    two GigaHack would otherwise pick first;
 7. a plugin that recomputes a parameter on read and is **deliberately not in
    the quirks table**, so the "nothing I recognise is responsible" branch is
-   covered too.
+   covered too;
+8. a message plugin that adds `instantText` and `skipUnseen` to
+   `ConfigManager` — options that exist on **neither** engine, so the Text
+   panel's discovery of a game's own options has something to discover. The
+   stock `ConfigManager` in `core.js` deliberately has neither.
 
 The stubs are named for what they do. The one place a real name appears is the
-entry each adds to `$plugins`, and that is deliberate: `$.compat` fingerprints
+seven entries `$plugins` gets, and that is deliberate: `$.compat` fingerprints
 plugins *by name*, so a stack registered under invented names would exercise
 the matcher against nothing and every culprit-naming check would pass
 vacuously.
+
+---
+
+## `stubs/x-node.js` — the one stub that is not an engine stub
+
+Every other file in `stubs/` models RPG Maker. This one models **Node** — `fs`,
+`path`, `os`, and the two fields of `process` that path resolution reads — so
+that `GigaHack_Core.js`'s real `resolvePaths()` can be run against a filesystem
+a check can watch. It is the exception in the directory and it is worth knowing
+it is one: nothing about it is a claim about an engine, and none of the
+provenance rules above apply to it, because there is no engine source to cite.
+What it reproduces is the Node API surface the mod actually calls, and its
+header lists that surface member by member with what reaches for each one.
+
+It exists for a claim that cannot be checked any other way: **nothing outside
+the game folder is read, written, probed or created until the player has said
+yes.** The mod's own writability probe *creates* the directory it tests, so "we
+did not touch it" is a statement about calls and not about outcomes — an empty
+directory looks the same whether it was never made or made and removed. The
+model records every call it is given, and `model.touched(prefix)` is what a
+check asserts on.
+
+Where its behaviour is deliberately not Node's, the header says so rather than
+letting the difference be found later. Paths are POSIX throughout, including
+under `platform: 'win32'`, because the Windows model here is about **which**
+directory is chosen and not about how a path is spelled.
+
+**No harness loads it, and that is deliberate:** the default harness is an
+honest browser build where `$.caps.fs` is false, and several checks in `run.js`
+assert exactly that. A check that wants a filesystem injects the file with
+`page.addScriptTag` — `checks/paths.js`, `checks/storage-ui.js` and
+`checks/addons.js` do — hands the model to `GigaHack.usePaths(p, model)`, and
+restores inside the same check. It publishes one global, `window.__nodeModel`,
+and touches nothing else: no `$.env`, no `$.paths`, no `$.caps`.
 
 ---
 
@@ -236,7 +329,7 @@ unsupported.
 A check that passes against a broken build is worse than no check. Before
 trusting a new one, break the thing it covers and watch it go red.
 
-Four fixes in this tree have been mutation-verified that way, and the numbers
+Three fixes in this tree have been mutation-verified that way, and the numbers
 are the reason to believe the checks:
 
 | Revert | What failed |
@@ -308,21 +401,32 @@ a Control Switches command and a page condition — so "find every event that
 touches switch 141" has to cross files *and* cross command shapes to answer
 correctly. A list-only scan finds one of the two and looks like it works.
 
+This one belongs to `fixtures.js` and is a different thing from `x-node.js`
+above: this gives the mod a game folder with data in it to index, and that
+records the calls path resolution makes. A check wanting a filesystem needs to
+know which question it is asking.
+
 ---
 
 ## Adding a check
 
-1. Extend `stubs/core.js` (if both engines agree) or `stubs/engine-*.js` (if
-   they do not) with the surface the module touches — copied from the engine
-   source, including the awkward parts, with the file:line in a comment.
-2. Add the assertion to `run.js`. Prefer asserting against values the engine
+1. Extend `stubs/core.js` or the shared `stubs/x-<area>.js` (if both engines
+   agree) or `stubs/engine-*.js` / `stubs/x-<area>-{mv,mz}.js` (if they do not)
+   with the surface the module touches — copied from the engine source,
+   including the awkward parts, with the file:line in a comment.
+2. Add the assertion to that module's file in `checks/`, or to `run.js` if it
+   is genuinely cross-cutting. Prefer asserting against values the engine
    itself computes over hard-coded numbers, so a wrong assumption fails rather
    than agreeing with itself.
 3. Gate anything engine-specific on `IS_MV` / `IS_MZ` / `MODDED`, and prefer a
    *symmetrical* assertion — `X is present exactly on MZ` says more than two
    one-sided checks and cannot rot on one engine while passing on the other.
-4. Run all three: `npm run test:all`.
-5. Break the thing it covers and watch it go red.
+4. Put back everything it moved — settings, switches, the open tab, the undo
+   stack, a swapped `$.paths` — and assert in a last block that you did. All
+   the check files share one page and run in sorted order, so what you leave
+   behind is what the next file reads.
+5. Run all three: `npm run test:all`.
+6. Break the thing it covers and watch it go red.
 
 Use `SAVE_EXT` rather than an extension literal, and `$.cfg.hotkeys.*` rather
 than a key literal. Both were per-game constants in 1.x and are capabilities

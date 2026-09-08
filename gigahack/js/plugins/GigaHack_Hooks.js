@@ -470,6 +470,7 @@
         { name: 'GigaHack_Kit', marker: 'kit' },
         { name: 'GigaHack_Keys', marker: 'keys' },
         { name: 'GigaHack_Build', marker: 'build' },
+        { name: 'GigaHack_Addons', marker: 'addons' },
         { name: 'GigaHack_Boot', marker: 'api.open' }
     ];
 

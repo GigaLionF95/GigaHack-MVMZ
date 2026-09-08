@@ -742,6 +742,45 @@
         }, 'common events', []) || [];
     };
 
+    /**
+     * One string that changes when anything live in Q.commons() has moved.
+     *
+     * The panel asks this on every tick and only re-runs Q.commons() — which
+     * decodes a trigger name, counts commands and text lines and asks the
+     * Forge about every row — when the answer differs. Three live things go in
+     * it: the gate switch, whether a parallel one has an interpreter right
+     * now, and the explicit-call counter. The database fields are left out
+     * BECAUSE they cannot change: a signal that includes what never moves
+     * costs the same on every tick and buys nothing.
+     */
+    Q.commonsStamp = function () {
+        return $.safe(function () {
+            if (typeof $dataCommonEvents === 'undefined' || !$dataCommonEvents) return 'none';
+            /* The live list is walked ONCE and indexed, rather than searched
+               per row through liveCommon: a project with two hundred common
+               events and twenty parallels would otherwise cost four thousand
+               comparisons on every tick, to answer a question whose whole
+               purpose is to be cheaper than the repaint it guards. */
+            var alive = {};
+            var list = $gameMap && $gameMap._commonEvents;
+            if (list) {
+                for (var i = 0; i < list.length; i++) {
+                    if (list[i]) alive[list[i]._commonEventId] = list[i]._interpreter ? 2 : 1;
+                }
+            }
+            var out = [], counted = runCountAvailable();
+            $dataCommonEvents.forEach(function (ce) {
+                if (!ce) return;
+                var sid = ce.switchId || 0;
+                var on = ce.trigger !== 0 && sid > 0 &&
+                    !!$.safe(function () { return $gameSwitches.value(sid); }, 'gate switch', false);
+                out.push(ce.id + ':' + (on ? 1 : 0) + ':' + (alive[ce.id] || 0) +
+                    ':' + (counted ? (ranCount[ce.id] || 0) : '-'));
+            });
+            return out.join('|');
+        }, 'common event stamp', 'unreadable');
+    };
+
     Q.decodeCommon = function (id) {
         return $.safe(function () {
             var ce = $dataCommonEvents[id];
@@ -999,7 +1038,24 @@
     function stepLabel(e) {
         return (e.kind === 'switch' ? 'Switch ' : 'Variable ') + e.id + ' "' + e.name + '"';
     }
+    /* Is there a game to ask at all.
+
+       The objectives are inferred from the DATABASE, which exists from the
+       title screen onward, but whether a step is done is a question about the
+       SAVE — and the game objects do not exist until a new game or a load has
+       created them. Asking anyway is not merely wrong, it is loud: this runs
+       once per step, and on a project with a thousand named switches that was
+       1,383 identical "Cannot read properties of null" lines in the log at
+       boot, which is a third of the ring and the boot report with it. Found on
+       a real game; no harness had a title screen to catch it. */
+    function gameStarted() {
+        return typeof $gameSwitches !== 'undefined' && !!$gameSwitches &&
+            typeof $gameVariables !== 'undefined' && !!$gameVariables;
+    }
+    Q.gameStarted = gameStarted;
+
     function stepDone(e) {
+        if (!gameStarted()) return false;
         if (e.kind === 'switch') {
             return !!$.safe(function () { return $gameSwitches.value(e.id); }, 'step switch', false);
         }
@@ -1178,6 +1234,52 @@
         return memo;
     };
     Q.reinfer = function () { memo = null; return Q.quests(); };
+
+    /**
+     * Re-read the live flags into the groups already inferred.
+     *
+     * NOT a re-inference: the grouping is read off the project's switch and
+     * variable NAMES, which cannot change while the game runs, and re-running
+     * it would reorder the panel under whoever is reading it. Only done, next
+     * and each step's own flag are refreshed — the same fields finishGroup
+     * computes at inference time, from the same function, so the live panel
+     * and a freshly-built one cannot disagree.
+     */
+    Q.refreshQuests = function () {
+        if (!memo) return Q.quests();
+        for (var i = 0; i < memo.length; i++) finishGroup(memo[i]);
+        return memo;
+    };
+
+    /**
+     * One string that changes when any inferred step has moved.
+     *
+     * A variable step carries its VALUE, not whether it is done: a counter
+     * going from 3 to 5 leaves "done" true the whole way, and keying on the
+     * boolean would freeze the number the panel prints beside it while the
+     * quest visibly advanced.
+     */
+    Q.questsStamp = function () {
+        return $.safe(function () {
+            if (!memo) return 'not inferred';
+            var out = [];
+            for (var i = 0; i < memo.length; i++) {
+                var g = memo[i], part = [];
+                for (var j = 0; j < g.steps.length; j++) {
+                    var s = g.steps[j];
+                    part.push(s.kind === 'switch' ? (stepDone(s) ? '1' : '0') : String(varValue(s.id)));
+                }
+                if (g.counter) part.push('c' + varValue(g.counter.id));
+                out.push(part.join('.'));
+            }
+            return out.join('|');
+        }, 'quest stamp', 'unreadable');
+    };
+
+    function varValue(id) {
+        if (!gameStarted()) return 0;
+        return $.safe(function () { return $gameVariables.value(id); }, 'variable value', 0);
+    }
 
     $.on('gameobjects', function () { memo = null; });
 
@@ -2151,6 +2253,25 @@
 
         var anyGated = all.some(function (r) { return r.trigger !== 0; });
 
+        /* The three sentences in the Selected group that move on their own,
+           pulled out of the build so the live repaint writes exactly the same
+           words rather than a second set that could drift from them. */
+        function gateText(r) {
+            if (r.trigger === 0) return 'none — it is called, never triggered';
+            if (!r.switchId) return 'unset (0) — the editor never picked one, which is why it never fires';
+            return 'switch ' + r.switchId + ' "' + r.switchName + '" — ' + (r.switchOn ? 'ON' : 'OFF');
+        }
+        function objectText(r) {
+            if (r.trigger !== 2) return 'none — only a Parallel one gets one';
+            if (!r.hasObject) return 'no';
+            return r.live ? 'yes — it has an interpreter' : 'yes, parked';
+        }
+        function ranText(r) {
+            return r.ran === null ? 'not counted — ' + runCountWhy() : r.ran + ' explicit call(s)';
+        }
+        /* Filled in only when there IS a selection; the repaint checks each. */
+        var gateBlock = null, objectBlock = null, ranBlock = null, gateToggle = null;
+
         function matching(filter) {
             return all.filter(function (r) {
                 if (hideEmpty && !r.commands) return false;
@@ -2269,19 +2390,14 @@
             gateKids.push(kv('Id', sel.id));
             gateKids.push(kv('Name', sel.name || '(unnamed)'));
             gateKids.push(kv('Trigger', sel.triggerName));
-            gateKids.push(block('Gate switch', sel.trigger === 0 ? 'none — it is called, never triggered'
-                : sel.switchId
-                    ? 'switch ' + sel.switchId + ' "' + sel.switchName + '" — ' + (sel.switchOn ? 'ON' : 'OFF')
-                    : 'unset (0) — the editor never picked one, which is why it never fires',
-                sel.trigger !== 0 && !sel.switchId));
+            gateBlock = block('Gate switch', gateText(sel), sel.trigger !== 0 && !sel.switchId);
+            gateKids.push(gateBlock);
             gateKids.push(kv('Commands', sel.commands));
             gateKids.push(kv('Text lines', sel.textLines));
-            gateKids.push(block('Live object', sel.trigger === 2
-                ? (sel.hasObject ? (sel.live ? 'yes — it has an interpreter' : 'yes, parked') : 'no')
-                : 'none — only a Parallel one gets one'));
-            gateKids.push(block('Run this session', sel.ran === null
-                ? 'not counted — ' + runCountWhy()
-                : sel.ran + ' explicit call(s)', sel.ran === null));
+            objectBlock = block('Live object', objectText(sel));
+            gateKids.push(objectBlock);
+            ranBlock = block('Run this session', ranText(sel), sel.ran === null);
+            gateKids.push(ranBlock);
             if (sel.ran !== null) {
                 gateKids.push(note('Only an explicit Call Common Event passes through the counter. ' +
                     'An autorun or parallel one never does, so 0 here does not mean it never ran.'));
@@ -2290,7 +2406,7 @@
 
             var dn = degradeNote('switches.set');
             if (dn) gateKids.push(dn);
-            gateKids.push(degradeMark(W.toggleRow('gate switch', {
+            gateToggle = W.toggleRow('gate switch', {
                 value: sel.switchOn, keybind: false,
                 disabled: sel.trigger === 0 || !sel.switchId,
                 tip: sel.trigger === 0
@@ -2307,7 +2423,8 @@
                     V.setSwitch(sel.switchId, v, 'common event ' + sel.id + ' gate');
                     U.rerender();
                 }
-            }), 'switches.set'));
+            });
+            gateKids.push(degradeMark(gateToggle, 'switches.set'));
 
             left.push(W.group('Selected', gateKids, { tag: '#' + sel.id }));
 
@@ -2368,6 +2485,37 @@
 
         listGroup = W.group('Common events', [listTable],
             { grow: true, tag: rows.length + ' of ' + all.length });
+
+        /* A gate switch is thrown by the game, not by this panel, and a
+           parallel common event acquires and loses its interpreter as the map
+           runs — so the ON/off column, the "only the gated ones" filter and
+           the three sentences about the selected row are all describing
+           something that moves while they are being read.
+
+           The list is repainted and four held nodes are rewritten. Nothing
+           else in the Selected group is touched: it holds the gate toggle,
+           and a group rebuilt on a timer takes with it every expanded box and
+           the arm of the "run it now" confirm. The gate toggle is set SILENTLY
+           — firing its onChange would write the switch the game just wrote,
+           through the verify path, once every 700ms. */
+        U.live(Q.commonsStamp, function () {
+            all = Q.commons();
+            var next = matching(qstr('quest.common.filter', '').toLowerCase());
+            listTable.mm.paint(next);
+            listGroup.mm.tag(next.length + ' of ' + all.length);
+            var now = null;
+            for (var i = 0; i < all.length; i++) if (all[i].id === commonSel) now = all[i];
+            if (!now) return;
+            if (gateBlock) gateBlock.lastChild.textContent = gateText(now);
+            if (objectBlock) objectBlock.lastChild.textContent = objectText(now);
+            if (ranBlock) ranBlock.lastChild.textContent = ranText(now);
+            if (gateToggle) gateToggle.mm.set(now.switchOn, true);
+        }, {
+            name: 'common events', within: listTable,
+            when: function () { return !listTable.mm.isScrolling(); },
+            whyNot: 'you are scrolling the list'
+        });
+
         var right = [
             listGroup,
             W.group('Commands', [
@@ -2408,6 +2556,17 @@
         var questGroup = null;
 
         var left = [
+            /* Before a new game or a load, there is a database but no save, so
+               every step reads as not done and the panel would present a full
+               list of untouched objectives as though the player had done
+               nothing — which is true of no game and looks like a broken
+               inference rather than an absent one. */
+            gameStarted() ? null : W.group('No game is running yet', [
+                note('The objectives below are read from the project\'s own names, which exist from ' +
+                    'the title screen. Whether each one is DONE is a question about the save, and ' +
+                    'there is no save loaded — so every step reads as not done, and none of them ' +
+                    'means anything until a game is started or loaded.')
+            ], { tag: 'from the database only' }),
             W.group('This is inference', [
                 note('Nothing in the engine records a quest. This reads the project\'s own switch and ' +
                     'variable NAMES and the events that touch them. Where the reading is wrong, the ' +
@@ -2471,7 +2630,16 @@
             return cols({ narrow: true, items: left }, right);
         }
 
+        /* One record per group box on screen, holding the nodes a live repaint
+           writes into. Reset by paintGroups, because the boxes it builds are
+           the only ones that exist. */
+        var liveBoxes = [];
+
         function groupBox(g) {
+            var rec = { g: g, box: null, steps: [], counter: null, nextEl: null,
+                        nextGo: null, nextKey: '', advance: null };
+            liveBoxes.push(rec);
+
             var kids = [h('div', {
                 class: 'mm-sub', style: 'white-space:normal;padding:2px', text: g.evidence
             })];
@@ -2489,11 +2657,11 @@
                         onChange: function (on) { V.setSwitch(s.id, on, g.title); U.rerender(); }
                     }), 'switches.set');
                 } else {
-                    var now = $.safe(function () { return $gameVariables.value(s.id); }, 'step value', 0);
-                    control = degradeMark(W.editCell(now, function (v) {
+                    control = degradeMark(W.editCell(varValue(s.id), function (v) {
                         V.setVar(s.id, v, g.title); U.rerender();
                     }), 'vars.set');
                 }
+                rec.steps.push({ s: s, control: control });
                 var slot = h('div', {});
                 var opened = false;
                 kids.push(h('div', {},
@@ -2509,41 +2677,35 @@
             });
 
             if (g.counter) {
-                kids.push(kv('Counter', g.counter.name + ' = ' +
-                    $.safe(function () { return $gameVariables.value(g.counter.id); }, 'counter', 0)));
+                rec.counter = kv('Counter', counterText(g));
+                kids.push(rec.counter);
             }
 
             if (g.next) {
-                var src = Q.sourcesOf(g.next.kind === 'switch' ? 'switch' : 'variable', g.next.id);
-                var setter = null;
-                src.candidates.forEach(function (r) { if (!setter && r.sets) setter = r; });
-                var line = 'step ' + (g.current + 1) + ' of ' + g.total + ' — ';
-                if (setter && setter.scope === 'map') {
-                    line += 'the event that sets it is "' + (setter.eventName || 'unnamed') + '" on ' +
-                        (setter.mapName || ('map ' + setter.mapId)) + ' at ' + setter.x + ',' + setter.y;
-                } else if (setter) {
-                    line += 'it is set by a ' + (setter.scope === 'common' ? 'common event' : 'troop page') +
-                        ' — "' + (setter.eventName || '') + '"';
-                } else {
-                    line += 'nothing in this project appears to set it';
-                }
-                var nextRow = W.row('Next', [
-                    h('div', { class: 'mm-edge mm-edge--shrink mm-edge--wrap mm-sub', text: line }),
-                    W.button({
-                        label: 'go', mini: true, variant: 'danger', mutates: true,
-                        disabled: !setter || setter.scope !== 'map' || setter.here || !$.map || !$.map.teleport,
-                        tip: !$.map || !$.map.teleport
-                            ? 'Go|Not available: the Teleport module did not load.' : null,
-                        onClick: function () {
-                            if (setter && $.events && $.events.goTo && $.events.goTo(setter)) U.setOpen(false);
-                        }
-                    })
-                ]);
-                kids.push(nextRow);
-                if (!src.complete) kids.push(note(src.why, true));
+                var found = nextSetter(g);
+                var setter = found.setter;
+                rec.nextKey = stepKey(g.next);
+                rec.nextEl = h('div', { class: 'mm-edge mm-edge--shrink mm-edge--wrap mm-sub',
+                    text: nextLine(g, setter) });
+                rec.nextGo = W.button({
+                    label: 'go', mini: true, variant: 'danger', mutates: true,
+                    disabled: !setter || setter.scope !== 'map' || setter.here || !$.map || !$.map.teleport,
+                    tip: !$.map || !$.map.teleport
+                        ? 'Go|Not available: the Teleport module did not load.' : null,
+                    // Read from the record rather than closed over, so the
+                    // button still goes to the right place after the step it
+                    // describes has moved on under it.
+                    onClick: function () {
+                        var s = rec.setter;
+                        if (s && $.events && $.events.goTo && $.events.goTo(s)) U.setOpen(false);
+                    }
+                });
+                rec.setter = setter;
+                kids.push(W.row('Next', [rec.nextEl, rec.nextGo]));
+                if (!found.src.complete) kids.push(note(found.src.why, true));
             }
 
-            kids.push(W.button({
+            rec.advance = W.button({
                 label: 'advance one step', wide: true, mutates: true, variant: 'danger',
                 confirm: true, confirmLabel: 'set the next step?',
                 disabled: !g.next,
@@ -2564,7 +2726,8 @@
                     }
                     U.rerender();
                 }
-            }));
+            });
+            kids.push(rec.advance);
 
             var switchIds = g.steps.filter(function (s) { return s.kind === 'switch'; })
                 .map(function (s) { return s.id; });
@@ -2586,10 +2749,12 @@
                     varIds.join(', ') + ' — World → Variables sets those.', true));
             }
 
-            return W.group(g.title, kids, { tag: g.done + '/' + g.total });
+            rec.box = W.group(g.title, kids, { tag: g.done + '/' + g.total });
+            return rec.box;
         }
 
         function paintGroups(list) {
+            liveBoxes.length = 0;
             U.clear(groupsHost);
             if (!list.length) {
                 groupsHost.appendChild(note('nothing matches the filter'));
@@ -2600,10 +2765,84 @@
         }
         paintGroups(shown);
 
+        /* Quest progress is the one thing on this panel that the GAME moves —
+           that is what the panel is for — and it never moved while the panel
+           was open. paintGroups is not the repaint: it rebuilds every box, and
+           with them a checkbox per step, an edit cell per variable step, two
+           armed-confirm buttons and whatever "who sets it" the reader had
+           opened. The live path writes the held nodes instead, and escalates
+           to a rebuild only when a group gains or loses its "Next" row —
+           a step count changing shape, which is what a quest finishing IS. */
+        U.live(Q.questsStamp, function () {
+            Q.refreshQuests();
+            var i, j;
+            for (i = 0; i < liveBoxes.length; i++) {
+                if (!!liveBoxes[i].g.next !== !!liveBoxes[i].nextEl) { U.rerender(); return; }
+            }
+            for (i = 0; i < liveBoxes.length; i++) {
+                var rec = liveBoxes[i], g = rec.g;
+                rec.box.mm.tag(g.done + '/' + g.total);
+                for (j = 0; j < rec.steps.length; j++) {
+                    var st = rec.steps[j];
+                    // Silent: firing the checkbox's own onChange would write
+                    // the switch the game has just written, through the verify
+                    // path, once every 700ms.
+                    if (st.s.kind === 'switch') st.control.mm.set(st.s.done, true);
+                    else st.control.mm.set(varValue(st.s.id));
+                }
+                if (rec.counter) rec.counter.lastChild.textContent = counterText(g);
+                if (rec.advance) rec.advance.mm.disable(!g.next);
+                if (!rec.nextEl || !g.next) continue;
+                var key = stepKey(g.next);
+                // sourcesOf walks the index, so it is asked again only when the
+                // step it describes has actually changed.
+                if (key === rec.nextKey) {
+                    rec.nextEl.textContent = nextLine(g, rec.setter);
+                    continue;
+                }
+                rec.nextKey = key;
+                rec.setter = nextSetter(g).setter;
+                rec.nextEl.textContent = nextLine(g, rec.setter);
+                if (rec.nextGo) {
+                    rec.nextGo.mm.disable(!rec.setter || rec.setter.scope !== 'map' ||
+                        rec.setter.here || !$.map || !$.map.teleport);
+                }
+            }
+        }, { name: 'quest progress', within: groupsHost });
+
         questGroup = W.group('Reconstructed', [groupsHost],
             { grow: true, tag: shown.length + ' of ' + groups.length });
         right.push(questGroup);
         return cols({ narrow: true, items: left }, right);
+    }
+
+    function stepKey(s) { return s ? (s.kind + ':' + s.id) : ''; }
+
+    function counterText(g) {
+        return g.counter ? (g.counter.name + ' = ' + varValue(g.counter.id)) : '';
+    }
+
+    /** The first candidate that WRITES the group's next flag, and the index
+        answer it came from — which carries its own "why" when incomplete. */
+    function nextSetter(g) {
+        var src = Q.sourcesOf(g.next.kind === 'switch' ? 'switch' : 'variable', g.next.id);
+        var setter = null;
+        src.candidates.forEach(function (r) { if (!setter && r.sets) setter = r; });
+        return { setter: setter, src: src };
+    }
+
+    function nextLine(g, setter) {
+        var line = 'step ' + (g.current + 1) + ' of ' + g.total + ' — ';
+        if (setter && setter.scope === 'map') {
+            return line + 'the event that sets it is "' + (setter.eventName || 'unnamed') + '" on ' +
+                (setter.mapName || ('map ' + setter.mapId)) + ' at ' + setter.x + ',' + setter.y;
+        }
+        if (setter) {
+            return line + 'it is set by a ' +
+                (setter.scope === 'common' ? 'common event' : 'troop page') +
+                ' — "' + (setter.eventName || '') + '"';
+        }
+        return line + 'nothing in this project appears to set it';
     }
 
     /* --------------------------------------------------------------------

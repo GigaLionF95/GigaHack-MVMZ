@@ -1212,6 +1212,159 @@ module.exports = async function (ctx) {
       window.GigaHack.quest.script.state().phase === 'unavailable'));
 
   /* =======================================================================
+     LIVE — Common and Quests
+
+     Blocked already refreshed itself from the frame hook; these two did not,
+     so a gate switch thrown by the game and a quest step finished by the game
+     both left the panel describing a world that had moved on. Both are driven
+     through the shell's own 700ms hook list, because that is what the clock
+     does.
+     ==================================================================== */
+  const commonLive = await ev(() => {
+    const G = window.GigaHack, U = G.ui;
+    const host = U.getHost();
+    const tick = () => host.tickHooks.slice().forEach(fn => fn(1));
+    const out = {};
+
+    /* Common event 2 is the fixture's Parallel one and its gate is switch 5. */
+    $gameSwitches.setValue(5, false);
+    G.store.cfgSet('quest.common.selected', 2);
+    G.store.cfgSet('quest.common.gatedOnly', false);
+    G.store.cfgSet('quest.common.filter', '');
+    U.setOpen(true);
+    G.cfg.ui.tab = 'world';
+    G.cfg.ui.sub = G.cfg.ui.sub || {};
+    G.cfg.ui.sub.world = 'Common';
+    U.rerender();
+
+    const listTable = document.querySelectorAll('#mm-root .mm-table')[0];
+    const blockOf = (label) => {
+      const labs = document.querySelectorAll('#mm-root .mm-lab');
+      for (let i = 0; i < labs.length; i++) {
+        if (labs[i].textContent === label) return labs[i].parentNode.lastChild;
+      }
+      return null;
+    };
+    const gateEl = blockOf('Gate switch');
+    const rowFor = (id) => listTable.mm.rows().filter(r => r.id === id)[0];
+    const toggle = Array.prototype.slice.call(document.querySelectorAll('#mm-root .mm-cbrow'))
+      .filter(t => t.textContent.trim() === 'gate switch')[0];
+
+    out.gateAtBuild = gateEl ? gateEl.textContent : '';
+    out.rowAtBuild = rowFor(2) ? rowFor(2).switchOn : null;
+    out.toggleAtBuild = toggle ? toggle.querySelector('.mm-check').classList.contains('mm-on') : null;
+    out.rowsAtBuild = listTable.mm.rows().length;
+
+    const firstRow = listTable.mm.body.querySelector('.mm-tr');
+    tick();
+    out.idleKeptTheSameNode = listTable.mm.body.querySelector('.mm-tr') === firstRow;
+
+    /* The game throws the gate. */
+    $gameSwitches.setValue(5, true);
+    tick();
+    out.gateFollowed = gateEl ? gateEl.textContent : '';
+    out.rowFollowed = rowFor(2) ? rowFor(2).switchOn : null;
+    out.toggleFollowed = toggle ? toggle.querySelector('.mm-check').classList.contains('mm-on') : null;
+    out.sameTable = document.querySelectorAll('#mm-root .mm-table')[0] === listTable;
+    out.sameToggle = Array.prototype.slice.call(document.querySelectorAll('#mm-root .mm-cbrow'))
+      .filter(t => t.textContent.trim() === 'gate switch')[0] === toggle;
+
+    /* And with "only the gated ones that are on" showing, the row SET is what
+       moves — the filter reads the same live switch. */
+    G.store.cfgSet('quest.common.gatedOnly', true);
+    U.rerender();
+    const filtered = document.querySelectorAll('#mm-root .mm-table')[0];
+    out.filteredOn = filtered.mm.rows().length;
+    $gameSwitches.setValue(5, false);
+    tick();
+    out.filteredOff = filtered.mm.rows().length;
+
+    G.store.cfgSet('quest.common.gatedOnly', false);
+    G.store.cfgSet('quest.common.selected', 0);
+    U.setOpen(false);
+    return out;
+  });
+  check('a gate switch the game throws while the Common panel is open moves the list, the gate ' +
+    'sentence and the gate toggle with it',
+    commonLive.rowAtBuild === false && commonLive.rowFollowed === true &&
+    /OFF$/.test(commonLive.gateAtBuild) && /ON$/.test(commonLive.gateFollowed) &&
+    commonLive.toggleAtBuild === false && commonLive.toggleFollowed === true,
+    JSON.stringify(commonLive));
+  check('and it does it without rebuilding the panel, so the gate toggle under the cursor is the ' +
+    'same control it was',
+    commonLive.sameTable === true && commonLive.sameToggle === true &&
+    commonLive.idleKeptTheSameNode === true, JSON.stringify(commonLive));
+  check('a row that stops matching "only the gated ones" leaves the list while it is being read',
+    commonLive.filteredOn === 1 && commonLive.filteredOff === 0,
+    JSON.stringify({ on: commonLive.filteredOn, off: commonLive.filteredOff }));
+
+  const questLive = await ev(() => {
+    const G = window.GigaHack, U = G.ui;
+    const host = U.getHost();
+    const tick = () => host.tickHooks.slice().forEach(fn => fn(1));
+    const out = {};
+
+    const g0 = G.quest.quests().filter(x => x.key === 'stem:quest bakery')[0];
+    const ids = g0.steps.map(s => s.id);
+    ids.forEach(id => $gameSwitches.setValue(id, false));
+    G.quest.reinfer();
+
+    G.store.cfgSet('quest.quests.filter', '');
+    G.store.cfgSet('quest.quests.showDone', true);
+    U.setOpen(true);
+    G.cfg.ui.tab = 'world';
+    G.cfg.ui.sub = G.cfg.ui.sub || {};
+    G.cfg.ui.sub.world = 'Quests';
+    U.rerender();
+
+    const boxFor = () => Array.prototype.slice.call(document.querySelectorAll('#mm-root .mm-group'))
+      .filter(b => {
+        const hd = b.querySelector('.mm-group-hd');
+        return hd && hd.textContent.indexOf('quest bakery') === 0;
+      })[0];
+    const tagOf = (b) => {
+      const t = b.querySelector('.mm-group-tag');
+      return t ? t.textContent : '';
+    };
+    const box = boxFor();
+    out.found = !!box;
+    out.tagAtBuild = tagOf(box);
+    out.firstOnAtBuild = box.querySelector('.mm-check').classList.contains('mm-on');
+
+    tick();
+    out.idleKeptTheSameBox = boxFor() === box;
+
+    /* The game finishes the first step. */
+    $gameSwitches.setValue(ids[0], true);
+    tick();
+    out.tagFollowed = tagOf(box);
+    out.firstOnFollowed = box.querySelector('.mm-check').classList.contains('mm-on');
+    out.sameBox = boxFor() === box;
+
+    /* And the last one, which takes the group's "Next" row away with it: that
+       is a change of SHAPE and the only case that earns a rebuild. */
+    ids.forEach(id => $gameSwitches.setValue(id, true));
+    tick();
+    const after = boxFor();
+    out.rebuiltOnShapeChange = after !== box;
+    out.tagWhenDone = after ? tagOf(after) : '';
+
+    ids.forEach(id => $gameSwitches.setValue(id, false));
+    G.quest.reinfer();
+    U.setOpen(false);
+    return out;
+  });
+  check('a quest step the game finishes while the Quests panel is open ticks its box and moves the ' +
+    'group\'s count, without the group being rebuilt under the reader',
+    questLive.found === true && questLive.tagAtBuild === '0/5' &&
+    questLive.tagFollowed === '1/5' && questLive.firstOnAtBuild === false &&
+    questLive.firstOnFollowed === true && questLive.sameBox === true &&
+    questLive.idleKeptTheSameBox === true, JSON.stringify(questLive));
+  check('and a group that finishes IS rebuilt, because the "Next" row it held no longer describes it',
+    questLive.rebuiltOnShapeChange === true && questLive.tagWhenDone === '5/5',
+    JSON.stringify(questLive));
+
+  /* =======================================================================
      LAYOUT AND THE FRAME PATH
      ==================================================================== */
   const overflow = await ev(async () => {
@@ -1407,4 +1560,51 @@ module.exports = async function (ctx) {
   check('and no undo entry of theirs is left on the stack for a later check to inherit',
     restored.undo === before.undo,
     JSON.stringify({ before: before.undo, after: restored.undo, top: restored.undoTop }));
+
+  /* --- before a game has been started ------------------------------------ */
+  /* The objectives are read from the DATABASE, which exists from the title
+     screen. Whether a step is done is a question about the SAVE, and there is
+     no save until a new game or a load has built the game objects. Asking
+     anyway threw once per step: on a real project with a thousand named
+     switches that was 1,383 identical lines in the log at boot — a third of the
+     ring, and the boot report with it. Found by running against a real game;
+     no harness had a title screen. */
+  const noGame = await ev(() => {
+    const G = window.GigaHack;
+    const sw = $gameSwitches, va = $gameVariables;
+    const out = {};
+    const before = G.logHistory().length;
+    try {
+      $gameSwitches = null;
+      $gameVariables = null;
+      out.started = G.quest.gameStarted();
+      const groups = G.quest.quests();
+      out.groups = groups.length;
+      out.doneAnywhere = groups.some(g => g.steps.some(s => s.done));
+      out.logged = G.logHistory().length - before;
+
+      G.ui.setOpen(true);
+      G.cfg.ui.tab = 'world';
+      G.cfg.ui.sub = G.cfg.ui.sub || {};
+      G.cfg.ui.sub.world = 'Quests';
+      G.ui.rerender();
+      out.saysSo = /No game is running yet/.test(
+        (document.querySelector('#mm-root .mm-body') || {}).textContent || '');
+      out.loggedAfterPanel = G.logHistory().length - before;
+    } finally {
+      $gameSwitches = sw;
+      $gameVariables = va;
+      G.ui.setOpen(false);
+      G.ui.rerender();
+    }
+    return out;
+  });
+  check('with no game started the objectives still list, every step reads as not done, and not one ' +
+    'line is logged about it',
+    noGame.started === false && noGame.doneAnywhere === false &&
+    noGame.logged === 0 && noGame.loggedAfterPanel === 0,
+    JSON.stringify(noGame));
+  check('and the panel says there is no save to judge them against, rather than presenting a whole ' +
+    'quest list as untouched',
+    noGame.saysSo === true, JSON.stringify(noGame));
 };

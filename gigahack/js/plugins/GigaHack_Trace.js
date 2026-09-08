@@ -904,10 +904,25 @@
      * is right only while nothing has been popped. This is exact.
      */
     var liveRows = [];
+    /**
+     * Bumped by every path that changes what the Journal panel shows, and read
+     * as its live-repaint signal.
+     *
+     * Not rows.length, and not totalPushes on their own. The list is a ring:
+     * once it is full its length never moves again, which is the steady state
+     * and not the state anyone tests. And totalPushes counts writes only — it
+     * does not move when the undo stack is cleared, which empties "reversible
+     * now" and marks every row unreversible without a single row arriving or
+     * leaving. Both of those are silent staleness, so the counter sits beside
+     * the state instead of being derived from it.
+     */
+    var jrev = 0;
+    J.revision = function () { return jrev; };
 
     function journalMax() { return num('journal.max', 20, 5000); }
 
     function addRow(row) {
+        jrev++;
         row.seq = ++seq;
         row.at = Date.now();
         row.frame = $.frameCount;
@@ -1016,6 +1031,10 @@
                         liveRows[i].cleared = true;
                     }
                     liveRows.length = 0;
+                    // No row arrived or left, so nothing else here moves — and
+                    // every "undo to here" button in the panel has just become
+                    // a control that looks like it works and does not.
+                    jrev++;
                 }, 'journal clear');
                 return r;
             };
@@ -1069,7 +1088,7 @@
     J.rows = function () { return rows.map(function (r) { return $.clone(r); }); };
     J.size = function () { return rows.length; };
     J.max = journalMax;
-    J.clear = function () { rows.length = 0; liveRows.length = 0; return true; };
+    J.clear = function () { rows.length = 0; liveRows.length = 0; jrev++; return true; };
     J.stuckRows = function () { return J.rows().filter(function (r) { return r.stuck === false; }); };
     J.reversible = function () { return liveRows.length; };
     J.totalPushes = function () { return totalPushes; };
@@ -1687,6 +1706,32 @@
     R.count = function () {
         return { session: rollTotal, lastFrame: rollsLastFrame, recorded: rollRecorded };
     };
+    /** Distinct call sites, without building and sorting the table to count. */
+    R.siteCount = function () {
+        var n = 0, k;
+        for (k in sites) if (Object.prototype.hasOwnProperty.call(sites, k)) n++;
+        return n;
+    };
+
+    /**
+     * Two signals for the panel, because the two halves move at different
+     * rates and one signal would make the slower half pay the faster one's
+     * bill. "rolls last frame" is by definition a per-frame number, so
+     * R.stamp() differs on almost every tick while the game rolls — cheap,
+     * because it writes five text nodes. R.tableStamp() moves only when a row
+     * is actually kept, so the list does not repaint 86 times a minute while a
+     * one-in-a-hundred sample records nothing.
+     *
+     * rolls.length is in the table's stamp beside rollRecorded, never instead
+     * of it: the roll list is a ring and its length stops moving the moment it
+     * fills, which is where it spends the rest of the session.
+     */
+    R.stamp = function () {
+        return rollTotal + '/' + rollsLastFrame + '/' + rollRecorded + '/' + drawn + '/' + R.siteCount();
+    };
+    R.tableStamp = function () {
+        return rollRecorded + '/' + rolls.length + '/' + R.siteCount();
+    };
 
     R.caveats = function () {
         return [
@@ -2148,39 +2193,45 @@
         }
 
         var top = $.safe(undoPeek, 'peek', null);
-        var oldest = rows.length ? rows[0] : null;
+        function oldestText() { return rows.length ? ('frame ' + rows[0].frame) : '—'; }
+
+        var recordedRow = kv('writes recorded', rows.length);
+        var stuckRow = kv('did not stick', J.stuckRows().length);
+        var liveRow = kv('reversible now', liveRows.length);
+        var depthRow = kv('undo depth', undoSize());
+        var oldestRow = kv('oldest row kept', oldestText());
+        var topNote = note(top ? top.label : 'the undo stack is empty');
+        var undoOne = W.button({
+            label: 'undo the last change', wide: true, mutates: true,
+            disabled: !undoSize(),
+            tip: undoSize() ? null : 'Undo|The undo stack is empty.',
+            onClick: function () { undoPop(); U.rerender(); }
+        });
+        /* The options object is what the button reads at click time, so the
+           count in the confirmation is kept current by writing back into it
+           rather than by rebuilding the button — which would also throw away
+           its armed state mid-decision. */
+        var undoAllOpts = {
+            label: 'undo everything back to the start of the session',
+            wide: true, variant: 'danger', confirm: true,
+            confirmLabel: 'undo ' + undoSize() + ' changes?',
+            disabled: !undoSize(),
+            onClick: function () {
+                var n = 0;
+                /* Stops the moment pop() returns false, so an empty
+                   stack never spams the log. */
+                while (undoPop()) n++;
+                U.toast({ title: 'UNDONE', msg: n + ' changes', severity: 'ok' });
+                U.rerender();
+            }
+        };
+        var undoAll = W.button(undoAllOpts);
 
         var side = [
             W.group('This session', [
-                kv('writes recorded', rows.length),
-                kv('did not stick', J.stuckRows().length),
-                kv('reversible now', liveRows.length),
-                kv('undo depth', undoSize()),
-                kv('oldest row kept', oldest ? ('frame ' + oldest.frame) : '—')
+                recordedRow, stuckRow, liveRow, depthRow, oldestRow
             ], { tag: feeds.verify ? 'verified' : 'unverified' }),
-            W.group('Undo', [
-                W.button({
-                    label: 'undo the last change', wide: true, mutates: true,
-                    disabled: !undoSize(),
-                    tip: undoSize() ? null : 'Undo|The undo stack is empty.',
-                    onClick: function () { undoPop(); U.rerender(); }
-                }),
-                note(top ? top.label : 'the undo stack is empty'),
-                W.button({
-                    label: 'undo everything back to the start of the session',
-                    wide: true, variant: 'danger', confirm: true,
-                    confirmLabel: 'undo ' + undoSize() + ' changes?',
-                    disabled: !undoSize(),
-                    onClick: function () {
-                        var n = 0;
-                        /* Stops the moment pop() returns false, so an empty
-                           stack never spams the log. */
-                        while (undoPop()) n++;
-                        U.toast({ title: 'UNDONE', msg: n + ' changes', severity: 'ok' });
-                        U.rerender();
-                    }
-                })
-            ]),
+            W.group('Undo', [undoOne, topNote, undoAll]),
             W.group('Not recorded', J.blindSpots().map(note), { collapsed: true })
         ];
         if (!feeds.undo || !feeds.verify) side.splice(1, 0, W.group('Partly fed', [warnNote(feeds.why)]));
@@ -2251,9 +2302,41 @@
                 }
             }));
 
-        return cols({ narrow: true, items: side }, [
-            W.group('Change journal', [toolbar, table], { grow: true, tag: String(rows.length) })
-        ]);
+        var journalGroup = W.group('Change journal', [toolbar, table],
+            { grow: true, tag: String(rows.length) });
+
+        /* Every panel in the mod writes into this one: open it, go and change
+           a variable somewhere else, come back, and it used to still say
+           nothing had happened. The signal is the journal's own revision —
+           rows.length is a ring that stops moving once it is full, and
+           totalPushes cannot see the undo stack being cleared under the
+           "undo to here" buttons.
+
+           Held while a confirm is armed anywhere in the table: those buttons
+           are two-click by design and a repaint between the clicks would put
+           the first one back. */
+        U.live(J.revision, function () {
+            table.mm.paint(journalRows());
+            recordedRow.lastChild.textContent = String(rows.length);
+            stuckRow.lastChild.textContent = String(J.stuckRows().length);
+            liveRow.lastChild.textContent = String(liveRows.length);
+            depthRow.lastChild.textContent = String(undoSize());
+            oldestRow.lastChild.textContent = oldestText();
+            var peek = $.safe(undoPeek, 'peek', null);
+            topNote.textContent = peek ? peek.label : 'the undo stack is empty';
+            undoOne.mm.disable(!undoSize());
+            undoAll.mm.disable(!undoSize());
+            undoAllOpts.confirmLabel = 'undo ' + undoSize() + ' changes?';
+            journalGroup.mm.tag(String(rows.length));
+        }, {
+            name: 'change journal', within: table,
+            when: function () {
+                return !table.mm.isScrolling() && !table.querySelector('.mm-armed');
+            },
+            whyNot: 'a confirmation is waiting for its second click'
+        });
+
+        return cols({ narrow: true, items: side }, [journalGroup]);
     }
 
     /* ------------------------------------------------------ Interpreters */
@@ -2453,6 +2536,17 @@
         var seeded = rngSeeded();
         var counts = R.count();
 
+        var sessionRow = kv('rolls this session', counts.session);
+        var lastFrameRow = kv('rolls last frame', counts.lastFrame);
+        var sitesRow = kv('distinct call sites', R.sites().length);
+        var recordedRow = kv('recorded', counts.recorded);
+        var drawnRow = kv('numbers drawn', R.drawn());
+        var clearBtn = W.button({
+            label: 'clear', wide: true, variant: 'danger', _ungated: true,
+            disabled: !counts.session,
+            onClick: function () { R.clear(); U.rerender(); }
+        });
+
         var recGroup = W.group('Recording', [
             W.toggleRow('Record rolls', {
                 value: recording, _ungated: true, disabled: !av.ok,
@@ -2469,15 +2563,7 @@
                 tip: 'Call sites|Leave it off unless you are hunting a specific roll.',
                 onChange: function (v) { setCfg('rng.captureStack', v); U.rerender(); }
             }),
-            kv('rolls this session', counts.session),
-            kv('rolls last frame', counts.lastFrame),
-            kv('distinct call sites', R.sites().length),
-            kv('recorded', counts.recorded),
-            W.button({
-                label: 'clear', wide: true, variant: 'danger', _ungated: true,
-                disabled: !counts.session,
-                onClick: function () { R.clear(); U.rerender(); }
-            })
+            sessionRow, lastFrameRow, sitesRow, recordedRow, clearBtn
         ], { tag: recording ? 'on' : 'off' });
 
         var seedRows = [];
@@ -2514,7 +2600,7 @@
                 U.rerender();
             }
         }));
-        seedRows.push(kv('numbers drawn', R.drawn()));
+        seedRows.push(drawnRow);
         var seedGroup = W.group('Seeding', seedRows, { tag: seeded ? 'seeded' : 'off' });
 
         var costs = W.group('What seeding costs', R.caveats().map(note), { collapsed: !seeded });
@@ -2546,7 +2632,12 @@
             table.mm.paint(rolls.slice().reverse());
         } else {
             table = W.table({
-                key: 'trace.sites', rowH: 17,
+                // Virtual for the same reason the rolls table is: this one is
+                // now repainted while it is being read, and only the virtual
+                // path keeps the reader's offset — the plain one empties the
+                // body and the browser clamps the scroll to the top with it.
+                // isScrolling() is a real answer only on a virtual table too.
+                key: 'trace.sites', rowH: 17, virtual: true,
                 cols: [
                     { label: 'site', w: '1 1 0' },
                     { label: 'rolls', w: '0 0 60px', cls: 'mm-td-num' },
@@ -2560,6 +2651,9 @@
                 }
             });
             table.mm.paint(R.sites());
+        }
+        function tableRows() {
+            return rngMode === 'rolls' ? rolls.slice().reverse() : R.sites();
         }
 
         var toolbar = h('div', { class: 'mm-toolbar' }, modeChips,
@@ -2576,13 +2670,43 @@
                 }
             }));
 
-        return cols({ narrow: true, items: [recGroup, seedGroup, costs] }, [
-            W.group(rngMode === 'rolls' ? 'Rolls' : 'Call sites', [
-                toolbar, table,
-                recording ? null : note('Nothing is being recorded, and Math.random is the ' +
-                    (installed(HOOK_RNG) ? 'seeded generator.' : 'engine’s own function.'))
-            ], { grow: true, tag: rngMode === 'rolls' ? String(rolls.length) : String(R.sites().length) })
-        ]);
+        var listGroup = W.group(rngMode === 'rolls' ? 'Rolls' : 'Call sites', [
+            toolbar, table,
+            recording ? null : note('Nothing is being recorded, and Math.random is the ' +
+                (installed(HOOK_RNG) ? 'seeded generator.' : 'engine’s own function.'))
+        ], { grow: true, tag: rngMode === 'rolls' ? String(rolls.length) : String(R.sites().length) });
+
+        /* These are the fastest-moving figures in the mod and they were
+           printed once. "rolls last frame" is a per-frame number by
+           definition, so it is on its own signal: the counters are five text
+           nodes and cost nothing to rewrite, while the list is a table and
+           only moves when a roll is actually kept — with sampling on, that is
+           one tick in a hundred rather than every one.
+
+           Held while the Sample box has focus, because that box is inside the
+           group the counters are in; the Seed box is not, so seeding stays
+           usable while the counters keep up. */
+        U.live(R.stamp, function () {
+            var c = R.count();
+            sessionRow.lastChild.textContent = String(c.session);
+            lastFrameRow.lastChild.textContent = String(c.lastFrame);
+            sitesRow.lastChild.textContent = String(R.siteCount());
+            recordedRow.lastChild.textContent = String(c.recorded);
+            drawnRow.lastChild.textContent = String(R.drawn());
+            clearBtn.mm.disable(!c.session);
+        }, { name: 'rng counters', within: recGroup });
+
+        U.live(R.tableStamp, function () {
+            var list = tableRows();
+            table.mm.paint(list);
+            listGroup.mm.tag(String(list.length));
+        }, {
+            name: 'rng rolls', within: table,
+            when: function () { return !table.mm.isScrolling(); },
+            whyNot: 'you are scrolling the list'
+        });
+
+        return cols({ narrow: true, items: [recGroup, seedGroup, costs] }, [listGroup]);
     }
 
     /* =====================================================================

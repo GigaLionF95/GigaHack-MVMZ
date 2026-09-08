@@ -266,13 +266,22 @@
     }
 
     function bar(sec) {
-        var frac = sec.total ? sec.on / sec.total : 0;
         var wrap = h('div', { style: 'flex:0 0 46px;height:5px;background:var(--mm-bg-sunken);border-radius:2px;overflow:hidden' });
-        wrap.appendChild(h('i', {
-            style: 'display:block;height:100%;width:' + Math.round(frac * 100) + '%;' +
-                'background:' + (frac >= 1 ? 'var(--mm-ok)' : 'var(--mm-accent)')
-        }));
+        wrap.appendChild(h('i', { style: 'display:block;height:100%' }));
+        fillBar(wrap, sec);
         return wrap;
+    }
+
+    /* Split out of bar() so a live repaint can move the fill without replacing
+       the row it is in. Written as two properties rather than a style string,
+       because the string would also have to carry the height and the display
+       and one of them would eventually be forgotten. */
+    function fillBar(wrap, sec) {
+        var frac = sec.total ? sec.on / sec.total : 0;
+        var fill = wrap.firstChild;
+        if (!fill) return;
+        fill.style.width = Math.round(frac * 100) + '%';
+        fill.style.background = frac >= 1 ? 'var(--mm-ok)' : 'var(--mm-accent)';
     }
 
     function filterGroup() {
@@ -325,6 +334,14 @@
         if (selected && !G.section(selected)) selected = null;
         if (!selected && list.length) selected = list[0].headerId;
 
+        /* The two cells of each drawn row that count live switches, kept by
+           section id. This table is not virtual, and a plain paint empties the
+           body — which drops scrollHeight to zero and lets the browser clamp
+           the scroll position with it. On a project with thirty collections
+           that would send the reader back to the top every time a switch
+           moved, so the bar and the count are rewritten in place instead. */
+        var rowCells = Object.create(null);
+
         var table = W.table({
             rowH: 17, empty: 'no switch sections in this project',
             cols: [
@@ -334,13 +351,16 @@
                 { label: '', w: '0 0 96px' }
             ],
             render: function (sec) {
+                var meter = bar(sec);
+                var count = h('span', { class: 'mm-cell', text: sec.on + ' / ' + sec.total });
+                rowCells[sec.headerId] = { bar: meter, count: count };
                 return [
                     h('span', {
                         class: sec.headerId === selected ? 'mm-td-val mm-hi' : 'mm-td-val',
                         text: sec.title
                     }),
-                    bar(sec),
-                    sec.on + ' / ' + sec.total,
+                    meter,
+                    count,
                     h('div', { class: 'mm-cellbtns' },
                         W.button({
                             label: 'all', mini: true, mutates: true,
@@ -363,13 +383,46 @@
         var sec = selected ? G.section(selected) : null;
         var totals = G.totals(hiding);
 
+        /* Every row here is a count of live switches, so playing the game moves
+           the bars and the panel used to sit on the numbers it was built with.
+           V.revision() is the cheap question: one integer that the variables
+           module moves whenever any switch or variable has changed. Walking
+           every section to find out costs one pass over the switch table, and
+           that is the paint's job, not the signal's. */
+        var overallEl = h('div', {
+            class: 'mm-edge mm-mono mm-hi',
+            text: totals.on + ' / ' + totals.total + '  (' + totals.pct + '%)'
+        });
+        var collectionsGroup = W.group('Collections', [table], { grow: true, tag: totals.pct + '% overall' });
+        var secOnEl = h('div', { class: 'mm-edge mm-mono mm-hi', text: sec ? sec.on + ' / ' + sec.total : '' });
+
+        U.live(V.revision, function () {
+            var now = G.sections(), t = { on: 0, total: 0 };
+            for (var i = 0; i < now.length; i++) {
+                var s = now[i], cells = rowCells[s.headerId];
+                if (hiding && !s.matches) continue;
+                t.on += s.on; t.total += s.total;
+                // A section with no cells was not on screen when the panel was
+                // built — a plugin reloaded the database and grew the switch
+                // table. Its numbers still count toward the total; there is
+                // simply no row to write them into until the next rebuild.
+                if (!cells) continue;
+                cells.count.textContent = s.on + ' / ' + s.total;
+                fillBar(cells.bar, s);
+                if (selected === s.headerId) secOnEl.textContent = s.on + ' / ' + s.total;
+            }
+            var pct = t.total ? Math.round(t.on / t.total * 100) : 0;
+            overallEl.textContent = t.on + ' / ' + t.total + '  (' + pct + '%)';
+            collectionsGroup.mm.tag(pct + '% overall');
+        }, { name: 'gallery counts', within: table });
+
         var left = [
             filterGroup(),
 
             W.group('Everything listed', [
                 h('div', { class: 'mm-row' },
                     h('div', { class: 'mm-lab', text: 'Unlocked' }),
-                    h('div', { class: 'mm-edge mm-mono mm-hi', text: totals.on + ' / ' + totals.total + '  (' + totals.pct + '%)' })),
+                    overallEl),
                 W.button({
                     label: 'unlock everything listed', wide: true, mutates: true, variant: 'prime',
                     confirm: true,
@@ -417,7 +470,7 @@
         ];
 
         var right = [
-            W.group('Collections', [table], { grow: true, tag: totals.pct + '% overall' })
+            collectionsGroup
         ];
         if (sec) {
             right.push(W.group('Selected', [
@@ -433,7 +486,7 @@
                     h('div', { class: 'mm-edge mm-mono mm-sub', text: sec.from + '–' + sec.to + ' (' + sec.total + ' named)' })),
                 h('div', { class: 'mm-row' },
                     h('div', { class: 'mm-lab', text: 'Unlocked' }),
-                    h('div', { class: 'mm-edge mm-mono mm-hi', text: sec.on + ' / ' + sec.total })),
+                    secOnEl),
                 W.button({
                     label: 'open it in Switches', wide: true, _ungated: true,
                     tip: 'Switches|Opens with this section’s first flag in view.',

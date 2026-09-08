@@ -1287,6 +1287,34 @@
         return readSlot(Math.max(1, Math.round(nz(slot, 1))), inBattle());
     };
 
+    /**
+     * One string that changes when anything the picture panel shows has moved.
+     *
+     * The panel asks this on every tick and only re-reads S.pictures() when
+     * the answer differs, because S.pictures() allocates a row object per slot
+     * and there can be a hundred of them. Every field the table or the two
+     * counts beside it display is folded in here: a field left out is a column
+     * that stops updating with nothing on screen to say why. The range marker
+     * is in it too — the same slot number is a different picture in battle,
+     * and walking into a fight must not read as "nothing changed".
+     */
+    S.picturesStamp = function () {
+        if (!S.picturesAvailable()) return 'unavailable';
+        return $.safe(function () {
+            var max = S.maxPictures().n;
+            var out = [inBattle() ? 'battle' : 'map', max];
+            for (var i = 1; i <= max; i++) {
+                var p = $gameScreen.picture(i);
+                if (!p) continue;
+                out.push(i + ':' + (p._name || '') + ':' +
+                    Math.round(nz(p._x)) + ',' + Math.round(nz(p._y)) + ':' +
+                    Math.round(nz(p._scaleX, 100)) + ':' + Math.round(nz(p._opacity)) + ':' +
+                    nz(p._blendMode) + ':' + nz(p._origin) + ':' + Math.round(nz(p._duration)));
+            }
+            return out.join('|');
+        }, 'picture stamp', 'unreadable');
+    };
+
     function readSlot(slot, battle) {
         var p = $.safe(function () { return $gameScreen.picture(slot); }, 'picture ' + slot, null);
         var row = {
@@ -2362,9 +2390,20 @@
 
         var max = S.maxPictures();
         var battle = inBattle();
-        var all = S.pictures();
+        /* Re-read on every repaint rather than held: $gameScreen is replaced
+           wholesale when a save is loaded, so a list captured once describes a
+           screen that no longer exists. */
+        var all = [];
         var used = 0, showing = 0;
-        all.forEach(function (p) { if (p.occupied) used++; if (p.showing) showing++; });
+        function recount() {
+            all = S.pictures();
+            used = 0; showing = 0;
+            for (var i = 0; i < all.length; i++) {
+                if (all[i].occupied) used++;
+                if (all[i].showing) showing++;
+            }
+        }
+        recount();
 
         var filter = String(cfg('pictures.filter', 'in use'));
         var preview = !!cfg('pictures.preview', false);
@@ -2383,19 +2422,36 @@
             });
         }
 
+        var usedRow = kv('In use', used, 'In use|A slot holding a Game_Picture, named or not.');
+        var showRow = kv('Showing something', showing,
+            'Showing|A slot can exist with an empty name; it draws nothing and is still occupied.');
+        /* Which range picture(n) is reading. It moves the moment a battle
+           starts, and it is repainted with the table rather than left behind
+           it: a list of battle-range slots under a line saying "map range" is
+           the panel contradicting itself. */
+        function rangeText() {
+            return inBattle() ? 'battle range ' + (max.n + 1) + '–' + (max.n * 2)
+                : 'map range 1–' + max.n;
+        }
+        var rangeRow = kv('Reading', rangeText(),
+            'Range|picture(n) adds maxPictures() to n while a battle is running, so slot 1 in battle ' +
+            'is a different picture from slot 1 on the map.');
+        /* The sprite count is null on a build with no readable spriteset, and
+           that is a different sentence from a number — so the row is absent
+           rather than showing a zero, and the repaint leaves it absent. */
+        var spriteRow = S.spriteCount() === null ? null
+            : kv('Sprites built', S.spriteCount(),
+                'Sprites|Built once when the spriteset was created; a slot above this is stored and never drawn.');
+        var slotsGroup;
+
         var sidebar = [
-            W.group('Slots', [
+            slotsGroup = W.group('Slots', [
                 kv('Slots', max.n),
                 note(max.from),
-                kv('In use', used, 'In use|A slot holding a Game_Picture, named or not.'),
-                kv('Showing something', showing,
-                    'Showing|A slot can exist with an empty name; it draws nothing and is still occupied.'),
-                kv('Reading', battle ? 'battle range ' + (max.n + 1) + '–' + (max.n * 2) : 'map range 1–' + max.n,
-                    'Range|picture(n) adds maxPictures() to n while a battle is running, so slot 1 in battle ' +
-                    'is a different picture from slot 1 on the map.'),
-                S.spriteCount() === null ? null
-                    : kv('Sprites built', S.spriteCount(),
-                        'Sprites|Built once when the spriteset was created; a slot above this is stored and never drawn.')
+                usedRow,
+                showRow,
+                rangeRow,
+                spriteRow
             ], { tag: used + '/' + max.n }),
             W.group('Filter', [
                 W.search({
@@ -2518,9 +2574,33 @@
             }
         });
         table.mm.paint(rows());
+        var listGroup = tableGroup('Every slot', [table], { grow: true, tag: rows().length + ' shown' });
 
-        return cols({ narrow: true, items: sidebar },
-            [tableGroup('Every slot', [table], { grow: true, tag: rows().length + ' shown' }), slotEditor()]);
+        /* The picture list belongs to the game, not to this panel: an event
+           shows, moves, fades and erases slots while the panel is open, and
+           the "moving" column is a duration the engine walks down itself. Only
+           the table and the two counts beside it are rewritten — the slot
+           editor to the right holds a name field, three number boxes and four
+           sliders, and rebuilding those on a timer would take whatever was
+           half-typed or mid-drag with them. The table's own cells are edit
+           cells, which is what `within` is for. */
+        U.live(S.picturesStamp, function () {
+            recount();
+            var list = rows();
+            table.mm.paint(list);
+            usedRow.lastChild.textContent = String(used);
+            showRow.lastChild.textContent = String(showing);
+            rangeRow.lastChild.textContent = rangeText();
+            if (spriteRow) spriteRow.lastChild.textContent = String(S.spriteCount());
+            slotsGroup.mm.tag(used + '/' + max.n);
+            listGroup.mm.tag(list.length + ' shown');
+        }, {
+            name: 'picture slots', within: table,
+            when: function () { return !table.mm.isScrolling(); },
+            whyNot: 'you are scrolling the list'
+        });
+
+        return cols({ narrow: true, items: sidebar }, [listGroup, slotEditor()]);
 
         /* ------------------------------------------------ the slot editor */
         function slotEditor() {
@@ -2686,6 +2766,10 @@
         var on = !!cfg('log.on', true);
         var installed = S.hooksInstalled();
 
+        var recordedRow = kv('Recorded', counts.recorded);
+        var keptRow = kv('Kept', counts.kept);
+        var droppedRow = kv('Dropped', counts.dropped);
+
         var sidebar = [
             installed === 0 ? W.group('Nothing can be recorded', [
                 warn('nothing could be aliased on Game_Screen on this build, so no write can be recorded. ' +
@@ -2725,9 +2809,9 @@
                     })),
                 // Three numbers, never one: once the ring saturates, "kept"
                 // stops moving and only "recorded" says anything is happening.
-                kv('Recorded', counts.recorded),
-                kv('Kept', counts.kept),
-                kv('Dropped', counts.dropped)
+                recordedRow,
+                keptRow,
+                droppedRow
             ], { tag: on ? 'on' : 'off' }),
             W.group('Not recorded', [
                 note('a plugin that writes $gameScreen._tone directly, without going through startTint, is ' +
@@ -2743,7 +2827,8 @@
             ], { collapsed: true })
         ];
 
-        var rows = S.log({ kinds: kinds, q: logQuery });
+        function logRows() { return S.log({ kinds: kinds, q: logQuery }); }
+        var rows = logRows();
         var mapId = $.safe(function () { return $gameMap.mapId(); }, 'mapId', 0);
 
         var table = W.table({
@@ -2801,9 +2886,34 @@
             }
         });
         table.mm.paint(rows);
+        var writesGroup = tableGroup('Writes', [table], { grow: true, tag: rows.length + ' shown' });
 
-        return cols({ narrow: true, items: sidebar },
-            [tableGroup('Writes', [table], { grow: true, tag: rows.length + ' shown' }), detail()]);
+        /* The ring fills as the game plays, so a log opened before a cutscene
+           used to show none of it. Both numbers are in the signal, never one:
+           "recorded" alone cannot see the log being emptied while it stands at
+           zero, and "kept" alone stops moving the moment the ring saturates —
+           which is the state it spends its life in, and the exact shape of
+           cache bug this project has already shipped once. Newest first, so a
+           new write arrives at the top and the virtual table keeps the offset
+           the reader had. */
+        U.live(function () {
+            var c = S.logCounts();
+            return c.recorded + '/' + c.kept;
+        }, function () {
+            var c = S.logCounts();
+            rows = logRows();
+            table.mm.paint(rows);
+            recordedRow.lastChild.textContent = String(c.recorded);
+            keptRow.lastChild.textContent = String(c.kept);
+            droppedRow.lastChild.textContent = String(c.dropped);
+            writesGroup.mm.tag(rows.length + ' shown');
+        }, {
+            name: 'screen log', within: table,
+            when: function () { return !table.mm.isScrolling(); },
+            whyNot: 'you are scrolling the log'
+        });
+
+        return cols({ narrow: true, items: sidebar }, [writesGroup, detail()]);
 
         function detail() {
             if (!logSel) {

@@ -17,9 +17,11 @@ missing** rather than misbehaving quietly.
 
 ---
 
-## 1. The five services you build on
+## 1. The services you build on
 
 These load before every feature module. Use them; do not reimplement them.
+There were five; there are eight, and `$.paths` was always there but was not
+worth writing down until it could change while the game was running.
 
 ### `$.caps` — engine facts
 
@@ -79,6 +81,20 @@ Fields worth knowing: `quickVars` (names, not ids), `forgeBase` (computed from
 `max id + 1`, overridable), `forgeExtraFields`, `galleryFilter`, `steamAppId`,
 `steamHints`, `notes`.
 
+### `$.net` — fetching something, or saying why not
+
+```js
+$.net.transport()    // {id: 'node-https'|'fetch'|'xhr'|'injected'|null, why, missing[]}
+$.net.get(url, cb, opts)  // cb(err, {status, body, via, url}) exactly once
+$.net._use(fn)       // test hook: replace the transport, returns a restore
+```
+
+The only network access in the mod, and the panel that uses it names the
+transport it got and what the absence of the others would have meant. A page
+loaded from `file://` cannot fetch cross-origin on the CSS floor's Chromium, so
+`node-https` is preferred where the host has it. **Nothing re-fetches on its
+own** — every call is a button somebody pressed.
+
 ### `$.compat` — surviving other plugins
 
 ```js
@@ -104,6 +120,31 @@ somebody has actually watched a suite break it.
 When `isDegraded(control)` is true, the panel greys the control and shows
 `degradedWhy(control)` as the reason — it does not hide it, and it does not
 pretend it worked.
+
+### `$.paths` — where the mod's own files go, and who said so
+
+```js
+$.paths.localDir          // beside the game; needs no permission
+$.paths.sharedRoot / sharedDir / sharedCommonDir   // computed always, touched only when granted
+$.paths.dataDir           // the one in use this launch
+$.paths.consent           // 'granted' | 'declined' | 'unasked' | 'moot'
+$.paths.gameId            // gameKey + a hash of the absolute root; for keys that must not collide
+$.paths.outsideGameFolder // what fallbackUsed's name suggests and does not mean
+$.pathsFor(env, opts)     // pure: the resolver, as a function of its inputs
+$.usePaths(paths, env)    // swap them, returns a restore — the seam the checks drive
+$.relocateData(dir, why)  // move dataDir, emit 'paths:changed'
+```
+
+**Nothing under `sharedRoot` is read, written, probed or created unless
+`consent === 'granted'`.** The write probe that chooses a directory *creates*
+the directory it tests, so pointing it at a shared candidate is itself the act
+the question is about.
+
+The answer lives beside the game, never in the shared folder, so it cannot
+travel to a second game. A module that reads a data file once at load and
+writes it back afterwards must subscribe to `paths:changed` — Boot holds the
+one list of those, and the two things it deliberately does not do are written
+down there.
 
 ### `$.index` — finding things fast
 
@@ -287,7 +328,11 @@ Order matters; later files depend on earlier ones.
 31 Kit        equipment loadouts, an ad-hoc shop
 32 Keys       the key map the game itself reads
 33 Build      what this build costs to run, how its plugins are configured
-34 Boot       bootstrap, boot report, index kick-off, self-test
+34 Addons     addons written for one game: the format, the loader, the API
+              handed to one, and where they are imported from — publishes
+              $.addons. Loads LAST of the feature modules because an addon may
+              use any of them and none of them may depend on it
+35 Boot       bootstrap, boot report, index kick-off, self-test
 ```
 
 The count is not written down anywhere it could go stale: `gigahack/manifest.json`

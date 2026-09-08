@@ -168,6 +168,47 @@
     C.fsWhy = C.fs ? '' : 'no Node filesystem — this is a browser or web-deployed build; ' +
                           'anything that reads the game folder is unavailable here.';
 
+    /* The clipboard, and it is two capabilities rather than one.
+       Writing has two ways to work and one of them is synchronous; READING has
+       neither. nw.Clipboard reads it outright, and navigator.clipboard.readText
+       exists only in a secure context — which a page loaded from file:// is
+       not — and can still refuse for want of focus or permission. A build with
+       no read is not broken; it is a build where "import from the clipboard"
+       has to be "paste into the box", and the panel says so rather than
+       offering a button that does nothing.
+
+       Asked at CALL time, not snapshotted at load like the engine facts above,
+       and for the same reason saveDir() is: this one is about the host window
+       rather than the engine, the answer is cheap, and a snapshot is a thing
+       that can only ever be wrong. */
+    C.clipboard = function () {
+        var viaNw = $.safe(function () {
+            return !!(typeof nw !== 'undefined' && nw.Clipboard && typeof nw.Clipboard.get === 'function');
+        }, 'nw clipboard probe', false);
+        var viaBrowser = $.safe(function () {
+            return !!(navigator.clipboard && typeof navigator.clipboard.readText === 'function');
+        }, 'browser clipboard probe', false);
+        var canWrite = viaNw || $.safe(function () {
+            return !!(navigator.clipboard && typeof navigator.clipboard.writeText === 'function');
+        }, 'browser clipboard write probe', false);
+        var why = '';
+        if (!viaNw && !viaBrowser) {
+            why = 'nothing here can read the clipboard: nw.Clipboard is absent (' +
+                (C.nwjs ? 'an NW.js build that does not expose it to this window' : 'not an NW.js build') +
+                ') and navigator.clipboard.readText is absent too — it needs a secure context, which a ' +
+                'page loaded from file:// is not. Paste into the box instead.';
+        } else if (!viaNw && viaBrowser) {
+            why = 'only the browser clipboard is here, and it can refuse: it needs the page focused and ' +
+                'the permission granted. If nothing arrives, paste into the box instead.';
+        }
+        return {
+            read: viaNw || viaBrowser,
+            write: canWrite,
+            via: viaNw ? 'nw.Clipboard' : (viaBrowser ? 'navigator.clipboard' : null),
+            why: why
+        };
+    };
+
     C.idleCallback = typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function';
 
     /* --- CSS floor ------------------------------------------------------
@@ -512,7 +553,11 @@
             ['updateMain', C.updateMainIsReentrant ? 'safe to gate' : 'self-driving — ' + C.updateMainWhy],
             ['CSS gap', C.cssGap ? 'yes' : 'no — layout uses margins'],
             ['CSS clamp()', C.cssClamp ? 'yes' : 'no — layout uses fixed sizes'],
-            ['requestIdleCallback', C.idleCallback ? 'yes' : 'no — indexing chunks on frames instead']
+            ['requestIdleCallback', C.idleCallback ? 'yes' : 'no — indexing chunks on frames instead'],
+            ['clipboard', (function (c) {
+                return (c.write ? 'write' : 'no write') + ', ' +
+                    (c.read ? 'read via ' + c.via : 'no read — paste by hand');
+            }(C.clipboard()))]
         ];
         return rows;
     };

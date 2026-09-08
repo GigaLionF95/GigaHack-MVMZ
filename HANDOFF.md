@@ -9,8 +9,8 @@ would otherwise relearn the hard way, and what is left.
 
 ## 1. What it is
 
-A mod menu for any RPG Maker MV or MZ game. 35 modules, ~51,100 lines, six
-tabs, 68 panels. Descended from GigaHack 1.0, which worked on exactly one MZ
+A mod menu for any RPG Maker MV or MZ game. 36 modules, ~58,400 lines, six
+tabs, 71 panels. Descended from GigaHack 1.0, which worked on exactly one MZ
 game and is a separate, frozen repo (`GigaLionF95/GigaHack-SKA`).
 
 Delivered by appending one entry per module to the game's own `js/plugins.js`.
@@ -22,9 +22,11 @@ check going red.
 
 Modules 25–33 were added after 2.0 shipped and are the second half of the
 codebase by line count: Trace, Snapshot, Quest, Media, Screen, Auto, Kit, Keys,
-Build. Four of them publish services of their own — see §2.
+Build. Four of them publish services of their own — see §2. Module 34, Addons,
+came with 2.2 and loads last of the feature modules: an addon may use any of
+them and none of them may depend on it.
 
-## 2. The five services everything is built on
+## 2. The services everything is built on
 
 Do not reimplement these; use them.
 
@@ -45,6 +47,14 @@ Added with modules 25 and 26, and used the same way:
 | `$.interp` | what is running right now, and the named reasons the game is stuck |
 | `$.rng` | which rolls happened and who asked; and a seeded generator, with its costs stated |
 | `$.snap` | a bounded picture of the game state, and the difference between two |
+
+And with 2.2:
+
+| Service | What it answers |
+|---|---|
+| `$.net` | is there a way to fetch something here, and which one — the only network access in the mod |
+| `$.addons` | what somebody else's code has added, and whether it is running |
+| `$.paths` | where the mod's own files go, which of the three locations, and who said so |
 
 `docs/PORT-BRIEF.md` is the full contract and it wins over what any module
 does. Read it before touching a module.
@@ -237,6 +247,99 @@ per kind. They independently reproduced 1.0's hand-tuned 1001/2001 for Star
 Knightess. `isCustom` tests library membership, never `id >= base` — a
 threshold test misreports the game's own rows on any larger game.
 
+**THE WRITE PROBE CREATES THE DIRECTORY IT TESTS.** `isWritable()` in Core is
+`mkdirSync` + write + unlink, and it runs for every candidate at Core load. Up
+to 2.1.0 that meant the application-data folder existed before any UI could ask
+about it — the mod had already done the thing it now asks permission for. A
+capability probe that has a side effect is not a probe. Nothing under
+`$.paths.sharedRoot` may be touched, including `existsSync`, unless
+`$.paths.consent === 'granted'`.
+
+**`fallbackUsed` does not mean "we left the game folder".** It is `i > 0` —
+"the first candidate for this layout was not writable" — and on a plain install
+candidate zero WAS the shared folder, so it read false while writing outside the
+game. `outsideGameFolder` is the field that means what the other one's name
+suggests. A boolean whose name is a summary of an implementation detail will be
+read as its plain-English meaning by everyone including the person who wrote it.
+
+**NW.js KEEPS ONE STORAGE AREA PER APP, NOT PER GAME.** Two RPG Maker games
+whose `package.json` carries the same name — which is the default, and common —
+share `localStorage`. Keyed on the file name alone, the second game read the
+first game's settings and every write from either overwrote the other's. Every
+key that must not cross games carries `$.paths.gameId`, which is the folder name
+plus a hash of the absolute path: two games in identically-named folders are a
+real case and `gameKey` alone does not separate them.
+
+**A RAW NUL BYTE MAKES A SOURCE FILE INVISIBLE TO EVERY TEXT TOOL.** One module
+used `'\x00'` as a key separator, typed as the byte rather than as an escape.
+`file` called it "data", `grep` skipped it in silence — not an error, an empty
+result — and the panel count in three documents was two short for a release
+because of it. Same separator, spelled as an escape. If a tool returns nothing
+about a file, check that the tool can read it before believing the answer.
+
+**A MODULE THAT LOADS LAST MUST NOT CASUALLY ALIAS A METHOD ANOTHER MODULE
+ALREADY ALIASES.** `$.install`'s `unpatch` refuses when it is no longer the
+outermost wrapper, which is correct — and it means the last module to wrap a
+method takes away every inner module's ability to remove its own hook from
+Debug → Hooks. Addons wanted five aliases and would have silently frozen Auto's,
+Text's and Snapshot's. It notices the same events from the frame hook instead,
+one frame late, and says so. `checks/auto.js` is the test that catches this.
+
+**A REPAINT SIGNAL MUST NEVER BE A RING BUFFER'S LENGTH, AND USUALLY NOT ITS
+TOTAL EITHER.** Once the ring is full — the steady state, not the empty one
+anybody tests — the length is pinned and a row rolling off looks like nothing
+happening. The total is worse in the other direction: `clear()` empties the
+buffer without moving it, so a panel keyed on the total goes on showing lines
+that are gone. Carry a revision counter bumped by every path that changes what
+the buffer HOLDS, and pin it with a check that clears while the panel is open.
+
+**`table.mm.isScrolling()` IS PERMANENTLY FALSE ON A PLAIN TABLE.** The only
+writer of `scrolledAt` is a scroll listener installed inside `if (virtual)`.
+Used as a guard on a non-virtual table it reads as protection and does nothing.
+Only the virtual paint preserves `scrollTop`; the plain one empties the body and
+the browser clamps the offset to zero with it.
+
+**`W.group`'s `mm.tag(text)` is a no-op unless the group was BUILT with a
+non-empty tag.** `mmGroup` only creates the `.mm-group-tag` span when
+`opts.tag` is truthy, so a group whose tag is sometimes absent can never be
+filled in live. Every live group passes a tag, even an empty-looking one.
+
+**`U.now()` IS A WALL-CLOCK STRING FOR THE LOG DRAWER, NOT A CLOCK.** It returns
+`'12:34:56'`. Subtracting two of them is `NaN`, which is what a timings column
+printed until a screenshot showed it.
+
+**A READING TAKEN FROM THE DATABASE MUST NOT ASK THE SAVE.** The quest
+objectives are inferred from the project's own switch and variable NAMES, which
+exist from the title screen; whether each step is done is a question about the
+game objects, and those do not exist until a new game or a load has built them.
+Asking anyway threw once per step — 1,383 identical lines in the log at boot on
+a project with a thousand named switches, which is a third of the ring and the
+boot report with it. `$.safe` did its job and that is exactly the problem: it
+logs on every call, so a guard that belongs before the call cannot be replaced
+by one around it. Found by `verify-live.js` against a real game; no harness in
+the suite has a title screen.
+
+**A CHECK THAT PINS A WHOLE TAB STRIP CANNOT SURVIVE A NEW PANEL.** Two separate
+assertions compared the Settings sub-tab list to an exact string, and both went
+red the moment this release added a panel — a failure that says nothing about
+the thing the check was named for. Assert the adjacency or the membership the
+check's own name claims, not the whole list.
+
+**THE SHELL'S HOOK LISTS ARE ITERATED OVER A COPY, AND THAT IS LOAD-BEARING.**
+A live panel that finds the thing it was drawing has gone asks for a tab
+rebuild, and `renderTab` empties both hook arrays with `length = 0`. Iterated
+live, every hook registered after that one was skipped for that tick — silently,
+and only on the ticks where a rebuild happened, which is the hardest kind of
+intermittent to attribute. Both loops slice first. The check drives the shell's
+own 700ms clock rather than a copy of the loop written in the check, because a
+check that reimplements the thing it is testing proves nothing about it.
+
+**A DOM NODE KEEPS THE CLASSES IT WAS WEARING WHEN IT WAS DETACHED.** A check
+that holds a node across a repaint and then asks whether it is still armed gets
+"yes" about a button that is no longer on screen. Re-query after the tick. And
+`U.setOpen(true)` rebuilds the tab, so closing and reopening the overlay to
+prove a live repaint proves nothing at all.
+
 ## 4. Running everything
 
 The browser suite needs Playwright and its Chromium, which a fresh clone does
@@ -255,10 +358,10 @@ suite knowingly; the lint, manifest, parse and installer checks still run.
 
 ```sh
 node gigahack-test/lint.js               # 36 files, four rules
-cd gigahack-test && node run.js          # 970 checks, stock MZ
-node run.js --engine=mv                  # 981, stock MV
-node run.js --engine=mv-modded           # 1010, MV + a modelled plugin stack
-./test-installers.sh                     # 113 checks over nine plugins.js shapes
+cd gigahack-test && node run.js          # 1271 checks, stock MZ
+node run.js --engine=mv                  # 1285, stock MV
+node run.js --engine=mv-modded           # 1314, MV + a modelled plugin stack
+./test-installers.sh                     # 121 checks over nine plugins.js shapes
 ./build-release.sh                       # everything, then installs FROM the archive
 node gigahack-test/verify-live.js <game> # against a real installed game
 ```
@@ -294,13 +397,16 @@ Nothing is broken. These are the honest gaps.
    7.4. The constructs used are 5.1-safe by review, not by execution. Running
    it once on a real Windows box would close that gap.
 
-2. **Neither game has actually been launched with the mod installed, and the
-   offline verification is now nine modules out of date.** The 26/26 and
-   52/53-hook figures were measured before modules 25–33 existed; re-run
-   `verify-live.js` against both games. What has never been observed at all is
-   the overlay drawing on a real canvas, the hotkeys firing through a real
-   `Input`, or the MV stylesheet rendering on real Chromium 66. Launch both and
-   open the menu. Two of the new modules matter most here because they are the
+2. **Neither game has actually been LAUNCHED with the mod installed.** The
+   offline verification is current as of 2.2.0 and clean on both: A New Dawn
+   (MV 1.6.1, 76 plugin entries) reports 36/36 modules and 98/101 hooks, Star
+   Knightess Aura (MZ 1.9.0, 178 entries) 36/36 and 95/97, every skip named,
+   the storage answer `unasked` and the data directory beside the game with
+   nothing created under Application Support. It is worth re-running after any
+   change — it found a defect no harness could (see §3, the quest steps). What
+   has never been observed at all is the overlay drawing on a real canvas, the
+   hotkeys firing through a real `Input`, or the MV stylesheet rendering on real
+   Chromium 66. Launch both and open the menu. Two of the new modules matter most here because they are the
    only ones that touch something a harness cannot model honestly: **Media →
    Capture** writes a PNG through NW.js and its "show in folder" button has
    never run against a real shell, and **Keys** rewrites `Input.keyMapper`,
@@ -309,7 +415,7 @@ Nothing is broken. These are the honest gaps.
 
 3. **No visual baseline.** The suite writes `shots-<engine>/*.png` for human
    review and compares nothing. That was a deliberate call — a full-viewport
-   pixel differ reddens all nineteen shots on any layout shift, and font
+   pixel differ reddens all twenty-seven shots on any layout shift, and font
    rasterisation differs by platform. If you add one, scope it tightly.
 
 4. **Some settings have no UI.** `battle.bars.gap`, `console.historyMax`, and a
@@ -344,6 +450,46 @@ Nothing is broken. These are the honest gaps.
    a shorter list for one class (so Loadouts' "never assume five slots" is
    exercised rather than reasoned about). Both are modelled inside the check
    files today, which tests the module and not the discovery.
+
+8. **`$.net`'s three real transports have never run.** The harness has no `nw`,
+   no `require` and is served from `file://`, so `node-https` and its redirect
+   following, the `fetch` body read and the XHR error path are unexercised code.
+   The chooser's SELECTION is checked and every network check drives an injected
+   transport, which is the honest limit of a suite with no network in it. Treat
+   the transports as unproven and be suspicious of them first when an import
+   from a link misbehaves on a real game.
+
+9. **The in-memory Node model is POSIX-only, including under `platform:
+   'win32'`.** The Windows path check proves `%LOCALAPPDATA%` is read off the
+   host process and used, not that a Windows path is spelled correctly. A
+   backslash or drive-letter bug in `keyFromPath`, `isInside` or `urlToFsPath`
+   would go straight through it. The model also cannot make `accessSync` fail
+   for permissions — only ENOENT — so "existence is not readability", which is
+   §3's oldest lesson, is untested against it.
+
+10. **Addons load when the overlay mounts, which on MV can be seconds after
+    boot.** That is the earliest moment a held key can have reached the page,
+    which is what safe mode needs, and it is stated in the module — but it means
+    an addon's alias is not installed for the first few seconds of a real MV
+    game, and nobody has measured how many. The shared addon library is barely
+    exercised at all: only its refused state is checked, because building a
+    granted-consent fixture on the fake disk was more appetite than the day had.
+
+11. **The addon panel's two layout decisions are not pinned by any named
+    check** — the review jumping to the top of the column when something is
+    staged, and the decision buttons sitting above the source rather than below
+    the fold. Both were found by looking at screenshots. A future edit can undo
+    either and only the global "every panel renders" sweep would notice.
+
+12. **`store.moveTo`'s limits are stated and not driven.** The tree copy caps at
+    4000 files and four directories deep and produces a truncation reason; no
+    check reaches either. `store.dropSource` leaves empty directories behind on
+    purpose and nothing removes them.
+
+13. **A 2.1.0 settings file written by a NEWER schema is not adopted, it is
+    discarded** — existing `loadSettings` behaviour, and adopting one on grant
+    would then hand the player defaults with nothing saying why. The adoption
+    path is checked for the same-schema case only.
 
 ## 6. The style, and why it is the whole point
 

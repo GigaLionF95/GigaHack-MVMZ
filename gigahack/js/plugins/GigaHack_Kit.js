@@ -609,6 +609,56 @@
         return { ok: true };
     };
 
+    /**
+     * One string that changes when anything K.diff() would read has moved.
+     *
+     * The Loadouts panel asks this on every tick and only re-runs K.diff()
+     * when the answer differs, because the diff resolves every recorded slot
+     * against the database and asks K.refusal() about each one. Everything the
+     * difference table compares is folded in: an event that changes the
+     * actor's class, levels them, teaches a skill, swaps a slot or hands out a
+     * parameter bonus all move it. A field left out is a row that stops
+     * updating with nothing on screen to say why.
+     */
+    K.actorStamp = function (actor) {
+        if (!actor) return 'no actor';
+        return $.safe(function () {
+            var slots = slotsOf(actor), eq = equipsOf(actor), i;
+            var out = [actor.actorId(), actor._classId, actor.level, slots.join('.')];
+            out.push((actor._skills || []).join('.'));
+            for (i = 0; i < eq.length; i++) {
+                // kindOf distinguishes a weapon from an armor: the two
+                // databases number from 1 independently, so an id alone would
+                // read a swap between them as no change at all.
+                out.push(eq[i] ? (kindOf(eq[i]) + eq[i].id) : '-');
+            }
+            out.push((actor._paramPlus || []).join('.'));
+            return out.join('|');
+        }, 'kit actor stamp', 'unreadable');
+    };
+
+    /**
+     * The same question for the party's stock, which the Shop panel's "have"
+     * column reads. Counts, not just which rows exist: an item used in a
+     * battle leaves the row in place and changes only the number beside it.
+     * Gold is in it because the picker's own price column is read against it.
+     */
+    K.partyStamp = function () {
+        if (!alive()) return 'no party';
+        return $.safe(function () {
+            var out = [$gameParty.gold()];
+            ['_items', '_weapons', '_armors'].forEach(function (bag) {
+                var m = $gameParty[bag], k, part = [];
+                if (m) for (k in m) if (Object.prototype.hasOwnProperty.call(m, k)) part.push(k + ':' + m[k]);
+                // Sorted: object key order is insertion order, and a stack
+                // emptied and refilled would otherwise read as a change on
+                // every tick for the rest of the session.
+                out.push(part.sort().join(','));
+            });
+            return out.join('|');
+        }, 'kit party stamp', 'unreadable');
+    };
+
     /* ------------------------------------------------------------- the diff
        Computed with NO writes. Every row carries the refusal that slot would
        hit, so the table is a preview of the apply and not a summary of it. */
@@ -1639,7 +1689,6 @@
     }
 
     function diffTable(actor, kit) {
-        var rows = K.diff(actor, kit);
         var table = W.table({
             rowH: ROW_H,
             cols: [
@@ -1670,7 +1719,7 @@
                 if (r.refusal) tr.style.color = 'var(--mm-warn)';
             }
         });
-        table.mm.paint(rows);
+        table.mm.paint(K.diff(actor, kit));
         return table;
     }
 
@@ -1745,53 +1794,93 @@
 
         var kit = selectedKit();
         var slots = slotsOf(actor);
-        var opts = liveOpts();
-        var nothingOn = !opts.applyClass && !opts.applyLevel && !opts.applySkills &&
-            !opts.applyEquip && !opts.applyParams;
-        var tooMany = kit && opts.applyEquip && kit.slots.length > slots.length;
 
-        var applyWhy = !kit ? 'pick a kit in the table first.'
-            : nothingOn ? 'nothing is selected to apply — every "what to apply" toggle is off.'
-                : tooMany ? 'this kit records ' + kit.slots.length + ' slots and ' + actor.name() +
+        /* Every one of these is read from the actor as they are RIGHT NOW, so
+           each has to be recomputed rather than closed over. "Nothing is
+           selected to apply" is the panel's own settings and cannot move on
+           its own; the slot count and the dual-wield flag are the game's, and
+           a class change moves both. */
+        function slotsText() {
+            var names = [];
+            for (var i = 0; i < slots.length; i++) names.push(etypeName(slots[i]));
+            return slots.length + ' · ' + names.join(', ') +
+                ($.safe(function () { return actor.isDualWield(); }, 'isDualWield', false)
+                    ? ' (dual wield)' : '');
+        }
+        function applyWhyNow() {
+            var opts = liveOpts();
+            var nothingOn = !opts.applyClass && !opts.applyLevel && !opts.applySkills &&
+                !opts.applyEquip && !opts.applyParams;
+            if (!kit) return 'pick a kit in the table first.';
+            if (nothingOn) return 'nothing is selected to apply — every "what to apply" toggle is off.';
+            if (opts.applyEquip && kit.slots.length > slots.length) {
+                return 'this kit records ' + kit.slots.length + ' slots and ' + actor.name() +
                     ' has ' + slots.length + '. The extra slots are named in the difference table ' +
-                    'and would be dropped.'
-                    : '';
+                    'and would be dropped.';
+            }
+            return '';
+        }
+        var applyWhy = applyWhyNow();
 
         var main = [
             W.group('Saved kits', [kitsTable(actor)], { grow: true, tag: all().length + '' })
         ];
-        var diffChildren = [diffTable(actor, kit)];
+        var diff = diffTable(actor, kit);
+        var diffChildren = [diff];
         var extra = lastReportRows();
         if (extra) for (var e = 0; e < extra.length; e++) diffChildren.push(extra[e]);
         diffChildren.push(h('div', { class: 'mm-sep' }));
-        diffChildren.push(W.button({
+        var applyBtn = W.button({
             label: kit ? 'apply "' + kit.name + '" to ' + actor.name() : 'apply this kit',
             wide: true, variant: 'prime', mutates: true, disabled: !!applyWhy,
             tip: 'Apply|Class, then level, then skills, then equipment, then bonuses. One undo entry.',
             onClick: function () { if (kit) runApply(actor, kit); }
-        }));
-        if (applyWhy) {
-            diffChildren.push(h('div', {
-                class: 'mm-sub', style: 'white-space:normal;padding:2px;color:var(--mm-warn)', text: applyWhy
-            }));
-        }
+        });
+        diffChildren.push(applyBtn);
+        /* Built whether or not there is a reason today, because the reason can
+           arrive while the panel is open — a class change costs the actor a
+           slot and the kit stops fitting. A node that only exists when the
+           first build had something to say cannot be filled in later. */
+        var applyWhyEl = h('div', {
+            class: 'mm-sub', style: 'white-space:normal;padding:2px;color:var(--mm-warn)', text: applyWhy
+        });
+        applyWhyEl.style.display = applyWhy ? '' : 'none';
+        diffChildren.push(applyWhyEl);
         diffChildren.push(h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
             'The order is class, level, skills, equipment, bonuses — changeClass re-derives the level ' +
             'and levelling learns the new class\'s own skills, so any other order undoes itself.'));
         main.push(W.group('Difference from ' + actor.name(), diffChildren,
             { tag: kit ? kit.name : 'no kit' }));
 
+        var slotsRow = h('div', { class: 'mm-row', 'data-mm-tip': 'Slots|equipSlots() is read live, per actor.' },
+            h('div', { class: 'mm-lab', text: 'Slots' }),
+            h('div', { class: 'mm-edge mm-edge--shrink mm-edge--wrap mm-mono mm-sub', text: slotsText() }));
+
+        /* The difference table exists to be read WHILE the game changes the
+           actor — that is what makes it a preview rather than a receipt. Only
+           the table, the slot row and the apply button's reason are rewritten:
+           the left column holds the actor list, four toggle groups and a paste
+           textarea, and the kits table's name column is an edit cell.
+
+           No isScrolling() guard here, and that is deliberate: this table is
+           built plain, and on a plain table isScrolling() is hard-wired false
+           because the listener that feeds it is only installed for a virtual
+           one. It also has nothing to scroll — a group with no `grow` gives
+           the table its content height and the COLUMN is what scrolls, which a
+           repaint of the rows does not touch. */
+        U.live(function () { return K.actorStamp(actor); }, function () {
+            slots = slotsOf(actor);
+            diff.mm.paint(K.diff(actor, kit));
+            slotsRow.lastChild.textContent = slotsText();
+            applyWhy = applyWhyNow();
+            applyBtn.mm.disable(!!applyWhy);
+            applyWhyEl.textContent = applyWhy;
+            applyWhyEl.style.display = applyWhy ? '' : 'none';
+        }, { name: 'loadout difference', within: diff });
+
         return cols({ narrow: true, items: [
             actorList(),
-            h('div', { class: 'mm-row', 'data-mm-tip': 'Slots|equipSlots() is read live, per actor.' },
-                h('div', { class: 'mm-lab', text: 'Slots' }),
-                h('div', { class: 'mm-edge mm-edge--shrink mm-edge--wrap mm-mono mm-sub' },
-                    slots.length + ' · ' + (function () {
-                        var names = [];
-                        for (var i = 0; i < slots.length; i++) names.push(etypeName(slots[i]));
-                        return names.join(', ');
-                    }()) + ($.safe(function () { return actor.isDualWield(); }, 'isDualWield', false)
-                        ? ' (dual wield)' : ''))),
+            slotsRow,
             saveGroup(actor),
             applyGroup(),
             refuseGroup(),
@@ -2064,6 +2153,19 @@
                 label: 'owned only', value: ownedOnly,
                 onChange: function (v) { ownedOnly = v; picker.mm.repaint(); }
             }));
+
+        /* The "have" column and the "owned only" filter are the party's stock,
+           which the game changes every time something is used, bought, sold or
+           handed over by an event. The repaint is the SAME call the filter chip
+           already makes, so the search text and the chip are honoured by
+           construction rather than by a second code path. The picker is
+           virtual, so isScrolling() is a real guard here and the offset
+           survives the paint. */
+        U.live(K.partyStamp, function () { picker.mm.repaint(); }, {
+            name: 'shop picker', within: picker,
+            when: function () { return !picker.mm.isScrolling(); },
+            whyNot: 'you are scrolling the list'
+        });
 
         var whyEl = S.searchWhy ? h('div', {
             class: 'mm-sub', style: 'padding:2px 6px;white-space:normal;color:var(--mm-warn)',

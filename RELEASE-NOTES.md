@@ -1,4 +1,4 @@
-# GigaHack MV/MZ 2.1.0
+# GigaHack MV/MZ 2.2.0
 
 A mod menu for **any RPG Maker MV or MZ game**.
 
@@ -10,9 +10,9 @@ generically it moves into an optional per-game profile; where something cannot
 work at all on a given target, the mod says what is missing rather than
 misbehaving quietly.
 
-2.1.0 adds twenty-one features across nine modules, roughly doubling the
-codebase, and fixes ten defects — five of them in the test harness, which had
-been quietly telling the suite things about the engines that were not true.
+2.2.0 opens the menu up: a game nobody wrote it for can now have a panel
+written for it by whoever plays that game, and the mod finally asks before it
+keeps anything outside the game's own folder.
 
 ## Install
 
@@ -32,8 +32,8 @@ macOS that is usually inside the app bundle, at
 
 It writes exactly three things and nothing else:
 
-- `js/plugins/GigaHack_*.js` — 35 new files
-- `js/plugins.js` — 35 entries appended **at the end**
+- `js/plugins/GigaHack_*.js` — 36 new files
+- `js/plugins.js` — 36 entries appended **at the end**
 - `js/plugins.js.gigahack-backup` — the original, kept
 
 `--uninstall` restores that file byte for byte. `--verify` checks an install
@@ -43,15 +43,112 @@ The entries go at the end because every GigaHack alias has to be outermost: a
 plugin loading after us wraps our hooks and can undo what the menu does. The
 mod re-checks this at runtime and says so when a game update has changed it.
 
-**Upgrading from 2.0.0** is the same install. Both installers find their own
-block by a version-agnostic marker, so the 26-entry block is replaced rather
-than joined by a second one, and your `settings.json` is migrated forward. The
-one thing to know is that nine new module files appear beside the old
-twenty-six; `--uninstall` removes all of them.
+**Upgrading** is the same install. Both installers find their own block by a
+version-agnostic marker, so the existing block is replaced rather than joined by
+a second one, and your `settings.json` is migrated forward.
 
-## What is new in 2.1.0
+Two things to know when upgrading from 2.1.0. One new module file appears
+beside the thirty-five (`--uninstall` removes all of them). And **GigaHack now
+asks where to keep its own files**, having chosen for you until now: until the
+question is answered it reads and writes only beside the game, so an existing
+`settings.json` in the application-data folder is not lost but is not read
+either — answer *use the shared folder* and it is picked up again exactly as it
+was. Nothing is moved or deleted on either answer.
 
-**Nine new modules, twenty-two new panels**, bringing the menu to 67. Four of them publish services the
+## What is new in 2.2.0
+
+**Addons — plugins for GigaHack, written by whoever plays the game.** GigaHack
+works on any game without knowing anything about it, and that is also its
+ceiling: it cannot know that this game's variable 412 is the affection score.
+An addon is a JavaScript file that does know.
+
+An addon adds panels on any of the six tabs, hotkeys that appear in Settings
+beside the mod's own, console calls, and a game profile; it subscribes to the
+map changing, a battle starting, a line being said, a save being loaded; and it
+gets its own settings file. Bring one in by pasting it, from the clipboard, from
+a link, from a file, or by dropping it in the addons folder.
+
+Every source ends at the same review, which shows what actually arrived — its
+header, its size, its fingerprint, and for a link the host it came from —
+**before anything runs**. Nothing is enabled by being imported. A link is never
+re-fetched on its own; "check the source again" reports changed, unchanged or
+unreachable and still installs nothing. An addon that throws is stopped, named,
+and given its line number, and one that was loading when the game last stopped
+is quarantined and says so. Holding the panic-hide key at boot skips all of
+them.
+
+Two things an addon does that cannot be undone are said in the panel rather
+than left to be discovered: an engine alias stays installed for the life of the
+process (disabling makes it a pass-through, because pulling a wrapper out of a
+chain something else has aliased on top of is not safe), and a game profile
+applies from the next launch, because profile resolution is settled once. And
+it is not a sandbox: an addon is arbitrary JavaScript with the game's
+privileges, exactly like any RPG Maker plugin, and the import review says so.
+
+**GigaHack asks where to keep its own files, once per game.** Its settings, its
+addons, its save backups and its console snippets go either beside the game or
+in a folder of its own in this account's application-data directory. Up to
+2.1.0 it chose the second without asking.
+
+The answer is written **beside the game**, never in the shared folder, so it
+cannot travel: copy GigaHack into a second game and it asks again there. That
+is structural rather than a promise — a file beside one game cannot reach
+another — and it is what the check suite pins. Until it is answered, nothing
+outside the game folder is read, written, probed or created; the write probe
+that picks a directory *creates* the directory it tests, so it is now pointed
+only at candidates the answer allows.
+
+Answer yes and settings, hotkeys and the look of the menu can be shared between
+games from one file, per section, with the game that last wrote each one named.
+Hotkey sharing is off by default and says why: a hotkey default is derived from
+the keys *this* game leaves free, so a shared bind is applied only where the
+game has not claimed the key, and every skip is listed with its claimant.
+
+**Panels that show live state now show it live.** Thirty-one panels were frozen
+at the moment they were built — Player → Movement disagreed with the mod's own
+footer within a second of walking. They repaint from a cheap change signal
+through one helper that holds the rules: never while the menu is closed, never
+while a cell inside the thing is being edited, never with a dropdown open over
+it, never mid-scroll — and a hold does not consume the change, so the repaint
+happens on the first free tick rather than being lost. The dialogue history
+follows the tail when you are at the bottom and leaves you exactly where you
+are when you are not.
+
+**The recorded history updates while it is open.** Its change signal is what the
+buffer holds rather than how much has ever been said: clearing it empties the
+buffer without moving the total, and a panel watching the total would have gone
+on showing lines that are gone.
+
+### Defects fixed in 2.2.0
+
+- **A raw NUL byte in one module file** made it "data" to every text tool on the
+  machine. `grep` skipped it in silence — not an error, an empty result — and
+  the panel count in the docs was two short because of it. Same separator, now
+  spelled as an escape.
+- **The installer left temp files in game folders.** A run killed between
+  writing one and cleaning up left a 137KB `plugins.js.gigahack-tmp10` and three
+  empty `.err` files behind, and nothing ever looked: the engine reads
+  `plugins.js` and nothing else, so the game behaved perfectly. There is now a
+  trap on INT and TERM, `--verify` names any leftovers and the command that
+  removes them, and `--uninstall` takes them with it.
+- **Two games in a browser build shared one settings key.** NW.js keeps one
+  storage area per app, and two RPG Maker games whose `package.json` carries the
+  same name — the default — share it. Keys are per game now; an unkeyed key
+  from an older build is adopted once and then gone.
+- **A settings profile carried the storage answer.** Handing somebody a profile
+  could change which folder their settings came from. Profiles no longer carry
+  it, and applying one leaves this machine's answer alone.
+- **Backups followed a path cached before the data directory moved** — a stale
+  path that still resolves, still exists and is still writable, which is the
+  invisible kind.
+- **A row with no path lost its label.** "In use now" came out as "In use n…"
+  while the three-line reason beside it read perfectly; the reason now goes
+  under the row, where it has the width. The sweep that was supposed to catch
+  this only scanned narrow columns and had a threshold it slipped under.
+
+## What 2.1.0 brought
+
+**Nine new modules, twenty-two new panels**, bringing the menu to 68. Four of them publish services the
 rest build on — `$.watch`, `$.journal`, `$.interp`, `$.rng` and `$.snap`.
 
 *Answering questions the engine cannot.* **Watchpoints** name the map and the
@@ -113,7 +210,7 @@ removed. What was never removed is any statement of why something cannot work,
 is destructive, is session-only or cannot be undone: 27 proposed cuts were
 refused on exactly that ground.
 
-### Defects fixed
+### Defects fixed in 2.1.0
 
 Five were in the harness, and each one made a new panel untestable or, worse,
 testable and wrong:
@@ -190,11 +287,11 @@ instead of pretending it worked.
 
 | Suite | Checks |
 |---|---|
-| Stock MZ 1.9 | 970 |
-| Stock MV 1.6 | 981 |
-| MV with a modelled third-party plugin stack | 1010 |
-| Installer, against nine `plugins.js` shapes | 113 |
-| Build lint over all 36 files | — |
+| Stock MZ 1.9 | 1271 |
+| Stock MV 1.6 | 1285 |
+| MV with a modelled third-party plugin stack | 1314 |
+| Installer, against nine `plugins.js` shapes | 121 |
+| Build lint over all 37 files | — |
 
 The harness stubs are copied from the shipped engine source and annotated with
 the line they came from, including the awkward parts. That discipline earned

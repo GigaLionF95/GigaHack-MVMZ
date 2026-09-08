@@ -307,6 +307,45 @@ check "$([ "$n" = 0 ] && echo 1 || echo 0)" "--dry-run copies no module files"
 
 echo
 #-----------------------------------------------------------------------------
+# A run that is killed between writing a temp file and cleaning it up used to
+# leave it in somebody's game folder, and nothing ever looked. A 137KB
+# plugins.js.gigahack-tmp10 and three empty .err files sat in a real game for
+# three weeks before anybody noticed, because PluginManager reads plugins.js
+# and nothing else, so the game behaved perfectly the whole time.
+echo "-- leftovers from an interrupted run"
+build_bed
+"$INSTALLER" "$BED/pretty-mz" >/dev/null 2>&1
+n=$(ls "$BED/pretty-mz/js/"plugins.js.gigahack-tmp* "$BED/pretty-mz/js/"plugins.js.gigahack-ent* \
+       "$BED/pretty-mz/js/"plugins.js.gigahack-strip* 2>/dev/null | wc -l | tr -d ' ')
+check "$([ "$n" = 0 ] && echo 1 || echo 0)" "a completed install leaves no temp files behind" "found $n"
+
+"$INSTALLER" --dry-run "$BED/pretty-mz" >/dev/null 2>&1
+n=$(ls "$BED/pretty-mz/js/"plugins.js.gigahack-tmp* 2>/dev/null | wc -l | tr -d ' ')
+check "$([ "$n" = 0 ] && echo 1 || echo 0)" "a dry run leaves no temp files behind either" "found $n"
+
+# Plant the exact litter the real game had, and ask the installer about it.
+: > "$BED/pretty-mz/js/plugins.js.gigahack-tmp10"
+: > "$BED/pretty-mz/js/plugins.js.gigahack-tmp10.err"
+: > "$BED/pretty-mz/js/plugins.js.gigahack-ent7"
+out=$("$INSTALLER" --verify "$BED/pretty-mz" 2>&1); rc=$?
+check "$([ $rc -eq 0 ] && echo 1 || echo 0)" "leftovers do not make a good install verify as broken"
+check "$(echo "$out" | grep -qi 'leftover' && echo 1 || echo 0)" "verify says the leftovers are there"
+check "$(echo "$out" | grep -q 'gigahack-tmp10' && echo 1 || echo 0)" "...and names each one"
+check "$(echo "$out" | grep -qi 'uninstall' && echo 1 || echo 0)" "...and names the command that removes them"
+
+"$INSTALLER" --uninstall "$BED/pretty-mz" >/dev/null 2>&1
+n=$(ls "$BED/pretty-mz/js/"plugins.js.gigahack-* 2>/dev/null | wc -l | tr -d ' ')
+check "$([ "$n" = 0 ] && echo 1 || echo 0)" "uninstall takes the leftovers with it" "found $n"
+
+# The interrupt itself cannot be staged reliably from a test — the window is a
+# few milliseconds wide — so the guard is checked statically, the same way
+# `awk -v` is. A trap that covers EXIT only would not survive the case that
+# produced the litter: the run was killed, not returned from.
+check "$(grep -q '^trap cleanup_tmps EXIT INT TERM' "$INSTALLER" && echo 1 || echo 0)" \
+      "the installer traps INT and TERM, not only EXIT, so a killed run cleans up after itself"
+
+echo
+#-----------------------------------------------------------------------------
 # On macOS most game folders have spaces in their names ("A New Dawn 5.3.2 mac"),
 # and the default IFS splits on them: one target becomes three, each reported as
 # "not a game folder" while the real one is never tried. The user sees three

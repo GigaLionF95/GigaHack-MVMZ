@@ -77,3 +77,31 @@ Load order is `core` → the shared `x-*` → the engine file → that engine's 
 → `plugins-mv` (modded run only) → `fixtures`. A file that is a floor another
 should override loads before it; `x-misc.js` says so in its own header, and got
 that wrong once by being wired last.
+
+## `x-node.js` — the one stub that models Node instead of an engine
+
+Every file above models RPG Maker. `x-node.js` models **Node**: `fs`, `path`,
+`os`, and the two fields of `process` that path resolution reads. It is here
+because of a claim that cannot be checked any other way — nothing outside the
+game folder is read, written, probed or created until the player has said yes.
+
+The mod's own writability probe *creates* the directory it tests, so "we did
+not touch it" is a statement about calls rather than about outcomes: an empty
+directory looks the same whether it was never made or made and removed. The
+model therefore records every call it is given, and `model.touched(prefix)` is
+what a check asserts on.
+
+Its provenance is different in kind from its neighbours'. There is no engine
+source to cite: what it reproduces is the Node API surface the mod actually
+calls, and the header lists that surface member by member with what reaches for
+each one. Where its behaviour is deliberately not Node's — paths are POSIX even
+when `platform` is `'win32'`, because the Windows model is about *which*
+directory is chosen and not about how a path is spelled — the header says so
+rather than letting the difference be discovered later.
+
+It is **not loaded by any harness HTML**, and that is deliberate: the default
+harness is an honest browser build and several checks in `run.js` assert that it
+is. `checks/paths.js` injects it with `page.addScriptTag` for its own use. It
+publishes exactly one global, `window.__nodeModel`, and touches nothing else —
+no `$.env`, no `$.paths`, no `$.caps`. A check hands the model to
+`GigaHack.usePaths(p, model)` and restores inside the same check.

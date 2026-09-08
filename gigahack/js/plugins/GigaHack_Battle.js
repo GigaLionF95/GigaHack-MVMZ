@@ -1347,22 +1347,36 @@
         var inBattle = B.inBattle();
         var survival = survivalGroup();
 
-        var combat = W.group('This battle', [
-            W.button({
-                label: 'instant win', wide: true, variant: 'danger', mutates: true,
-                disabled: !inBattle, confirmLabel: 'end it? (irreversible)',
-                tip: 'Instant win|Kills the troop and lets the game end the fight, so EXP, gold ' +
-                    'and drops still happen. Backed up first.',
-                onClick: function () { if (B.instantWin()) U.setOpen(false); }
-            }),
-            W.button({
-                label: 'instant lose', wide: true, variant: 'danger', mutates: true,
-                disabled: !inBattle, confirmLabel: 'lose on purpose?',
-                tip: 'Instant lose|The game\'s own defeat handling decides what follows — game ' +
-                    'over, or a scripted revive. Backed up first.',
-                onClick: function () { if (B.instantLose()) U.setOpen(false); }
-            }),
-        ], { tag: inBattle ? 'live' : 'no battle' });
+        var win = W.button({
+            label: 'instant win', wide: true, variant: 'danger', mutates: true,
+            disabled: !inBattle, confirmLabel: 'end it? (irreversible)',
+            tip: 'Instant win|Kills the troop and lets the game end the fight, so EXP, gold ' +
+                'and drops still happen. Backed up first.',
+            onClick: function () { if (B.instantWin()) U.setOpen(false); }
+        });
+        var lose = W.button({
+            label: 'instant lose', wide: true, variant: 'danger', mutates: true,
+            disabled: !inBattle, confirmLabel: 'lose on purpose?',
+            tip: 'Instant lose|The game\'s own defeat handling decides what follows — game ' +
+                'over, or a scripted revive. Backed up first.',
+            onClick: function () { if (B.instantLose()) U.setOpen(false); }
+        });
+
+        var combat = W.group('This battle', [win, lose], { tag: inBattle ? 'live' : 'no battle' });
+
+        /* Open this panel on the map, walk into a fight, and both buttons used
+           to stay dead: whether a battle is running was read once, at build.
+           Only the gate is moved — the buttons themselves are kept, because
+           each is two clicks and rebuilding the group between them would throw
+           the first one away. mm.disable() is the one path that counts: the
+           handler tests for the class rather than for a captured flag, so a
+           greyed button refuses a programmatic click as well as a pointer. */
+        U.live(B.inBattle, function () {
+            var now = B.inBattle();
+            win.mm.disable(!now);
+            lose.mm.disable(!now);
+            combat.mm.tag(now ? 'live' : 'no battle');
+        }, { name: 'battle actions', within: combat });
 
         return cols({ narrow: true, items: [barsPanel(), survival, combat] }, [troopPanel()]);
     }
