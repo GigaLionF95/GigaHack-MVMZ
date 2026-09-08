@@ -210,11 +210,8 @@ module.exports = async function (ctx) {
     first.localDir !== first.sharedDir,
     JSON.stringify(first.paths));
   check('it says the answer is per game and cannot travel to another game on this machine',
-    /once per game/.test(first.text) && /any other game/.test(first.text) &&
-    /asks again there/.test(first.text), first.text.slice(0, 60));
-  check('it says that an older install wrote there without asking and that what it saved comes back',
-    /2\.1\.0 and earlier/.test(first.text) && /picked up again/.test(first.text),
-    /2\.1\.0 and earlier/.test(first.text) + '/' + /picked up again/.test(first.text));
+    /once per game/.test(first.text) && /any other game/.test(first.text),
+    first.text.slice(0, 60));
   check('and putting the question touches nothing outside the game folder',
     first.touchedShared === 0, first.touchedShared + ' call(s)');
 
@@ -761,8 +758,10 @@ module.exports = async function (ctx) {
     G.ui.apply(wasLook);
     return out;
   });
+  /* The attribution is the row's own sub-label — 'from <game>' beside the section
+     name — rather than a sentence under it. Same claim, one copy of it. */
   check('the panel names which game last wrote each shared section, because a setting nobody here changed is otherwise unattributable',
-    writer.wroteIt === 'Another Game' && /Last written by Another Game/.test(writer.text) &&
+    writer.wroteIt === 'Another Game' && /from Another Game/.test(writer.text) &&
     writer.adoptedAccent === '#123456', writer.wroteIt + ' / ' + writer.adoptedAccent);
   check('and it offers a row per shareable section, with appearance and behaviour on and hotkeys off',
     writer.rows.join(',') === 'ui:true,behaviour:true,hotkeys:false', writer.rows.join(','));

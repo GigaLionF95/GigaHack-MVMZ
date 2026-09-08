@@ -358,9 +358,9 @@ suite knowingly; the lint, manifest, parse and installer checks still run.
 
 ```sh
 node gigahack-test/lint.js               # 36 files, four rules
-cd gigahack-test && node run.js          # 1271 checks, stock MZ
-node run.js --engine=mv                  # 1285, stock MV
-node run.js --engine=mv-modded           # 1314, MV + a modelled plugin stack
+cd gigahack-test && node run.js          # 1270 checks, stock MZ
+node run.js --engine=mv                  # 1284, stock MV
+node run.js --engine=mv-modded           # 1313, MV + a modelled plugin stack
 ./test-installers.sh                     # 121 checks over nine plugins.js shapes
 ./build-release.sh                       # everything, then installs FROM the archive
 node gigahack-test/verify-live.js <game> # against a real installed game

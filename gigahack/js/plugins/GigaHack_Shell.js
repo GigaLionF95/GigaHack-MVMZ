@@ -555,40 +555,32 @@
 
         var grant = W.button({
             label: 'Use the shared folder', variant: 'prime', wide: true, mutates: true,
-            tip: 'Shared folder|Settings, addons and backups live outside the game folder, ' +
-                 'where a game update cannot remove them.',
             onClick: answer(function () {
                 var r = $.store.grantStorage();
                 if (r && r.ok) {
-                    $.log('ok', 'Settings → Storage can copy what is already beside the game across. ' +
-                        'Nothing has been moved: the move copies, keeps whatever the destination ' +
-                        'already has, and never deletes.');
+                    $.log('ok', 'Nothing has been moved — Settings → Storage copies what is already ' +
+                        'beside the game across.');
                 }
             }, 'grant storage')
         });
         var decline = W.button({
             label: 'Keep everything beside the game', wide: true, _ungated: true,
-            tip: 'Beside the game|Nothing outside the game folder is read or written. ' +
-                 'Uninstalling the game removes GigaHack\'s files with it.',
             onClick: answer(function () {
                 $.store.declineStorage();
                 U.toast({
                     title: 'BESIDE THE GAME',
-                    msg: 'Everything stays in ' + ($.paths.dataDir || $.paths.mode) +
-                        '. Settings → Storage can change this.',
+                    msg: 'Everything stays in ' + ($.paths.dataDir || $.paths.mode) + '.',
                     severity: 'ok', ms: 6000
                 });
             }, 'decline storage')
         });
         var later = W.button({
             label: 'Ask again next launch', wide: true, _ungated: true,
-            tip: 'Later|Nothing outside the game folder is touched in the meantime.',
             onClick: answer(function () {
                 $.store.deferStorage();
                 U.toast({
                     title: 'ASKED AGAIN NEXT LAUNCH',
-                    msg: 'Until then everything stays beside the game. Settings → Storage answers it ' +
-                        'at any time.',
+                    msg: 'Everything stays beside the game until then.',
                     severity: 'ok', ms: 6000
                 });
             }, 'defer storage')
@@ -596,22 +588,14 @@
 
         var card = h('div', { class: 'mm-card' },
             h('b', { text: 'Where should GigaHack keep its own files?' }),
-            askText('Its settings, its addons, its save backups and its console snippets. ' +
-                'Nothing of the game\'s own is moved or touched either way.'),
             askPath('Beside the game', p.localDir,
                 'this build has no game folder it can write to — ' + (p.mode === 'fs' ? '' : 'persistence is in ' + p.mode + ' mode.')),
             askPath('A folder of its own, outside the game', p.sharedDir,
                 'there is no application-data folder to reach from here.'),
-            askText('A folder of its own survives a game update or a reinstall, which the game ' +
-                'folder does not. Beside the game keeps everything in one place and reads and ' +
-                'writes nothing outside it.'),
-            askText('This is asked once per game, and the answer is written beside THIS game. ' +
-                'Answering here says nothing about any other game on this machine: copy GigaHack ' +
-                'into a second game and it asks again there.'),
-            askText('GigaHack 2.1.0 and earlier wrote to that folder without asking. If you used it ' +
-                'before, what it saved is still there and is picked up again the moment you allow ' +
-                'this — nothing outside the game folder is read until then, including to find out ' +
-                'whether anything is there.'),
+            askText('A folder of its own survives a game update or a reinstall; beside the game ' +
+                'goes when the game does.'),
+            askText('Asked once per game — answering here says nothing about any other game on ' +
+                'this machine.'),
             // One per line, and each its own flex row so `wide` can do its job:
             // three answers of three different lengths, laid out at three
             // different widths, read as one being the recommended one.

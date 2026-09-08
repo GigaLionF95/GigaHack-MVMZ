@@ -974,8 +974,8 @@ module.exports = async function (ctx) {
     /alias cannot be pulled out of a chain/.test(says) || /pass-through/.test(says),
     says.slice(0, 200));
   check('and the reasons are in the panel rather than only in a comment',
-    SRC.indexOf('cannot be pulled out of a chain once anything has aliased on top') > -1 &&
-    SRC.indexOf('memoised at the first read after boot') > -1);
+    SRC.indexOf('they stay installed until a ') > -1 &&
+    SRC.indexOf('A profile applies from the NEXT launch.') > -1);
 
   /* =======================================================================
      6. THE CRASH GUARD AND SAFE MODE
@@ -1783,7 +1783,7 @@ module.exports = async function (ctx) {
   await ev(() => { window.GigaHack.addons.discard(); });
   check('the review says plainly that this is not a sandbox, at the moment the decision is being made',
     honest.staged && /Nothing here sandboxes it/.test(reviewText) &&
-    /nothing runs until you enable it/.test(reviewText),
+    /anything the game can/.test(reviewText),
     reviewText.length > 20 ? 'review built' : reviewText);
   check('and it is said exactly once in the whole module, at the import review',
     (SRC.match(/Nothing here sandboxes it/g) || []).length === 1 &&

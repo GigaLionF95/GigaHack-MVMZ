@@ -893,18 +893,15 @@
         }, 'reveal available', false);
     }
     function revealWhy() {
-        if (!$.env.nwjs) {
-            return 'there are no Node APIs on this build, so there is no desktop shell to ask. ' +
-                ($.caps.fsWhy || '');
-        }
-        return 'this build\'s desktop shell does not offer showItemInFolder, so nothing here can ' +
-            'open a file manager for you. The path is above and can be copied.';
+        if (!$.env.nwjs) return 'there are no Node APIs on this build, so there is no desktop shell to ask.';
+        return 'this build\'s desktop shell does not offer showItemInFolder. The path is above ' +
+            'and can be copied.';
     }
     function revealButton(label, dir, noDirWhy) {
         var why = !dir ? noDirWhy : (revealAvailable() ? '' : revealWhy());
         return W.button({
             label: label, _ungated: true, disabled: !!why,
-            tip: why ? 'Unavailable|' + why : 'Open|Shows this folder in your file manager.',
+            tip: why ? 'Unavailable|' + why : '',
             onClick: function () {
                 var ok = $.safe(function () { nw.Shell.showItemInFolder(dir); return true; },
                     'show ' + dir + ' in the file manager', false);
@@ -924,12 +921,27 @@
         moot: 'there is nothing to answer'
     };
 
+    /* One reason, once.
+
+       Three of the groups below carry their own "why", and on a build with no
+       filesystem all three resolve to the same sentence — it was printed three
+       times on one screen, which reads as three separate problems. Reset per
+       panel build, so a reason that becomes true again after a move is said
+       again. */
+    var storageSaid = null;
+    function explainOnce(text) {
+        text = String(text || '');
+        if (!text || (storageSaid && storageSaid[text])) return null;
+        if (storageSaid) storageSaid[text] = true;
+        return explain(text);
+    }
+
     /* --------------------------------------------------------- the answer */
     function answerGroup() {
         var p = $.paths, rec = $.consentRecord();
         var rows = [
             kv('Answer', ANSWER_TEXT[p.consent] || p.consent),
-            explain(p.consentWhy)
+            explainOnce(p.consentWhy)
         ];
         if (rec) {
             rows.push(kv('Given', rec.at || 'at an unrecorded time'));
@@ -937,15 +949,11 @@
             rows.push(kv('Times asked', rec.asked || 1));
             rows.push(W.pathRow('Recorded in', rec._where, {
                 why: 'the answer is in memory only for this launch',
-                tip: 'Recorded in|Beside the game, never in the shared folder: an answer in a shared ' +
-                    'folder could reach another game, which is the one thing it exists to prevent.'
+                tip: 'Recorded in|Beside the game, so the answer cannot reach another game.'
             }));
-        } else if (p.consent !== 'moot') {
-            rows.push(explain('Nothing has been recorded for this game yet.'));
         }
         if (p.consent !== 'moot' && $.consentDeferred && $.consentDeferred()) {
-            rows.push(explain('You asked to be asked again next launch, so the card does not appear again ' +
-                'in this one.'));
+            rows.push(explain('You asked to be asked again next launch.'));
         }
 
         /* The answer that is in force is marked ON rather than removed. Two
@@ -956,8 +964,7 @@
         function markCurrent(btn, answer) {
             if (p.consent === answer) {
                 btn.classList.add('mm-on');
-                btn.setAttribute('data-mm-tip', 'In force|This is the answer for this game. ' +
-                    'Pressing it again re-runs it.');
+                btn.setAttribute('data-mm-tip', 'In force|Pressing it again re-runs it.');
             }
             return btn;
         }
@@ -967,15 +974,13 @@
                 label: 'Use the shared folder', variant: 'prime', mutates: true,
                 disabled: p.consent === 'moot',
                 tip: p.consent === 'moot' ? 'Unavailable|' + p.consentWhy
-                    : 'Allow|Settings and addons move to a folder of GigaHack\'s own. Nothing is ' +
-                      'copied by this on its own — the move below does that, and it never deletes.',
+                    : 'Allow|Nothing is copied by this — the move below does that.',
                 onClick: function () { $.safe(function () { $.store.grantStorage(); }, 'grant storage'); }
             }), 'granted'),
             markCurrent(W.button({
                 label: 'Keep everything beside the game', _ungated: true,
                 disabled: p.consent === 'moot',
-                tip: p.consent === 'moot' ? 'Unavailable|' + p.consentWhy
-                    : 'Refuse|Nothing outside the game folder is read or written.',
+                tip: p.consent === 'moot' ? 'Unavailable|' + p.consentWhy : '',
                 onClick: function () {
                     $.safe(function () { $.store.declineStorage(); }, 'decline storage');
                     U.toast({ title: 'BESIDE THE GAME', msg: $.paths.dataDir || $.paths.mode, severity: 'ok' });
@@ -984,20 +989,12 @@
             W.button({
                 label: 'Show the question again', _ungated: true,
                 disabled: p.consent === 'moot',
-                tip: p.consent === 'moot' ? 'Unavailable|' + p.consentWhy
-                    : 'Ask|Puts the first-launch card back on screen. It answers nothing by itself.',
+                tip: p.consent === 'moot' ? 'Unavailable|' + p.consentWhy : '',
                 onClick: function () {
                     var r = U.showStorageCard();
                     if (!r.shown) U.toast({ title: 'NOT ASKED', msg: r.why, severity: 'warn', ms: 6000 });
                 }
             })));
-
-        rows.push(explain('The answer is per game and is written beside THIS game. Answering here says ' +
-            'nothing about any other game on this machine: copy GigaHack into a second game and it ' +
-            'asks again there. That is structural — a file beside one game cannot reach another.'));
-        rows.push(explain('GigaHack 2.1.0 and earlier wrote to the shared folder without asking. If you ' +
-            'used it before, what it saved is still there and is adopted rather than overwritten the ' +
-            'moment you allow this.'));
 
         return W.group('The answer', rows, { tag: $.paths.consent });
     }
@@ -1007,14 +1004,12 @@
         var p = $.paths;
         return W.group('Where the data is now', [
             kv('Persistence', p.mode + (p.fallbackUsed ? ' (fallback)' : ''),
-                'Persistence|fs = JSON files on disk. localStorage / memory mean there was no ' +
-                'writable directory to use.'),
+                'Persistence|localStorage and memory mean no writable directory was found.'),
             W.pathRow('In use now', p.dataDir, {
-                why: 'there is no directory in ' + p.mode + ' mode — ' + ($.caps.fsWhy || 'no filesystem here.'),
-                tip: 'In use|Everything below is written here, this launch.'
+                why: 'there is no directory in ' + p.mode + ' mode — ' + ($.caps.fsWhy || 'no filesystem here.')
             }),
             kv('Outside the game folder', p.outsideGameFolder ? 'yes' : 'no',
-                'Outside|Whether a game update or a reinstall would take these files with it.'),
+                'Outside|Whether a game update or a reinstall would remove these files.'),
             h('div', { class: 'mm-inline', style: 'padding:4px 2px' },
                 revealButton('open this folder', p.dataDir,
                     'there is no directory to open in ' + p.mode + ' mode.'))
@@ -1027,18 +1022,16 @@
             'computed but never touched: ' + p.consentWhy;
         return W.group('The two locations', [
             W.pathRow('Beside the game', p.localDir, {
-                why: 'no writable directory was found beside the game.',
-                tip: 'Beside the game|Needs no permission — GigaHack is already installed here.'
+                why: 'no writable directory was found beside the game.'
             }),
             W.pathRow('A folder of its own', p.sharedDir, {
-                why: 'there is no application-data folder to reach from this build.',
-                tip: 'Shared folder|Survives a game update or a reinstall.'
+                why: 'there is no application-data folder to reach from this build.'
             }),
             W.pathRow('Shared between games', p.sharedCommonDir, {
                 why: 'there is no application-data folder to reach from this build.',
                 tip: 'Common folder|Holds only the sections you choose to share.'
             }),
-            sharedWhy ? explain(sharedWhy) : null,
+            sharedWhy ? explainOnce(sharedWhy) : null,
             h('div', { class: 'mm-inline', style: 'padding:4px 2px' },
                 revealButton('open the shared folder',
                     p.consent === 'granted' ? p.sharedDir : null,
@@ -1065,8 +1058,8 @@
                 (p.localDir || 'unknown') + ', shared: ' + (p.sharedDir || 'unknown') + ').';
         } else if (p.consent !== 'granted') {
             noDirs = 'the shared folder needs an answer that has not been given (' + p.consent + '). ' +
-                'The answer is above, and it greys both directions: copying back out of that folder ' +
-                'reads it, which is the act the question is about.';
+                'The answer is above; copying back out of that folder reads it too, so both ' +
+                'directions are greyed.';
         }
 
         function move(target) {
@@ -1085,9 +1078,6 @@
         }
 
         var rows = [
-            explain('Copies. A file the destination already has is kept and said so, per file — a merge ' +
-                'nobody asked for is worse than a stated skip. Nothing is deleted; removing the old ' +
-                'copy is the separate button under the report.'),
             h('div', { class: 'mm-inline', style: 'padding:4px 2px' },
                 W.button({
                     label: 'copy everything to the shared folder', mutates: true,
@@ -1102,7 +1092,8 @@
                     onClick: move('local')
                 }))
         ];
-        if (noDirs) rows.push(explain(noDirs));
+        var noDirsRow = explainOnce(noDirs);
+        if (noDirsRow) rows.push(noDirsRow);
 
         if (lastMove) {
             var report = [];
@@ -1144,8 +1135,8 @@
                 disabled: !lastMove.pairs.length,
                 confirmLabel: 'delete ' + lastMove.pairs.length + ' file(s)?',
                 tip: lastMove.pairs.length
-                    ? 'Remove|Deletes exactly the ' + lastMove.pairs.length + ' file(s) that move copied, ' +
-                      'from exactly where it copied them from, and only where the copy is there.'
+                    ? 'Remove|Deletes the ' + lastMove.pairs.length + ' file(s) that move copied, and ' +
+                      'only where the copy is there.'
                     : 'Unavailable|That move copied nothing, so there is no old copy to remove.',
                 onClick: function () {
                     var r = $.safe(function () { return $.store.dropSource(lastMove); }, 'drop the old copy', null);
@@ -1173,11 +1164,9 @@
 
     /* ---------------------------------------------- shared between games */
     var SHARE_TEXT = {
-        ui: 'The menu\'s size, scale, opacity and accent. About the person, not the game.',
-        behaviour: 'Pause while open, read-only, confirmations. About the person, not the game.',
-        hotkeys: 'Off by default: a hotkey default is derived from the keys THIS game leaves free, ' +
-            'and a key that is free in one game is claimed in another. A shared bind is applied only ' +
-            'where this game has not claimed the key, and every skip is listed below with its claimant.'
+        ui: 'Size, scale, opacity and accent.',
+        behaviour: 'Pause while open, read-only, confirmations.',
+        hotkeys: 'A shared bind is skipped where this game already claims the key.'
     };
 
     function sharedGroup() {
@@ -1186,7 +1175,8 @@
         var writers = avail ? $.store.sharedWriters() : {};
         var rows = [];
 
-        if (!avail) rows.push(explain(why));
+        var whyRow = avail ? null : explainOnce(why);
+        if (whyRow) rows.push(whyRow);
 
         $.store.sharedSections().forEach(function (s) {
             /* The file's own record first: sharedSections() carries who this
@@ -1194,11 +1184,9 @@
                writes again, and "who last wrote it" is the question that makes
                a setting nobody here changed attributable. */
             var wrote = writers[s.section] || s.wroteIt || null;
-            var note = SHARE_TEXT[s.section] || '';
-            if (wrote && wrote.game) note += '  Last written by ' + wrote.game + '.';
             rows.push(W.toggleRow(s.section, {
                 value: s.on, disabled: !avail && !s.on, sub: wrote && wrote.game ? 'from ' + wrote.game : '',
-                tip: s.section + '|' + note,
+                tip: s.section + '|' + (SHARE_TEXT[s.section] || ''),
                 onChange: function (on) {
                     var r = $.safe(function () { return $.store.setShared(s.section, on); },
                         'share ' + s.section, null);
@@ -1223,12 +1211,14 @@
                     U.rerender();
                 }
             }));
-            rows.push(explain(note));
         });
 
         var rep = $.store.sharedHotkeyReport();
         if (rep) {
-            if (rep.reason) rows.push(explain(rep.reason));
+            /* The hotkey report's reason IS sharedWhy() while there is no
+               cross-game area, and that sentence is already at the top of this
+               group. Print it once. */
+            if (rep.reason && rep.reason !== why) rows.push(explain(rep.reason));
             rep.applied.forEach(function (a) {
                 rows.push(kv(a.id, 'took ' + (a.code ? U.prettyCode(a.code) : 'unbound') + ' from the shared set'));
             });
@@ -1241,10 +1231,7 @@
                         text: U.prettyCode(a.code) + ' not taken — this game claims it (' + a.claimedBy + ')'
                     })));
             });
-            if (rep.skipped.length) {
-                rows.push(explain('GigaHack sees a key before the game does, so taking a claimed key would ' +
-                    'take the game\'s own action away. Settings → Hotkeys binds something else.'));
-            }
+            if (rep.skipped.length) rows.push(explain('Settings → Hotkeys binds something else.'));
         }
 
         if (avail) {
@@ -1274,23 +1261,15 @@
                         text: e.local ? 'stays' : e.transient ? 'rebuilt' : 'moves'
                     })
                 ];
-            },
-            onRow: function (tr, e) {
-                if (e.local) tr.setAttribute('data-mm-tip', e.name + '|Stays beside this game whatever ' +
-                    'the answer is. An answer in a shared folder could reach another game.');
-                else if (e.transient) tr.setAttribute('data-mm-tip', e.name + '|Rebuilt from nothing at ' +
-                    'the next launch, so a copy of it would only ever be stale.');
             }
         });
         table.mm.paint($.store.files());
-        return W.group('What this folder holds', [
-            table,
-            explain('One list, read by the move, by this table and by the folder readout — three copies ' +
-                'of it would disagree within a month.')
-        ], { grow: true, tag: $.store.files().length + ' entries' });
+        return W.group('What this folder holds', [table],
+            { grow: true, tag: $.store.files().length + ' entries' });
     }
 
     function buildStorage() {
+        storageSaid = {};
         if (!$.setConsent || !$.store || !$.store.sharedSections) {
             return todo('UNAVAILABLE', 'this build\'s storage layer cannot answer the question', [
                 'Debug → Environment says where settings are being written in the meantime.'

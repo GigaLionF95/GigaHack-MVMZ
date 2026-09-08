@@ -289,9 +289,9 @@ cd gigahack-test
 npm install                # playwright, once
 
 npm run lint               # build lint, 36 modules + 1 shipped profile
-npm test                   # stock MZ 1.9.0        — 1271 checks
-npm run test:mv            # stock MV 1.6.1        — 1285 checks
-npm run test:mv-modded     # MV + modelled plugins — 1314 checks
+npm test                   # stock MZ 1.9.0        — 1270 checks
+npm run test:mv            # stock MV 1.6.1        — 1284 checks
+npm run test:mv-modded     # MV + modelled plugins — 1313 checks
 npm run test:all           # lint plus all three
 ```
 

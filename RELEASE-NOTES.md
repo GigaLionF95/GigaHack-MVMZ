@@ -287,9 +287,9 @@ instead of pretending it worked.
 
 | Suite | Checks |
 |---|---|
-| Stock MZ 1.9 | 1271 |
-| Stock MV 1.6 | 1285 |
-| MV with a modelled third-party plugin stack | 1314 |
+| Stock MZ 1.9 | 1270 |
+| Stock MV 1.6 | 1284 |
+| MV with a modelled third-party plugin stack | 1313 |
 | Installer, against nine `plugins.js` shapes | 121 |
 | Build lint over all 37 files | — |
 

@@ -100,11 +100,8 @@
 
     /* Not a promise about safety. Said once, where the decision is made. */
     var NOT_A_SANDBOX =
-        'An addon is JavaScript running with the game\'s privileges, exactly like any plugin the game ' +
-        'itself loads. Nothing here sandboxes it — it can read and write anything the game can, and ' +
-        'GigaHack cannot make that untrue. What it does do: nothing runs until you enable it, you are ' +
-        'looking at the whole source now, a link is never fetched again on its own, and an addon that ' +
-        'throws is stopped and named with its line.';
+        'Nothing here sandboxes it: an addon runs with the game\'s own privileges and can read and ' +
+        'write anything the game can.';
 
     /* The addon-facing event names, what each one means, and HOW it is
        noticed. One table, read by the fan-out, by api.on's refusal message and
@@ -2129,8 +2126,8 @@
     function netAvailable() {
         return !!($.net && typeof $.net.get === 'function' && typeof $.net.transport === 'function');
     }
-    var NO_NET = 'this build of GigaHack has no $.net, so a link cannot be fetched here. The other ' +
-        'four sources — paste, clipboard, a file path and the folder — are unaffected.';
+    var NO_NET = 'this build of GigaHack has no $.net, so a link cannot be fetched here — use paste, ' +
+        'clipboard, a file path or the folder.';
 
     A.transport = function () {
         return netAvailable() ? $.net.transport() : { id: null, why: NO_NET, missing: [] };
@@ -2140,16 +2137,14 @@
         if (!netAvailable()) return NO_NET;
         var t = $.net.transport();
         var u = hostOf(url);
-        if (!url) return 'Fetching is a request from this machine to somebody else\'s. Type a link and ' +
-            'the host it would reach is named here before anything is sent.';
+        if (!url) return 'A fetch is a request from this machine to somebody else\'s; type a link and ' +
+            'the host is named here first.';
         if (u.scheme !== 'http' && u.scheme !== 'https') {
-            return 'Only http and https links are fetched. "' + (u.scheme || 'that') +
-                '" is not one of them — for a file already on this machine use the file source below.';
+            return 'Only http and https links are fetched — for a file already on this machine use ' +
+                'the file source below.';
         }
         return 'This sends a request from your machine to ' + u.host + ', over ' +
-            (t.id || 'no transport at all') + '. ' + t.why +
-            (t.missing.length ? ' Not available here: ' +
-                t.missing.map(function (m) { return m.id; }).join(', ') + '.' : '');
+            (t.id || 'no transport at all') + '.';
     };
 
     A.fetch = function (url, cb) {
@@ -2397,10 +2392,7 @@
         });
 
         var rec = selectedRec();
-        var detail = rec ? detailGroup(rec) : W.group('Nothing selected', [
-            note('Import one below, or press "start from a template" for a working example you can ' +
-                'paste straight back in.')
-        ]);
+        var detail = rec ? detailGroup(rec) : W.group('Nothing selected', []);
 
         var whereRows = [
             U.w.pathRow('This game', onDisk() ? A.dir() : null, {
@@ -2455,8 +2447,7 @@
         rows.push(kv('id', r.id));
         if (r.version) rows.push(kv('version', r.version));
         if (r.author) rows.push(kv('author', r.author));
-        if (r.game) rows.push(kv('says it is for', r.game, 'Claimed|Read out of the header. Nothing ' +
-            'checks it against this game — it is what the file says about itself.'));
+        if (r.game) rows.push(kv('says it is for', r.game));
         if (r.needs.length) rows.push(kv('needs', r.needs.join(', ')));
         rows.push(kv('came from', r.source + (r.url ? ' — ' + hostOf(r.url).host : '')));
         /* Said BEFORE the remove button is reached, not in the toast after it.
@@ -2466,32 +2457,23 @@
             ? 'the shared library — one copy, read by every game on this machine'
             : 'this game\'s own folder'));
         if (r.scope === 'library') {
-            rows.push(warn('Switching it on or off is per game. Removing it is not: that deletes the ' +
-                'shared file and every game on this machine loses it.'));
+            rows.push(warn('Removing it deletes the shared file, and every game on this machine ' +
+                'loses it.'));
         }
-        if (r.file && r.file !== r.id) {
-            rows.push(kv('file', r.file + '.js', 'File|The id comes from @id in the header; the file ' +
-                'name is where the bytes are. They do not have to match.'));
-        }
-        rows.push(kv('fingerprint', r.digest + '  (' + r.size + ' chars)',
-            'Fingerprint|A cheap 32-bit digest, not a checksum. It answers "is this the same text as ' +
-            'last time" and nothing else.'));
+        if (r.file && r.file !== r.id) rows.push(kv('file', r.file + '.js'));
+        rows.push(kv('fingerprint', r.digest + '  (' + r.size + ' chars)'));
         if (r.importedAt) rows.push(kv('imported', r.importedAt));
         if (r.help) rows.push(note(r.help));
         if (!r.hasHeader) rows.push(note(r.headerWhy));
 
         if (r.state === 'quarantined') {
             rows.push(danger('This was loading when the game last stopped, so it was not run this ' +
-                'launch. Nothing here can tell whether it was the cause — switching it on again is ' +
-                'the way to find out.'));
+                'launch.'));
         }
         if (r.state === 'missing') rows.push(danger(r.error || 'there is no file for this addon.'));
         if (r.state === 'failed') {
             rows.push(danger('Stopped' + (r.line ? ' at line ' + r.line : '') + ': ' + r.error));
-            if (r.line && lineBias === null) {
-                rows.push(warn('The line number is approximate — this host does not report one that ' +
-                    'could be calibrated.'));
-            }
+            if (r.line && lineBias === null) rows.push(warn('The line number is approximate here.'));
         }
         if (r.state === 'skipped') {
             rows.push(warn('Skipped this launch: ' + A.safeModeReason()));
@@ -2501,12 +2483,11 @@
            addon ran. Saying which of the two it is costs one sentence; not
            saying it makes a row that has not run today look like it just did. */
         if (r.error && r.state !== 'failed' && r.state !== 'missing') {
-            rows.push(warn('The last time this ran it stopped: ' + r.error +
-                ' Switching it on again is what finds out whether that is still true.'));
+            rows.push(warn('The last time this ran it stopped: ' + r.error));
         }
         if (r.enabled && r.state === 'inert') {
-            rows.push(warn('It loaded and registered nothing. That is not an error and it is not ' +
-                'success either — the file may never call GigaHack.addon().'));
+            rows.push(warn('It loaded and registered nothing — the file may never call ' +
+                'GigaHack.addon().'));
         }
         /* A handler throw is not a load failure and is not carried in from the
            index either, so it gets its own sentence rather than being folded
@@ -2516,10 +2497,8 @@
                 (r.eventThrow.line ? ' at line ' + r.eventThrow.line : '') + ' — ' +
                 r.eventThrow.message + ' — ' + r.eventThrow.count + ' time(s). ' +
                 (r.eventThrow.stopped
-                    ? 'That handler is no longer called; the rest of the addon still runs, and ' +
-                      '"read it again" re-subscribes it.'
-                    : 'It is still subscribed. Only the first throw is logged, because this runs on a ' +
-                      'frame clock.')));
+                    ? 'That handler is no longer called — "read it again" re-subscribes it.'
+                    : 'It is still subscribed.')));
         }
 
         if (r.enabled) {
@@ -2532,21 +2511,17 @@
         }
         if (r.hooks.length) {
             rows.push(kv('aliases', r.hooks.join(', ')));
-            rows.push(warn('An alias cannot be pulled out of a chain once anything has aliased on top, ' +
-                'so these stay installed for the rest of the session. Disabling makes each one a ' +
-                'pass-through immediately — it is not left doing anything.'));
+            rows.push(warn('Disabling makes each one a pass-through; they stay installed until a ' +
+                'restart.'));
         }
         if (r.profiles.length) {
             rows.push(kv('profiles', r.profiles.join(', ')));
-            rows.push(warn('Profile resolution is memoised at the first read after boot, so this ' +
-                'applies from the NEXT launch. Re-resolving now moves the profile and does not move ' +
-                'four things that have already read it: derived hotkey defaults, the Gallery panel\'s ' +
-                'decision, the Forge id bases already written to its library, and any section cache.'));
+            rows.push(warn('A profile applies from the NEXT launch.'));
             rows.push(W.button({
                 label: 're-resolve the game profile now', wide: true, mini: true, mutates: true,
                 disabled: !($.profile && $.profile.resolve),
                 tip: ($.profile && $.profile.resolve) ? null
-                    : 'No profile module|GigaHack_Profile did not load, so there is nothing to re-resolve.',
+                    : 'No profile module|GigaHack_Profile did not load.',
                 onClick: function () {
                     var p = $.safe(function () { return $.profile.resolve(true); }, 're-resolve profile', null);
                     if ($.store.applyDerivedHotkeys) $.safe(function () { $.store.applyDerivedHotkeys(true); }, 'derive hotkeys');
@@ -2581,7 +2556,6 @@
             }),
             W.button({
                 label: 'read it again', wide: true, mutates: true,
-                tip: 'Reload|Reads the file off disk again and runs it if it was on.',
                 onClick: function () {
                     var res = A.reloadOne(r.id);
                     U.toast({
@@ -2595,9 +2569,8 @@
             W.button({
                 label: 'check the source again', wide: true, mini: true, _ungated: true,
                 disabled: !r.url,
-                tip: r.url ? 'Re-check|Asks ' + hostOf(r.url).host + ' whether the file changed. It ' +
-                    'installs nothing either way.'
-                    : 'No link|This addon did not come from a link, so there is no source to ask.',
+                tip: r.url ? 'Re-check|Asks ' + hostOf(r.url).host + ' whether the file changed.'
+                    : 'No link|This addon did not come from a link.',
                 onClick: function () {
                     recheckSaid = 'asking ' + hostOf(r.url).host + '…';
                     U.rerender();
@@ -2619,8 +2592,8 @@
                    is the last thing read before the file goes. */
                 confirmLabel: r.scope === 'library' ? 'delete the shared copy?' : 'delete the file?',
                 tip: r.scope === 'library'
-                    ? 'Shared|' + (A.pathOf(r.id) || 'the library copy') + ' is the cross-game copy. ' +
-                      'Deleting it takes it away from every game on this machine.'
+                    ? 'Shared|Deletes ' + (A.pathOf(r.id) || 'the library copy') +
+                      ' — every game on this machine loses it.'
                     : 'Remove|Deletes ' + (A.pathOf(r.id) || 'the stored copy') +
                       ' and this addon\'s own data file.',
                 onClick: function () {
@@ -2657,8 +2630,6 @@
         }
 
         return W.group('Bring one in', [
-            note('Every source ends in the same place: a review of what actually arrived. Nothing is ' +
-                'enabled by being imported.'),
             box,
             h('div', { class: 'mm-inline', style: 'padding:2px' },
                 W.button({
@@ -2667,8 +2638,6 @@
                 }),
                 W.button({
                     label: 'start from a template', wide: true, _ungated: true,
-                    tip: 'Template|A working addon — a panel, a hotkey, a console call and an event. ' +
-                        'It goes on the clipboard, and into the box above if the clipboard refuses.',
                     onClick: function () {
                         var ok = U.copyText(A.template());
                         pasteText = A.template();
@@ -2685,7 +2654,7 @@
             W.button({
                 label: 'read the clipboard', wide: true, mini: true, _ungated: true,
                 disabled: !clip.available,
-                tip: clip.available ? 'Clipboard|Read through ' + clip.via + '.' : 'No clipboard|' + clip.why,
+                tip: clip.available ? null : 'No clipboard|' + clip.why,
                 onClick: function () {
                     A.readClipboard(function (err, text) {
                         if (err) {
@@ -2729,7 +2698,7 @@
             W.button({
                 label: 'rescan the folder', wide: true, mini: true, mutates: true,
                 disabled: !onDisk(),
-                tip: onDisk() ? 'Rescan|Reads ' + A.dir() + ' again, plus the shared library when it is available.'
+                tip: onDisk() ? null
                     : 'No filesystem|' + ($.caps.fsWhy || 'there is no folder to scan.'),
                 onClick: function () {
                     var r = A.rescan();
@@ -2743,11 +2712,7 @@
     function reviewGroup() {
         var s = A.staged();
         if (!s) {
-            return W.group('Review', [
-                note('Nothing is waiting. Whatever you bring in appears here first — its header, its ' +
-                    'size, its fingerprint, and the whole source — and it runs only after you have ' +
-                    'added it and switched it on.')
-            ], { tag: 'empty' });
+            return W.group('Review', [note('Nothing is waiting.')], { tag: 'empty' });
         }
         var rows = [
             /* The one place this is said, because this is the one place a
@@ -2762,7 +2727,7 @@
             s.header.game ? kv('says it is for', s.header.game) : null,
             s.header.needs.length ? kv('needs', s.header.needs.join(', ')) : null,
             kv('size', s.size + ' characters (ceiling ' + MAX_BYTES + ')'),
-            kv('fingerprint', s.digest + '  — a cheap 32-bit digest, not a checksum'),
+            kv('fingerprint', s.digest),
             kv('came from', s.from + (s.via ? ' over ' + s.via : '')),
             s.host ? kv('host', s.host) : null,
             kv('first line', s.first),
@@ -2806,17 +2771,11 @@
 
     function safeGroup() {
         return W.group('If one of them breaks the game', [
-            note('An addon that is loading when the game stops is named at the next launch and is not ' +
-                'run again until you say so. That is the crash guard, and it needs nothing from you.'),
             note('Holding ' + (U.prettyCode ? U.prettyCode(A.safeModeKey()) : A.safeModeKey()) +
-                ' while the game starts skips every addon for that launch. A held key is only seen if ' +
-                'the browser has delivered a keystroke by the time addons load, so there is also a ' +
-                'switch, and the switch is the reliable one.'),
+                ' while the game starts skips every addon for that launch.'),
             W.toggleRow('Skip every addon next launch', {
                 value: A.safeModeArmed(), _ungated: true,
                 sub: 'clears itself once it has been used',
-                tip: 'Safe mode|Survives the relaunch, then turns itself off so the launch after that ' +
-                    'is normal.',
                 onChange: function (v) { A.armSafeMode(v); }
             }),
             A.safeModeReason() ? warn('This launch: every addon was skipped because ' + A.safeModeReason()) : null,
@@ -2887,8 +2846,7 @@
                 errorRows.push(kv(r.id + (r.line ? ':' + r.line : ''), r.error,
                     r.id + '|' + (r.state === 'failed'
                         ? 'This launch.'
-                        : 'Carried over from the index — this is what happened the last time it ran.') +
-                    ' ' + r.error));
+                        : 'The last time it ran, not this launch.')));
             }
             /* A throw from an event handler is neither of those. It happened
                while the addon was RUNNING, which is why the row above it can
@@ -2900,21 +2858,14 @@
                         (r.eventThrow.line ? ':' + r.eventThrow.line : ''),
                     r.eventThrow.message + ' — ' + r.eventThrow.count + '×' +
                         (r.eventThrow.stopped ? ', stopped' : ''),
-                    r.id + '|An event handler threw while the addon was running. ' +
+                    r.id + '|A handler threw, not the load. ' +
                         (r.eventThrow.stopped
-                            ? 'It has been dropped after ' + r.eventThrow.count + ' throws; the rest ' +
-                              'of the addon still runs.'
+                            ? 'It has been dropped; the rest of the addon still runs.'
                             : 'It is still subscribed.')));
             }
         });
         var errorCount = errorRows.length;
-        if (!errorCount) {
-            errorRows = [note('Nothing has thrown.')];
-        } else {
-            errorRows.push(note('A row whose state is not "failed" is an error this launch inherited ' +
-                'from the last one, not one that has just happened. An on(...) row is neither: it ' +
-                'threw while the addon was running.'));
-        }
+        if (!errorCount) errorRows = [note('Nothing has thrown.')];
 
         var envRows = [
             kv('storage', onDisk() ? 'folder' : 'the settings store'),
@@ -2925,20 +2876,17 @@
             kv('clipboard read', A.clipboard().via || 'none'),
             A.clipboard().why ? note(A.clipboard().why) : null,
             kv('line numbers', lineBias === null
-                ? 'approximate — the wrapper offset could not be measured on this host'
-                : 'exact — the wrapper offset measured as ' + lineBias + ' line(s)')
+                ? 'approximate — not measurable on this host'
+                : 'exact — offset ' + lineBias + ' line(s)')
         ];
 
         var eventRows = [];
         EVENTS.forEach(function (e) {
             eventRows.push(kv(e.id, subs[e.id].length + ' subscriber(s) — ' + e.what,
-                e.id + '|' + e.what + ' Noticed through ' + e.how + '.'));
+                e.id + '|Noticed through ' + e.how + '.'));
             var why = A.eventWhy(e.id);
             if (why) eventRows.push(warn(why));
         });
-        eventRows.push(note('None of these is an engine alias. This module loads last, so an alias ' +
-            'here would sit on top of the one another module already holds on the same method and ' +
-            'stop that one being removable from Debug → Hooks.'));
 
         var apiTable = W.table({
             key: 'addons.api',
@@ -2969,17 +2917,13 @@
                 W.group('Events', eventRows, { collapsed: true, tag: EVENTS.length }),
                 W.group('This build', envRows, { collapsed: true, tag: onDisk() ? 'fs' : 'no fs' }),
                 W.group('Aliases', [
-                    note('An addon\'s alias is installed once and never removed: $.install refuses to ' +
-                        'unpatch when anything has aliased on top, and forcing it would discard the ' +
-                        'other plugin\'s work. Disabling turns the wrapper into a pass-through instead.'),
                     kv('installed by addons', aliasesFromAddons().length || 'none'),
                     aliasesFromAddons().length ? kv('names', aliasesFromAddons().join(', ')) : null,
                     W.button({
                         label: 're-baseline the alias snapshot', wide: true, mini: true, mutates: true,
                         disabled: !($.compat && $.compat.snapshotAliases),
                         tip: ($.compat && $.compat.snapshotAliases)
-                            ? 'Re-baseline|Only needed when an addon aliased a method GigaHack already ' +
-                              'hooks. It also erases evidence of any genuine third-party over-patch ' +
+                            ? 'Re-baseline|Erases the evidence of any genuine third-party over-patch ' +
                               'from before now.'
                             : 'No compat module|GigaHack_Compat did not load.',
                         onClick: function () {
