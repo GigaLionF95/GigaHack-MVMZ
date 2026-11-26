@@ -249,9 +249,16 @@
     var BASE_SOURCE = '';       // 'recorded' | 'computed'
     var baseDrift = [];         // [{kind, recorded, computed, collides}]
 
+    /* EVERY array a kind reads, not just the first one to arrive. The files
+       load one at a time, and a base worked out from an array that is not
+       there yet is the floor value — recorded into the library, it pins that
+       kind's ids below content the game is about to load. */
     function dbReady() {
-        return typeof $dataItems !== 'undefined' && !!$dataItems &&
-               typeof $dataSystem !== 'undefined' && !!$dataSystem;
+        if (typeof $dataSystem === 'undefined' || !$dataSystem) return false;
+        for (var i = 0; i < KIND_IDS.length; i++) {
+            if (!KINDS[KIND_IDS[i]].arr()) return false;
+        }
+        return true;
     }
 
     /* The same derivation $.profile uses, present only for the case where the
@@ -267,13 +274,22 @@
         var from = $.safe(function () {
             return ($.profile && $.profile.get) ? $.profile.get('forgeBase', null) : null;
         }, 'forge bases from profile', null);
-        var out = {};
+        var out = {}, notYet = false;
         KIND_IDS.forEach(function (k) {
-            var v = from ? Math.floor(Number(from[k])) : NaN;
-            if (!isFinite(v) || v < 1) v = localBase(KINDS[k].arr());
-            out[k] = v;
+            if (from && typeof from === 'object') {
+                // The profile answers null for a kind whose data had not
+                // arrived when it resolved. That is "not yet", never a number
+                // to fall back from: the whole answer waits, so no base is
+                // computed — or recorded — off a half-loaded database.
+                var raw = from[k];
+                var v = (raw === null || raw === undefined || raw === '') ? NaN : Math.floor(Number(raw));
+                if (!isFinite(v) || v < 1) { notYet = true; return; }
+                out[k] = v;
+            } else {
+                out[k] = localBase(KINDS[k].arr());
+            }
         });
-        return out;
+        return notYet ? null : out;
     }
 
     /** What the library file says. Wins where it exists, and needs no database. */
@@ -1027,7 +1043,28 @@
             obj.price = 0;
             if (obj.effects) obj.effects = [];
             if (obj.traits) obj.traits = [];
-            if (obj.params) obj.params = [0, 0, 0, 0, 0, 0, 0, 0];
+            // A class's params are an 8 x 100 curve, not eight numbers:
+            // paramBase indexes params[id][level], so a flat row turns every
+            // actor still holding the class to NaN. A stub keeps the shape.
+            if (kind === 'klass') {
+                // At least as long as the curve it replaces, so a level cap a
+                // plugin raised past 99 still reads a number.
+                var len = 100;
+                (Array.isArray(obj.params) ? obj.params : []).forEach(function (r) {
+                    if (Array.isArray(r) && r.length > len) len = r.length;
+                });
+                obj.params = buildCurve([1, 1, 1, 1, 1, 1, 1, 1]).map(function (r) {
+                    while (r.length < len) r.push(1);
+                    return r;
+                });
+            } else if (obj.params) obj.params = [0, 0, 0, 0, 0, 0, 0, 0];
+            // A retired row must DO nothing. Damage outlives cleared effects,
+            // and a common event keeps firing on its trigger with its list.
+            if (obj.damage && typeof obj.damage === 'object') obj.damage.type = 0;
+            if (kind === 'common') {
+                obj.trigger = 0;
+                obj.list = [{ code: 0, indent: 0, parameters: [] }];
+            }
             obj.gigahackTombstone = true;
         }
         obj.gigahackForged = true;
@@ -1632,16 +1669,55 @@
     // than anywhere later: some plugins process their note tags in
     // Scene_Boot.start, so a forged row has to already exist when it runs, or
     // it is the one row in the database they never see.
+    var bootInjected = false;
+    function bootInject() {
+        if (bootInjected) { F.ensure(); return; }
+        bootInjected = true;
+        F.inject();
+        F.report();
+    }
+    F._bootInjected = function () { return bootInjected; };
+
     $.install('Scene_Boot.start (forge inject)',
         typeof Scene_Boot !== 'undefined' ? Scene_Boot.prototype : null, 'start',
         function (original) {
             return function () {
-                $.safe(function () { F.inject(); F.report(); }, 'forge boot inject');
+                $.safe(bootInject, 'forge boot inject');
                 return original.apply(this, arguments);
             };
         },
         'Scene_Boot.prototype.start not found — forged rows are injected on first use instead, which is ' +
         'after any boot-time note-tag processing has already run');
+
+    /* Earlier still: many MV plugin suites process their note tags inside
+       DataManager.isDatabaseLoaded, on the first call that answers true, and
+       Scene_Boot.isReady asks that long before start runs. Being the outermost
+       alias, this body sees the files arrive before any of that processing
+       does, so a forged row is in the arrays when it walks them. The test is
+       the stock one — every database file present — rather than the
+       original's answer, because asking the original IS the processing. */
+    function databaseFilesLoaded() {
+        var files = DataManager._databaseFiles;
+        if (Array.isArray(files) && files.length) {
+            for (var i = 0; i < files.length; i++) {
+                if (!files[i] || !window[files[i].name]) return false;
+            }
+            return true;
+        }
+        return dbReady() && KIND_IDS.every(function (k) { return !!KINDS[k].arr(); });
+    }
+    $.install('DataManager.isDatabaseLoaded (forge inject)',
+        typeof DataManager !== 'undefined' ? DataManager : null, 'isDatabaseLoaded',
+        function (original) {
+            return function () {
+                if (!bootInjected && $.safe(databaseFilesLoaded, 'forge database ready?', false)) {
+                    $.safe(bootInject, 'forge inject at database load');
+                }
+                return original.apply(this, arguments);
+            };
+        },
+        'DataManager.isDatabaseLoaded not found — forged rows are injected at Scene_Boot.start, after ' +
+        'any note-tag processing a plugin does on the first database-loaded check');
 
     // A loaded save may reference ids this install cannot resolve.
     $.install('DataManager.extractSaveContents (forge scrub)',
@@ -2498,7 +2574,12 @@
      * and its waits never tick.
      */
     F.runCommon = function (id) {
-        if (!F.object('common', id)) return false;
+        var row = F.object('common', id);
+        if (!row) return false;
+        if (row.gigahackTombstone) {
+            U.toast({ title: 'RETIRED', msg: 'common event ' + id + ' was removed — restore it first', severity: 'warn' });
+            return false;
+        }
         if (!$.allowWrite('run forged common event ' + id)) return false;
         return $.safe(function () {
             if (typeof $gameTemp === 'undefined' || !$gameTemp || !$gameTemp.reserveCommonEvent) return false;
@@ -3484,7 +3565,17 @@
         var d = draft(kind);
         var preview = previewCard(d, kind);
         var libGroup = libraryGroup(kind, function (rec) {
-            drafts[kind] = { id: rec.id, data: $.clone(rec.data) };
+            // An id this install cannot place loads as a NEW draft: saving it
+            // in place would only be refused again, and "forge it" is what
+            // gives it an id inside this install's range.
+            var unplaceable = !!(rec.outOfRange || rec.blocked);
+            drafts[kind] = { id: unplaceable ? null : rec.id, data: $.clone(rec.data) };
+            if (unplaceable) {
+                U.toast({
+                    title: 'LOADED AS NEW', severity: 'warn',
+                    msg: 'id ' + rec.id + ' cannot be written here — forging it takes a new id; the old record stays in the library'
+                });
+            }
             U.rerender();
         });
 

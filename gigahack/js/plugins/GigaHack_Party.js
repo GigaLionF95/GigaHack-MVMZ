@@ -668,16 +668,86 @@
         return true;
     };
 
-    /** forceChangeEquip, not changeEquip: the latter requires the party to own
-     *  the item and silently no-ops otherwise, which reads as a broken button. */
+    /**
+     * Put an item in a slot without requiring the party to own it — but with
+     * the party's bookkeeping kept, which forceChangeEquip does not do. That
+     * call skips the trade entirely, so the item coming OFF was simply deleted,
+     * and its releaseUnequippableItems(true) deletes anything the actor cannot
+     * wear: equipping a weapon the class cannot use emptied the slot and
+     * destroyed what had been in it, while the log said it worked.
+     *
+     * So: the slot is set the way changeEquip sets it, minus the ownership
+     * test, with releaseUnequippableItems(false) so anything it lets go goes
+     * back to the bag. The old item goes back to the bag, the new one comes out
+     * of it when the party has one (and is conjured when it does not), and the
+     * slot is read back before any of that bookkeeping is committed.
+     */
+    function bag(fn) {
+        // An item lock would refuse our own trade and lose the item.
+        return ($.inv && $.inv.withoutLocks) ? $.inv.withoutLocks(fn) : fn();
+    }
+    function placeInSlot(actor, slotId, item) {
+        if (actor._equips && actor._equips[slotId] && actor._equips[slotId].setObject &&
+            typeof actor.releaseUnequippableItems === 'function') {
+            actor._equips[slotId].setObject(item);
+            bag(function () { actor.releaseUnequippableItems(false); });
+            actor.refresh();
+        } else {
+            actor.forceChangeEquip(slotId, item);
+        }
+    }
+    P.whyCannotEquip = function (actor, slotId, item) {
+        if (!item) return '';
+        return $.safe(function () {
+            var slots = actor.equipSlots();
+            if (item.etypeId !== slots[slotId]) return 'it does not go in this slot';
+            if (typeof actor.canEquip === 'function' && !actor.canEquip(item)) {
+                return actor.name() + '\'s class cannot use it, or the slot is sealed';
+            }
+            return '';
+        }, 'can equip', '') || '';
+    };
+
     P.equip = function (actor, slotId, item) {
+        var why = P.whyCannotEquip(actor, slotId, item);
+        if (why) {
+            $.log('warn', actor.name() + ' cannot equip "' + item.name + '" — ' + why + '. Nothing was changed.');
+            U.toast({ title: 'CANNOT EQUIP', msg: item.name + ': ' + why, severity: 'warn' });
+            return false;
+        }
         if (!$.allowWrite('Changing equipment')) return false;
-        var before = $.safe(function () { return actor.equips()[slotId]; }, 'equips', null);
-        $.safe(function () { actor.forceChangeEquip(slotId, item); }, 'forceChangeEquip');
+        var before = $.safe(function () { return actor.equips()[slotId]; }, 'equips', null) || null;
+        if (before === (item || null)) return true;
+        var took = !!(item && $.safe(function () { return $gameParty.hasItem(item); }, 'hasItem', false));
+
+        $.safe(function () { placeInSlot(actor, slotId, item || null); }, 'equip');
+        var now = $.safe(function () { return actor.equips()[slotId]; }, 'equips', null) || null;
+        if (now !== (item || null)) {
+            $.safe(function () { placeInSlot(actor, slotId, before); }, 'restore equip');
+            $.log('warn', actor.name() + ' slot ' + slotId + ' did not take "' + (item ? item.name : 'empty') +
+                '" — it reads back as "' + (now ? now.name : 'empty') + '", so it was put back as it was.');
+            U.toast({ title: 'DID NOT STICK', msg: 'slot ' + slotId + ' was put back', severity: 'warn' });
+            return false;
+        }
+        $.safe(function () {
+            bag(function () {
+                if (before) $gameParty.gainItem(before, 1);
+                if (took) $gameParty.loseItem(item, 1);
+            });
+        }, 'equip trade');
+
         $.undo.push(actor.name() + ' slot ' + slotId + ' → ' + (item ? item.name : 'empty'), function () {
-            actor.forceChangeEquip(slotId, before);
+            $.safe(function () {
+                placeInSlot(actor, slotId, before);
+                bag(function () {
+                    if (before && $gameParty.hasItem(before)) $gameParty.loseItem(before, 1);
+                    if (took) $gameParty.gainItem(item, 1);
+                });
+            }, 'undo equip');
         });
-        $.log('ok', actor.name() + ' slot ' + slotId + ': ' + (item ? item.name : 'empty'));
+        $.log('ok', actor.name() + ' slot ' + slotId + ': ' + (item ? item.name : 'empty') +
+            (before ? ' ("' + before.name + '" back in the bag)' : '') +
+            (item && !took ? ' (not owned, so created)' : ''));
         return true;
     };
 
@@ -1546,10 +1616,14 @@
                 return [
                     U.icon(o.iconIndex), String(o.id), h('span', { text: o.name }),
                     h('span', { class: 'mm-sub', text: ps || '—' }),
-                    W.button({
-                        label: 'equip', mini: true, mutates: true,
-                        onClick: function () { P.equip(a, equipSlot, o); U.rerender(); }
-                    })
+                    (function () {
+                        var no = P.whyCannotEquip(a, equipSlot, o);
+                        return W.button({
+                            label: 'equip', mini: true, mutates: true, disabled: !!no,
+                            tip: no ? 'Cannot equip|' + no : null,
+                            onClick: function () { P.equip(a, equipSlot, o); U.rerender(); }
+                        });
+                    }())
                 ];
             },
             onRow: function (tr, o) {
@@ -1594,7 +1668,8 @@
                     onClick: function () { P.equip(a, equipSlot, null); U.rerender(); }
                 }),
                 h('div', { class: 'mm-sub', style: 'padding:2px;white-space:normal' },
-                    'You do not need to own the item, and slot seals are ignored.')
+                    'You do not need to own the item. What comes off goes back in the bag; an item ' +
+                    'the class cannot use, or a sealed slot, is refused.')
             ])
         ] }, [
             W.group('Fits ' + ($.safe(function () { return $dataSystem.equipTypes[wantType]; }, 'etype', 'slot') || 'slot'), [

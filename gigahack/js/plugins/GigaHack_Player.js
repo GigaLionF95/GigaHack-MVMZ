@@ -130,9 +130,19 @@
     $.install('Game_Player.checkEventTriggerHere (ghost)',
         typeof Game_Player !== 'undefined' ? Game_Player.prototype : null, 'checkEventTriggerHere',
         function (original) {
-            return function () {
-                if (ghostBlocks()) return;
-                return original.apply(this, arguments);
+            return function (triggers) {
+                if (!ghostBlocks()) return original.apply(this, arguments);
+                /* Only the touch triggers (1 player touch, 2 event touch). The
+                   action button asks this same method for trigger 0 on the
+                   player's own tile — a below-characters chest, a floor
+                   switch — and refusing the whole call made OK do nothing
+                   there, which is not "the action button still works". */
+                if (!triggers || typeof triggers.filter !== 'function') return;
+                var keep = triggers.filter(function (t) { return t !== 1 && t !== 2; });
+                if (!keep.length) return;
+                var args = Array.prototype.slice.call(arguments);
+                args[0] = keep;
+                return original.apply(this, args);
             };
         });
 
@@ -559,6 +569,8 @@
             run: function () {
                 var v = !$.store.cfgGet('battle.god', false);
                 $.store.cfgSet('battle.god', v);
+                // The badge is the only thing on screen that says it is on.
+                U.setActive('god mode', v);
                 U.toast({ title: 'GOD MODE', msg: v ? 'on' : 'off', severity: v ? 'ok' : 'info', ms: 1400 });
                 $.log(v ? 'ok' : 'info', 'god mode ' + (v ? 'on' : 'off'));
                 if (U.isOpen && U.isOpen()) U.rerender();
@@ -752,11 +764,11 @@
 
     $.api.noclip = function (v) {
         if (v == null) return !!cfg('noclip', false);      // a getter is a getter
-        set('noclip', v !== false); return cfg('noclip');
+        set('noclip', v !== false); syncActive(); return cfg('noclip');
     };
     $.api.speed = function (v) {
         if (v == null) return cfg('speed', 4);
-        set('speedOverride', true); set('speed', v); return v;
+        set('speedOverride', true); set('speed', v); syncActive(); return v;
     };
     $.api.step = function (n) { return P.step(n); };
 

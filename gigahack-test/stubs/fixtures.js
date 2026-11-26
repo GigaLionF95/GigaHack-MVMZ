@@ -1219,7 +1219,8 @@ window.__engineBoot = function () {
       p = pathMod.resolve(p);
       if (files[p] !== undefined) return { size: files[p].length, mtimeMs: 1700000000000, isDirectory: function () { return false; }, isFile: function () { return true; } };
       if (dirs[p]) return { size: 0, mtimeMs: 1700000000000, isDirectory: function () { return true; }, isFile: function () { return false; } };
-      throw new Error('ENOENT: ' + p);
+      /* Node puts the code on the error; $.mkdirp branches on it. */
+      var se = new Error('ENOENT: ' + p); se.code = 'ENOENT'; throw se;
     },
     readdirSync: function (p) {
       p = pathMod.resolve(p);

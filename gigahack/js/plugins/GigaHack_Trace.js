@@ -928,11 +928,10 @@
         row.frame = $.frameCount;
         row.engineFrame = engineFrame();
         rows.push(row);
-        while (rows.length > journalMax()) {
-            var dropped = rows.shift();
-            var li = liveRows.indexOf(dropped);
-            if (li > -1) liveRows.splice(li, 1);
-        }
+        /* A row trimmed from the list stays in liveRows: its undo entry is
+           still on the stack, and liveRows has to mirror the stack one for
+           one or the next overflow marks the wrong row as fallen. */
+        while (rows.length > journalMax()) rows.shift();
         return row;
     }
 
@@ -1088,7 +1087,9 @@
     J.rows = function () { return rows.map(function (r) { return $.clone(r); }); };
     J.size = function () { return rows.length; };
     J.max = journalMax;
-    J.clear = function () { rows.length = 0; liveRows.length = 0; jrev++; return true; };
+    /* liveRows is left alone for the same reason: clearing the list does not
+       clear the undo stack it mirrors. */
+    J.clear = function () { rows.length = 0; jrev++; return true; };
     J.stuckRows = function () { return J.rows().filter(function (r) { return r.stuck === false; }); };
     J.reversible = function () { return liveRows.length; };
     J.totalPushes = function () { return totalPushes; };
@@ -2730,6 +2731,10 @@
     if ($.cfg.trace && $.cfg.trace.watch) $.cfg.trace.watch.pauseOnHit = false;
 
     loadPoints();
+    /* Recording is a persisted setting and the alias is installed on demand,
+       so a launch that finds it on has to install it — or the panel says
+       "recording" over a Math.random nothing is watching. */
+    if (rngRecording() && !ensureRngAlias()) setCfg('rng.watch', false);
     recomputeDemand();
 
     /* Not $.api.watch: the boot module already claims that name for the HUD

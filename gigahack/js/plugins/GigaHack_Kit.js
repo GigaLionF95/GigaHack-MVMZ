@@ -493,7 +493,12 @@
         var dropped = 0;
         kits = [];
         for (var i = 0; i < rows.length; i++) {
-            if (validKit(rows[i])) kits.push(rows[i]); else dropped++;
+            if (!validKit(rows[i])) { dropped++; continue; }
+            // The optional lists filled, as importKit does: the difference
+            // table reads kit.skills.length unguarded.
+            if (Object.prototype.toString.call(rows[i].skills) !== '[object Array]') rows[i].skills = [];
+            if (Object.prototype.toString.call(rows[i].paramPlus) !== '[object Array]') rows[i].paramPlus = [];
+            kits.push(rows[i]);
         }
         if (dropped) {
             $.log('warn', KIT_FILE + ': dropped ' + dropped + ' row(s) with no name or no slot list. ' +
@@ -546,6 +551,11 @@
                 classId: actor._classId,
                 className: className(actor._classId),
                 level: actor.level,
+                // Exp is kept PER CLASS (_exp is keyed by class id), and a
+                // level written through changeLevel lands on the first point
+                // of that level — so without the whole map an undo cannot put
+                // back the progress inside the level, or on the other classes.
+                exp: $.clone(actor._exp || {}),
                 dualWield: $.safe(function () { return !!actor.isDualWield(); }, 'isDualWield', false),
                 skills: (actor._skills || []).slice(),
                 paramPlus: (actor._paramPlus || []).slice(),
@@ -780,7 +790,10 @@
             return { ok: false, why: 'giving one "' + item.name + '" did not stick, so the trade that ' +
                 'changeEquip performs would still refuse the slot.' };
         }
-        if (report) report.created.push(item.name);
+        if (report) {
+            report.created.push(item.name);
+            if (report.provided) report.provided.push(item);
+        }
         return { ok: true };
     }
 
@@ -859,18 +872,69 @@
 
     K.applyOrder = function () { return ['class', 'level', 'skills', 'equip', 'params']; };
 
+    function skillExists(id) {
+        return typeof id === 'number' && id > 0 &&
+            !!$.safe(function () { return $dataSkills[id]; }, 'skill row', null);
+    }
+
+    /**
+     * Why this kit cannot be applied at all, or null. Asked before the first
+     * write, so a kit that would leave an actor on a class with no row — or
+     * at a level that is not a number — is refused whole rather than
+     * half-applied. `opts` limits the question to what would be written; with
+     * none, everything the kit carries is checked (the import path).
+     */
+    K.problem = function (kit, opts) {
+        if (!kit || typeof kit !== 'object') return 'there is no kit.';
+        var all_ = !opts;
+        if (kit.classId != null && kit.classId !== 0 && (all_ || opts.applyClass)) {
+            if (typeof kit.classId !== 'number' || !(kit.classId > 0) || Math.floor(kit.classId) !== kit.classId) {
+                return 'its class id (' + JSON.stringify(kit.classId) + ') is not a class id.';
+            }
+            var row = $.safe(function () { return $dataClasses[kit.classId]; }, 'class row', null);
+            if (!row && typeof $dataClasses !== 'undefined' && $dataClasses) {
+                return 'it records class ' + kit.classId + ' ("' + (kit.className || '?') + '") and the loaded ' +
+                    'database has no such class — changing to it would leave the actor on a class that ' +
+                    'is not there.';
+            }
+        }
+        if (kit.level != null && kit.level !== 0 && (all_ || opts.applyLevel)) {
+            if (typeof kit.level !== 'number' || !isFinite(kit.level) || kit.level < 1) {
+                return 'its level (' + JSON.stringify(kit.level) + ') is not a level.';
+            }
+        }
+        if (kit.skills != null && Object.prototype.toString.call(kit.skills) !== '[object Array]') {
+            return 'its skill list is not a list.';
+        }
+        if (kit.skills && kit.skills.some(function (s) { return typeof s !== 'number' || !isFinite(s); })) {
+            return 'its skill list holds something that is not a skill id.';
+        }
+        return null;
+    };
+
     /**
      * Restore an actor to a captured state without touching the undo stack,
      * the read-only gate or compat's degraded marks. This is a rollback, not a
      * user edit — it puts each slot back the way that slot was written, so a
      * slot the apply forced is forced back and a slot it traded is traded back.
      */
-    function rollback(actor, before, plan) {
+    function rollback(actor, before, plan, provided) {
         $.safe(function () {
             if (before.classId !== actor._classId) actor.changeClass(before.classId, true);
-            var ml = maxLevelOf(actor);
-            if (ml.uncapped) actor.changeExp(actor.expForLevel(before.level), false);
-            else actor.changeLevel(before.level, false);
+            var exp = before.exp && typeof before.exp === 'object' ? before.exp : null;
+            if (exp && typeof exp[before.classId] === 'number') {
+                // The exact exp, which lands on the exact level, then every
+                // other class's own figure as it was.
+                actor.changeExp(exp[before.classId], false);
+                for (var ck in exp) {
+                    if (Object.prototype.hasOwnProperty.call(exp, ck)) actor._exp[ck] = exp[ck];
+                }
+            }
+            if (actor.level !== before.level) {
+                var ml = maxLevelOf(actor);
+                if (ml.uncapped) actor.changeExp(actor.expForLevel(before.level), false);
+                else actor.changeLevel(before.level, false);
+            }
 
             var have = (actor._skills || []).slice(), i;
             for (i = 0; i < have.length; i++) if (before.skills.indexOf(have[i]) < 0) actor.forgetSkill(have[i]);
@@ -889,6 +953,16 @@
                     actor.forceChangeEquip(i, item);
                 }
             }
+
+            /* A copy "provide a missing item" made did not exist before the
+               apply. The slots above have just traded it back into the bag,
+               so it is taken out again — or the undo leaves the party one
+               item richer than it was. Past the Items panel's locks, as the
+               rest of a rollback is past every gate. */
+            (provided || []).forEach(function (it) {
+                var take = function () { $gameParty.loseItem(it, 1, false); };
+                if ($.inv && $.inv.withoutLocks) $.inv.withoutLocks(take); else take();
+            });
 
             actor.clearParamPlus();
             for (i = 0; i < PARAM_N; i++) {
@@ -909,7 +983,7 @@
     K.apply = function (actor, kit, over) {
         var report = {
             ok: false, blocked: false, actor: actor, kit: kit && kit.name,
-            steps: [], refused: [], released: [], created: [], dropped: [], message: ''
+            steps: [], refused: [], released: [], created: [], provided: [], dropped: [], message: ''
         };
         if (!actor || !kit) { report.message = 'no actor or no kit.'; return report; }
         if (!$.allowWrite('Applying the kit "' + kit.name + '"')) {
@@ -922,6 +996,18 @@
         var opts = liveOpts(over);
         if (!opts.applyClass && !opts.applyLevel && !opts.applySkills && !opts.applyEquip && !opts.applyParams) {
             report.message = 'nothing is selected to apply — every "what to apply" toggle is off.';
+            return report;
+        }
+        /* Refused before anything is written. changeClass sets _classId and
+           only THEN reads the class, so a class row that has gone — a forged
+           class purged, a kit pasted from another game — throws after the id
+           is already in place, the read-back agrees with it, and the next
+           window that draws the actor takes the game down. */
+        var bad = K.problem(kit, opts);
+        if (bad) {
+            report.invalid = true;
+            report.message = 'kit "' + kit.name + '" was not applied — ' + bad + ' Nothing was written.';
+            $.log('warn', report.message);
             return report;
         }
 
@@ -955,7 +1041,11 @@
                 var want = Math.max(1, Math.floor(kit.level));
                 var clamped = false;
                 if (!ml.uncapped && ml.cap !== null && want > ml.cap) { want = ml.cap; clamped = true; }
-                var rl = verify('party.exp',
+                /* Already there: written anyway, changeLevel puts the exp on
+                   the first point of the level and the progress inside it is
+                   gone. The difference table shows no row for this either. */
+                var sameLevel = actor.level === want;
+                var rl = sameLevel ? { ok: true, message: '' } : verify('party.exp',
                     function () {
                         $.safe(function () {
                             // changeLevel clamps to maxLevel(), so a game that
@@ -970,7 +1060,7 @@
                     want);
                 report.steps.push({
                     what: 'level', ok: rl.ok, want: Math.floor(kit.level), got: actor.level,
-                    cap: ml.cap, clamped: clamped,
+                    cap: ml.cap, clamped: clamped, skipped: sameLevel,
                     message: clamped
                         ? 'the kit was recorded at level ' + Math.floor(kit.level) + ' and ' +
                           actor.name() + ' is capped at ' + ml.cap + ' here, so ' + actor.level +
@@ -984,7 +1074,18 @@
                   own learnings on the way up — a list written first is a list
                   the level then adds to. */
             if (opts.applySkills && kit.skills) {
-                var target = kit.skills.slice().sort(function (a, b) { return a - b; });
+                /* A recorded skill whose row has gone is not learned: an id in
+                   _skills with nothing behind it is an undefined in skills().
+                   Named, like a gone slot, and every other skill still applies. */
+                var gone = kit.skills.filter(function (sid) { return !skillExists(sid); });
+                if (gone.length) {
+                    report.refused.push({
+                        what: 'skills', code: 'id gone',
+                        why: 'skill id(s) ' + gone.join(', ') + ' were in this kit and the loaded database ' +
+                            'has no such row now, so they were not learned.'
+                    });
+                }
+                var target = kit.skills.filter(skillExists).sort(function (a, b) { return a - b; });
                 var learned = 0, forgot = 0;
                 var rs = verify('party.skills',
                     function () {
@@ -1079,7 +1180,7 @@
             (report.refused.length ? ', ' + report.refused.length + ' refused' : '');
 
         $.undo.push('kit "' + kit.name + '" applied to ' + before.actorName, function () {
-            rollback(actor, before, plan);
+            rollback(actor, before, plan, report.provided);
         });
 
         $.log(report.ok ? 'ok' : 'warn', report.message +
@@ -1109,6 +1210,8 @@
             return { ok: false, why: 'the pasted kit has no "slots" array, so there is no equipment ' +
                 'to restore and nothing to compare an actor against.' };
         }
+        var bad = K.problem(parsed);
+        if (bad) return { ok: false, why: 'the pasted kit cannot be used here — ' + bad };
         if (!$.allowWrite('Importing a kit')) return { ok: false, why: 'read-only' };
         if (K.get(parsed.name)) {
             return { ok: false, why: 'a kit called "' + parsed.name + '" already exists — rename the ' +
@@ -1620,9 +1723,11 @@
                 var tooMany = bool('loadout.applyEquip') && k.slots.length > slots.length;
                 return [
                     W.editCell(k.name, function (v) {
-                        var r = K.rename(k.name, v);
+                        var was = k.name;
+                        var r = K.rename(was, v);
                         if (!r.ok) U.toast({ title: 'NOT RENAMED', msg: r.why, severity: 'warn' });
-                        else { if (picked === k.name) picked = v; }
+                        // The name K.rename actually stored, which is trimmed.
+                        else if (picked === was) picked = k.name;
                         U.rerender();
                     }, 'mm-td-val'),
                     h('span', { class: 'mm-sub', text: k.actorName || '?' }),
@@ -1681,7 +1786,7 @@
     function runApply(actor, kit) {
         var rep = K.apply(actor, kit);
         U.toast({
-            title: rep.blocked ? 'READ-ONLY' : rep.ok ? 'KIT APPLIED' : 'PARTLY APPLIED',
+            title: rep.blocked ? 'READ-ONLY' : rep.invalid ? 'NOT APPLIED' : rep.ok ? 'KIT APPLIED' : 'PARTLY APPLIED',
             msg: rep.blocked ? rep.message : rep.message,
             severity: rep.ok ? 'ok' : 'warn'
         });

@@ -146,6 +146,47 @@ on showing lines that are gone.
   under the row, where it has the width. The sweep that was supposed to catch
   this only scanned narrow columns and had a threshold it slipped under.
 
+**From a full review before release**, each with a regression check in
+`gigahack-test/checks/regress-*.js`:
+
+- **Restoring the oldest backup deleted it.** The safety backup taken first
+  pruned the ring, and the oldest entry was the one being restored — nothing
+  came back and the panel said "RESTORED 0". A corrupt `gigahack-backup.json`
+  also hid every backup; it is now listed as unreadable with its real files.
+- **Equipping or unequipping destroyed items.** `forceChangeEquip` never returns
+  what comes off, and deletes anything the class cannot wear. What comes off now
+  goes to the bag, and an item the class cannot use or a sealed slot is refused.
+- **Freezes followed the player into another save.** A frozen switch or variable
+  was written into the next save or new game every frame. Freezes are released
+  when `$gameSystem` is replaced, and said so.
+- **Retiring a forged class gave its actors NaN stats**, and a retired common
+  event kept running. Tombstones now keep a valid curve and are inert.
+  Forged rows are injected before plugins process note tags, and no id base is
+  recorded until every database file has loaded.
+- **Esc in an edit cell or number box committed the value** instead of
+  cancelling; an emptied brightness box blacked the screen out.
+- **A corrupt `profiles.json` or `settings.json` was silently replaced.** It is
+  set aside as `.corrupt-<stamp>`, and Store writes are atomic.
+- **Uninstall could leave a game that would not boot.** It deleted the modules,
+  then the backup, even when restoring `plugins.js` failed. It now restores
+  first and removes nothing on failure. The PowerShell installer treated `[`
+  and `]` as wildcards, so a DLsite-style `[RJ01234567] Title` folder was never
+  found, and the sh installer glob-expanded the same names; the backup is
+  refreshed when a game update has replaced `plugins.js`.
+- **The Steam probe aborted inside a sandboxed iframe** on the first
+  cross-origin window it met; it now skips other windows silently.
+- **Stock MV 1.6 could not create folders twice.** Its NW.js runs Node 9, which
+  ignores `mkdirSync`'s `recursive`; every screenshot after the first failed.
+- Also: importing a save into an empty slot left it unloadable; the automatic
+  self-test could unequip or clamp the live party; re-applying a kit at the same
+  level wiped its EXP, and undo kept items it had provided; instant win and
+  lose acted after the battle had ended; Ghost blocked the action button on the
+  player's own tile; a re-imported addon's hook never ran; a Steam adapter
+  answering 0 wedged refresh; a hold made the Screen panel's own controls fail;
+  ordinary loads were reported as clock edits; "Record rolls" did not survive a
+  relaunch; three sliders could not be dragged; the error list froze at 60; and
+  the release build failed on GNU tar.
+
 ## What 2.1.0 brought
 
 **Nine new modules, twenty-two new panels**, bringing the menu to 68. Four of them publish services the
@@ -287,10 +328,10 @@ instead of pretending it worked.
 
 | Suite | Checks |
 |---|---|
-| Stock MZ 1.9 | 1270 |
-| Stock MV 1.6 | 1284 |
-| MV with a modelled third-party plugin stack | 1313 |
-| Installer, against nine `plugins.js` shapes | 121 |
+| Stock MZ 1.9 | 1341 |
+| Stock MV 1.6 | 1355 |
+| MV with a modelled third-party plugin stack | 1384 |
+| Installer, against nine `plugins.js` shapes | 133 |
 | Build lint over all 37 files | — |
 
 The harness stubs are copied from the shipped engine source and annotated with

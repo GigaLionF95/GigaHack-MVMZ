@@ -143,7 +143,11 @@
 
     /* --- save/load ------------------------------------------------------ */
     C.saveIsAsync      = C.isMZ;              // MZ returns a Promise, MV a boolean
-    C.saveExt          = C.isMV ? '.rpgsave' : '.rmmzsave';
+    /* Empty when the engine could not be identified, and that is load-bearing:
+       Backup and Save both refuse on an empty extension rather than guess which
+       files in the save folder are saves. Defaulting the unknown case to MZ's
+       made every one of those refusals dead code. */
+    C.saveExt          = C.isMV ? '.rpgsave' : C.isMZ ? '.rmmzsave' : '';
     C.savefileIdOnSystem = hasFn('Game_System.prototype.setSavefileId');   // MZ only
     C.globalInfoSync   = C.isMV;              // MV's loadGlobalInfo() returns the array
     C.savefileEnabled  = hasFn('Scene_File.prototype.isSavefileEnabled');  // MZ only
@@ -548,7 +552,8 @@
             ['ColorManager', C.colorManager ? 'yes' : 'no — MV draws colours per window'],
             ['Sprite_Gauge', C.spriteGauge ? 'yes' : 'no — MV draws gauges into window contents'],
             ['plugin commands', C.registerCommand ? 'yes' : 'no — MV uses pluginCommand'],
-            ['save format', C.saveExt + (C.saveIsAsync ? ' (async)' : ' (sync)')],
+            ['save format', (C.saveExt || 'unknown — the engine was not identified, so no file is treated as a save') +
+                (C.saveExt ? (C.saveIsAsync ? ' (async)' : ' (sync)') : '')],
             ['save dir', E.saveDir() || 'unresolved'],
             ['updateMain', C.updateMainIsReentrant ? 'safe to gate' : 'self-driving — ' + C.updateMainWhy],
             ['CSS gap', C.cssGap ? 'yes' : 'no — layout uses margins'],

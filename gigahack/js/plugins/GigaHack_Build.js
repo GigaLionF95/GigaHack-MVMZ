@@ -1221,6 +1221,7 @@
                 typeof list[entry.index].parameters === 'object') {
                 listEntry = list[entry.index].parameters;
             }
+            var listPrev = listEntry ? listEntry[pname] : undefined;
 
             var r = verify('plugin.param', function () {
                 /* In place, never a replacement: a plugin that captured this
@@ -1244,18 +1245,37 @@
                 return got;
             }, next);
 
+            if (!r.ok) {
+                /* A write that did not stick is not an edit. Whatever half of
+                   it landed is put back, and nothing is recorded: a session
+                   edit and an undo entry for a value nobody holds would offer
+                   to revert a change that never happened. */
+                $.safe(function () {
+                    if (prev === undefined) delete obj[pname]; else obj[pname] = prev;
+                    if (listEntry) {
+                        if (listPrev === undefined) delete listEntry[pname]; else listEntry[pname] = listPrev;
+                    }
+                }, 'roll back a parameter write that did not stick');
+                return { ok: false, title: 'DID NOT STICK', why: r.message, verify: r };
+            }
+
             if (originals[origKey(entry.key, pname)] === undefined) {
                 originals[origKey(entry.key, pname)] = prevStr;
             }
-            edits.push({
+            var edit = {
                 index: entry.index, name: entry.name, key: entry.key, param: pname,
                 from: prevStr, to: next, at: Date.now(), frame: $.frameCount,
                 ok: r.ok, discarded: false, discardedFrame: null
-            });
+            };
+            edits.push(edit);
             $.undo.push('parameter ' + entry.base + ' · ' + pname, function () {
                 var t = paramTable(), o = t ? t[entry.key] : null;
                 if (o) o[pname] = prevStr;
                 if (listEntry) listEntry[pname] = prevStr;
+                /* The undo IS the revert, so the session-edit row goes with it
+                   — and the remembered original once no edit of this
+                   parameter is left. */
+                forgetEdit(edit);
             });
 
             return { ok: r.ok, title: r.ok ? 'APPLIED' : 'DID NOT STICK', why: r.message, verify: r };
@@ -1274,12 +1294,18 @@
         var le = (list && list[edit.index] && list[edit.index].parameters) ? list[edit.index].parameters : null;
         obj[edit.param] = edit.from;
         if (le) le[edit.param] = edit.from;
-        for (var i = edits.length - 1; i >= 0; i--) if (edits[i] === edit) { edits.splice(i, 1); break; }
+        forgetEdit(edit);
+        return { ok: true, why: '' };
+    };
+
+    /** Drop one edit's row, and its original once no edit of that parameter is left. */
+    function forgetEdit(edit) {
+        var i;
+        for (i = edits.length - 1; i >= 0; i--) if (edits[i] === edit) { edits.splice(i, 1); break; }
         var still = false;
         for (i = 0; i < edits.length; i++) if (edits[i].key === edit.key && edits[i].param === edit.param) still = true;
         if (!still) delete originals[origKey(edit.key, edit.param)];
-        return { ok: true, why: '' };
-    };
+    }
 
     PM.revertAll = function () {
         var n = 0;

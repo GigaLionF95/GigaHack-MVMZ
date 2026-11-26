@@ -451,7 +451,11 @@
             W.group('Partial', [
                 W.row('Amount', W.slider({
                     value: pct, min: 0, max: 100, unit: '%', width: '116px', label: 'unlock amount',
-                    _ungated: true, onChange: function (v) { pct = v; U.rerender(); }
+                    // Rebuild on release only: onChange fires on pointerdown and
+                    // every move, and a rebuild mid-drag removes the track that
+                    // holds the pointer capture, which ends the drag.
+                    _ungated: true, onChange: function (v) { pct = v; },
+                    onCommit: function (v) { pct = v; U.rerender(); }
                 })),
                 W.button({
                     label: sec ? 'unlock ' + Math.round((sec.ids.length * pct) / 100) + ' of "' + sec.title + '"' : 'pick a collection',

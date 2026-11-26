@@ -309,8 +309,25 @@
      * "is there anything to do here" test has to happen BEFORE this is called,
      * never after. Refusing with a backup already spent is a silent cost.
      */
+    /**
+     * The fight is already decided: won, lost, escaped or aborted, with the
+     * closing messages still on screen. inBattle() stays true until the battle
+     * scene terminates, so it cannot answer this. Acting here and nudging
+     * checkBattleEnd would decide it a SECOND time — victory rewards after an
+     * escape, a defeat after a win, the event's branch callback run twice.
+     */
+    B.battleOver = function () {
+        return !!$.safe(function () {
+            if (typeof BattleManager === 'undefined') return false;
+            var ph = BattleManager._phase;
+            if (ph === 'battleEnd' || ph === 'aborting') return true;
+            return typeof BattleManager.isBattleEnd === 'function' && !!BattleManager.isBattleEnd();
+        }, 'battle over', false);
+    };
+
     function danger(label, reason) {
         if (!B.inBattle()) return { ok: false, why: 'no battle is running' };
+        if (B.battleOver()) return { ok: false, why: 'this battle has already ended' };
         if (!$.allowWrite(label)) return { ok: false, why: 'read-only mode' };
         var b = $.backup.guard(reason);
         if (b.created) U.toast({ title: 'SAVE BACKED UP', msg: b.entry.name, severity: 'ok' });
@@ -339,6 +356,7 @@
         $.safe(function () {
             if (typeof BattleManager === 'undefined' || !BattleManager.checkBattleEnd) return;
             if (!BattleManager._phase) return;
+            if (B.battleOver()) return;          // already decided; never decide it twice
             BattleManager.checkBattleEnd();
         }, 'end-of-battle nudge');
     }
@@ -1162,7 +1180,7 @@
         out.push(W.group('Parameters', paramRows, { collapsed: true, tag: 'clamp' }));
 
         // Force an action out of this enemy, or out of a party member at it.
-        var forceWhy = B.forceWhy();
+        var forceWhy = B.forceWhy(e);
         var skills = B.actionSkills();
         var pick = { id: skills.length ? skills[0].id : 1 };
         out.push(W.group('Force an action', [
@@ -1778,10 +1796,23 @@
             typeof BattleManager.forceAction === 'function';
     };
 
-    B.forceWhy = function () {
+    /* `battler` is optional: without it the answer is about the battle; with
+       it, about that battler too. The engine's own Force Action command skips
+       a battler in the death state, and a not-yet-appeared one has no sprite
+       to act from — forcing either made a corpse or an invisible boss cast. */
+    B.forceWhy = function (battler) {
         if (!B.inBattle()) return 'no battle is running';
+        if (B.battleOver()) return 'this battle has already ended';
         if (typeof BattleManager === 'undefined' || typeof BattleManager.forceAction !== 'function') {
             return 'BattleManager.forceAction is not available in this build';
+        }
+        if (battler) {
+            var st = $.safe(function () {
+                if (battler.isAppeared && !battler.isAppeared()) return 'it has not appeared yet';
+                if (battler.isDeathStateAffected && battler.isDeathStateAffected()) return 'it is dead';
+                return null;
+            }, 'force target state', null);
+            if (st) return st;
         }
         return null;
     };
@@ -1796,6 +1827,11 @@
     B.forceAction = function (battler, skillId, targetIndex) {
         if (!B.canForceAction()) return false;
         if (!battler || !battler.forceAction) return false;
+        var why = B.forceWhy(battler);
+        if (why) {
+            U.toast({ title: 'CANNOT FORCE', msg: why, severity: 'warn' });
+            return false;
+        }
         if (!$.allowWrite('force an action')) return false;
         return $.safe(function () {
             battler.forceAction(Math.round(skillId) || 1, targetIndex == null ? -1 : targetIndex);

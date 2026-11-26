@@ -739,10 +739,18 @@
                         onClick: function () {
                             var n = B.restore(e);
                             if (n !== false) {
-                                U.toast({
+                                /* Zero is not a restore. It means every file the
+                                   backup lists was missing from it, and "RESTORED
+                                   0 file(s)" read as success over a backup that
+                                   had put nothing back. */
+                                U.toast(n > 0 ? {
                                     title: 'RESTORED',
                                     msg: n + ' file(s) — load the save from the title screen',
                                     severity: 'warn', ms: 6000
+                                } : {
+                                    title: 'NOTHING RESTORED',
+                                    msg: 'none of the files this backup lists are in it any more — see the log',
+                                    severity: 'err', ms: 6000
                                 });
                                 U.rerender();
                             }

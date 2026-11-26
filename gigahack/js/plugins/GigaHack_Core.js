@@ -137,6 +137,89 @@ window.GigaHack = window.GigaHack || {};
         }
     };
 
+    /* ---------------------------------------------------------------------
+       mkdirp() — create a directory and its parents, and treat "already
+       there" as success. Not mkdirSync(dir, {recursive:true}): the option
+       arrived in Node 10.12, and the NW.js stock MV 1.6 ships runs Node 9,
+       which ignores it — the call then throws EEXIST on every existing folder
+       and ENOENT on every missing parent. Throws on real failures (EACCES,
+       ENOTDIR) exactly as mkdirSync would, so callers keep their guards.
+       ------------------------------------------------------------------ */
+    $.mkdirp = function (dir, fsMod, pathMod) {
+        var fs = fsMod || require('fs'), path = pathMod || require('path');
+        if (!dir) throw new Error('mkdirp: no directory given');
+        try {
+            if (fs.statSync(dir).isDirectory()) return false;
+            var e0 = new Error('mkdirp: ' + dir + ' exists and is not a directory');
+            e0.code = 'ENOTDIR';
+            throw e0;
+        } catch (e) {
+            if (e.code !== 'ENOENT') throw e;
+        }
+        var parent = path.dirname(dir);
+        if (parent && parent !== dir) $.mkdirp(parent, fs, path);
+        try {
+            fs.mkdirSync(dir);
+        } catch (e) {
+            if (e.code !== 'EEXIST') throw e;
+        }
+        return true;
+    };
+
+    /* ---------------------------------------------------------------------
+       writeAtomic() — replace a whole file without ever leaving half of one.
+
+       writeFileSync truncates the target first and then writes into it, so a
+       crash, a power cut or a full disk in between leaves a file that is
+       neither the old contents nor the new: a settings.json that no longer
+       parses. The text goes to a temporary file BESIDE the target — the same
+       folder, so the rename cannot cross a volume — and the rename puts it in
+       place in one step. The temporary file is removed on every failure path.
+
+       Windows is the caveat. Node's renameSync replaces an existing file on
+       NTFS, but a target held open by another process (an editor, a sync
+       client, an antivirus scan) refuses with EPERM or EBUSY. That is not a
+       broken disk and not worth an error line, so it falls back to the direct
+       write it would otherwise have been and says so at info. Every other
+       failure throws exactly as writeFileSync would, so callers keep their
+       guards and their give-up latches.
+
+       Returns 'renamed' or 'direct'.
+       ------------------------------------------------------------------ */
+    var tmpSeq = 0;
+    var RENAME_REFUSED = { EPERM: 1, EBUSY: 1, EACCES: 1 };
+
+    $.writeAtomic = function (file, text, fsMod) {
+        var fs = fsMod || require('fs');
+        var pid = $.safe(function () { return ($.env.proc && $.env.proc.pid) || ''; }, 'pid', '');
+        var tmp = file + '.tmp-' + (pid ? pid + '-' : '') + Date.now().toString(36) + '-' + (++tmpSeq);
+        function dropTmp() {
+            try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch (e) { /* nothing more to do */ }
+        }
+        try {
+            fs.writeFileSync(tmp, text, 'utf8');
+        } catch (e) {
+            dropTmp();
+            throw e;
+        }
+        try {
+            fs.renameSync(tmp, file);
+            return 'renamed';
+        } catch (e) {
+            if (!(e && RENAME_REFUSED[e.code])) { dropTmp(); throw e; }
+            try {
+                fs.writeFileSync(file, text, 'utf8');
+            } catch (e2) {
+                dropTmp();
+                throw e2;
+            }
+            dropTmp();
+            $.log('info', 'could not replace ' + file + ' in one step (' + e.code + ' — usually another ' +
+                'program has it open), so it was written directly instead.');
+            return 'direct';
+        }
+    };
+
     /* Wrap a function so every call is guarded. Preserves `this` + arguments. */
     $.safeWrap = function (fn, label, fallback) {
         return function () {
@@ -359,7 +442,7 @@ window.GigaHack = window.GigaHack || {};
         var fs = env.fs, path = env.path;
         if (!fs || !path) return false;
         try {
-            fs.mkdirSync(dir, { recursive: true });
+            $.mkdirp(dir, env.fs, env.path);
             var probe = path.join(dir, '.gigahack-write-probe');
             fs.writeFileSync(probe, 'ok');
             fs.unlinkSync(probe);
@@ -564,9 +647,9 @@ window.GigaHack = window.GigaHack || {};
 
         if (fs && path && p.localDir) {
             try {
-                fs.mkdirSync(p.localDir, { recursive: true });
+                $.mkdirp(p.localDir, fs, path);
                 file = path.join(p.localDir, CONSENT_FILE);
-                fs.writeFileSync(file, JSON.stringify(rec, null, 2), 'utf8');
+                $.writeAtomic(file, JSON.stringify(rec, null, 2), fs);
                 return { ok: true, from: 'file', where: file };
             } catch (e) {
                 $.log('warn', 'the storage answer could not be written beside the game (' + e.message +
@@ -1195,22 +1278,45 @@ window.GigaHack = window.GigaHack || {};
                             'it was called; node integration may have been switched off for this window.'), null);
                         return;
                     }
-                    var req = mod.get(u, function (res) {
-                        var status = res.statusCode || 0;
-                        var loc = res.headers ? res.headers.location : null;
-                        if (status >= 300 && status < 400 && loc && hops < MAX_REDIRECTS) {
-                            if (res.resume) res.resume();
-                            viaNode(loc, hops + 1);
-                            return;
-                        }
-                        var body = '';
-                        if (res.setEncoding) res.setEncoding('utf8');
-                        res.on('data', function (c) { body += c; });
-                        res.on('end', function () {
-                            finish(null, { status: status, body: body, via: 'node-https', url: u });
+                    /* Caught here rather than left to $.safe, because $.safe
+                       logs and returns and the caller is then never answered:
+                       a URL Node refuses to parse used to surface, if at all,
+                       as "no answer within N ms" a full timeout later. */
+                    var req;
+                    try {
+                        req = mod.get(u, function (res) {
+                            var status = res.statusCode || 0;
+                            var loc = res.headers ? res.headers.location : null;
+                            if (status >= 300 && status < 400 && loc) {
+                                if (res.resume) res.resume();
+                                /* Location may be relative — "/raw/x" is legal and
+                                   common — and Node, unlike fetch and XHR, does not
+                                   resolve it against the URL it came from. Handed
+                                   on as it stood, the next hop threw on an
+                                   unparseable URL. */
+                                var next = $.safe(function () { return new URL(loc, u).href; },
+                                    'resolve redirect ' + loc, String(loc));
+                                if (hops < MAX_REDIRECTS) { viaNode(next, hops + 1); return; }
+                                /* Out of hops is a failure, not an answer. A 3xx body
+                                   is the server's "go elsewhere" stub, and a caller
+                                   that only rejects >= 400 used to keep it as the
+                                   file it had asked for. */
+                                finish(new Error('gave up after ' + MAX_REDIRECTS + ' redirects; ' + u +
+                                    ' answered ' + status + ' pointing at ' + next + '.'), null);
+                                return;
+                            }
+                            var body = '';
+                            if (res.setEncoding) res.setEncoding('utf8');
+                            res.on('data', function (c) { body += c; });
+                            res.on('end', function () {
+                                finish(null, { status: status, body: body, via: 'node-https', url: u });
+                            });
                         });
-                    });
-                    req.on('error', function (e) { finish(e, null); });
+                    } catch (e) {
+                        finish(e, null);
+                        return;
+                    }
+                    if (req && req.on) req.on('error', function (e) { finish(e, null); });
                 }, 'node http get');
             })(String(url), 0);
             return;

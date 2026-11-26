@@ -1134,7 +1134,11 @@
                 var c = cfg();
                 if (atDecision()) return false;
                 if (T.turboHeld()) return true;
-                if (c.auto) {
+                /* Only at the end-of-page pause. updateShowFast asks this same
+                   question once per character while a page is still typing, and
+                   counting those made auto-advance snap any page longer than the
+                   delay to fully drawn mid-sentence. */
+                if (c.auto && this.pause) {
                     pauseFrames++;
                     if (pauseFrames >= T.autoFrames()) {
                         pauseFrames = 0;

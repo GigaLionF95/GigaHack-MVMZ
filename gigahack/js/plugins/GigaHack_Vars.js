@@ -115,6 +115,14 @@
     var revision = 0;
     var frozenV = Object.create(null);
     var frozenS = Object.create(null);
+    /* The $gameSystem the freezes were set under. 'gameobjects' is also
+       emitted when nothing was loaded (Settings → Addons re-resolves the
+       profile through it), so a release keys on the playthrough object
+       actually being replaced, not on the signal alone. */
+    var frozenFor = null;
+    function currentSystem() {
+        return typeof $gameSystem !== 'undefined' ? $gameSystem : null;
+    }
     var snapshot = null;                   // {at, v:[], s:[]}
     var marks = { vars: [], switches: [] };
     var primed = false;
@@ -252,8 +260,10 @@
     V.freeze = function (kind, id, on) {
         if (!$.allowWrite('Freezing ' + kind + ' #' + id)) return false;
         var map = kind === 'var' ? frozenV : frozenS;
-        if (on) map[id] = kind === 'var' ? V.varValue(id) : V.switchValue(id);
-        else delete map[id];
+        if (on) {
+            map[id] = kind === 'var' ? V.varValue(id) : V.switchValue(id);
+            frozenFor = currentSystem();
+        } else delete map[id];
         delete freezeComplained[kind + ':' + id];    // a new freeze earns a new report
         var n = V.frozenCount();
         U.setActive('freeze', n > 0);
@@ -775,7 +785,22 @@
         }
         return sectionCache[kind] || [];
     };
-    $.on('gameobjects', function () { sectionCache = null; primed = false; });
+    $.on('gameobjects', function () {
+        sectionCache = null; primed = false;
+        /* A freeze holds a value from the playthrough it was set in. A new
+           game or a loaded save is a different one, and enforcing the old value
+           there writes it into a save that never had it — so every freeze is
+           released here, and that is said rather than done quietly. */
+        var n = V.frozenCount();
+        if (!n) return;
+        if (frozenFor && currentSystem() === frozenFor) return;   // same playthrough: nothing was loaded
+        V.clearFreeze();
+        $.log('warn', 'released ' + n + ' frozen variable(s)/switch(es) — a new game or a loaded save ' +
+            'is a different playthrough, and holding the old values would write them into it');
+        $.safe(function () {
+            U.toast({ title: 'FREEZES RELEASED', msg: n + ' — a new game or a save was loaded', severity: 'info' });
+        }, 'freeze release toast');
+    });
 
     /* --------------------------------------------------- quick variables
        WHICH variables matter is knowledge about a game, not about the engine,

@@ -364,6 +364,72 @@
        harness proves the mod is internally consistent, and these prove the
        game agrees. Every test restores what it touched.
        ===================================================================== */
+    /* What an actor test may disturb, taken whole and put back whole.
+
+       addState, removeState and addParam each end in refresh(), and refresh()
+       is not neutral: it clamps HP and MP to the current maximum, and on an
+       actor it unequips whatever the current traits no longer allow. A state
+       with a max-HP rate or an equip seal therefore cost the player real HP or
+       put their gear in the bag, and removing the state afterwards gave neither
+       back — on the first load of every session, with no click from anybody.
+       A restriction state was worse again: it removes other states as it
+       lands. Restoring the one field the test meant to touch is not enough, so
+       every field those calls can reach is copied here and written back. */
+    var ACTOR_FIELDS = ['_hp', '_mp', '_tp', '_states', '_stateTurns', '_buffs', '_buffTurns',
+        '_equips', '_paramPlus', '_result'];
+
+    function copyField(v) {
+        if (Array.isArray(v)) {
+            return v.map(function (x) {
+                if (!x || typeof x !== 'object') return x;
+                // Game_Item and friends: a shallow copy keeps the prototype.
+                var c = Object.create(Object.getPrototypeOf(x));
+                Object.keys(x).forEach(function (k) { c[k] = Array.isArray(x[k]) ? x[k].slice() : x[k]; });
+                return c;
+            });
+        }
+        if (v && typeof v === 'object') {
+            var o = Object.create(Object.getPrototypeOf(v));
+            Object.keys(v).forEach(function (k) { o[k] = Array.isArray(v[k]) ? v[k].slice() : v[k]; });
+            return o;
+        }
+        return v;
+    }
+
+    /* The bag travels with the actor: an item refresh() unequips is traded
+       INTO the party's inventory, so putting _equips back without putting the
+       inventory back would leave the player with two of it. */
+    var PARTY_FIELDS = ['_items', '_weapons', '_armors'];
+
+    function snapshotActor(a) {
+        var snap = { actor: {}, party: {} };
+        ACTOR_FIELDS.forEach(function (f) {
+            if (Object.prototype.hasOwnProperty.call(a, f)) snap.actor[f] = copyField(a[f]);
+        });
+        $.safe(function () {
+            if (typeof $gameParty === 'undefined' || !$gameParty) return;
+            PARTY_FIELDS.forEach(function (f) {
+                if ($gameParty[f] && typeof $gameParty[f] === 'object') snap.party[f] = copyField($gameParty[f]);
+            });
+        }, 'snapshot the party inventory');
+        return snap;
+    }
+
+    function restoreActor(a, snap) {
+        Object.keys(snap.actor).forEach(function (f) { a[f] = snap.actor[f]; });
+        $.safe(function () {
+            Object.keys(snap.party).forEach(function (f) { $gameParty[f] = snap.party[f]; });
+        }, 'restore the party inventory');
+        /* Not refresh(): that is the call that did the damage. The cached
+           values a refresh would rebuild are derived on read on both engines. */
+    }
+
+    /* A state with no traits changes nothing refresh() can see, so it is the
+       one to test with where the database has one. */
+    function hasNoTraits(st) {
+        return !!st && (!st.traits || !st.traits.length) && !st.restriction;
+    }
+
     var TESTS = [
         {
             id: 'variables',
@@ -475,11 +541,15 @@
                 var beforePlus = $.safe(function () { return a._paramPlus ? a._paramPlus[2] : null; }, 'paramPlus', null);
                 var r = { ok: readable };
                 if (readable && beforePlus !== null) {
-                    r = K.verify('party.param',
-                        function () { a.addParam(2, 1); },
-                        function () { return a._paramPlus[2]; },
-                        beforePlus + 1);
-                    $.safe(function () { a.addParam(2, beforePlus - a._paramPlus[2]); }, 'restore paramPlus');
+                    var snap = snapshotActor(a);
+                    try {
+                        r = K.verify('party.param',
+                            function () { a.addParam(2, 1); },
+                            function () { return a._paramPlus[2]; },
+                            beforePlus + 1);
+                    } finally {
+                        restoreActor(a, snap);
+                    }
                 }
                 return {
                     ok: r.ok,
@@ -499,21 +569,29 @@
             },
             run: function () {
                 var a = $gameActors.actor(1);
-                // Find a state the actor does not already have and is not immune to.
-                var id = null;
+                // Find a state the actor does not already have and is not immune
+                // to — one with no traits first, any other only if there is none.
+                var id = null, plain = null;
                 for (var i = 1; i < $dataStates.length; i++) {
                     if (!$dataStates[i]) continue;
                     if (a.isStateAffected(i)) continue;
                     if (a.isStateResist && a.isStateResist(i)) continue;
                     if (i === a.deathStateId()) continue;
-                    id = i; break;
+                    if (id === null) id = i;
+                    if (hasNoTraits($dataStates[i])) { plain = i; break; }
                 }
+                if (plain !== null) id = plain;
                 if (id === null) return { ok: true, soft: true, detail: 'no free state to test with.' };
-                var r = K.verify('battle.states',
-                    function () { a.addState(id); },
-                    function () { return a.isStateAffected(id); },
-                    true);
-                $.safe(function () { a.removeState(id); }, 'clear test state');
+                var snap = snapshotActor(a);
+                var r;
+                try {
+                    r = K.verify('battle.states',
+                        function () { a.addState(id); },
+                        function () { return a.isStateAffected(id); },
+                        true);
+                } finally {
+                    restoreActor(a, snap);
+                }
                 return { ok: r.ok, detail: r.ok ? 'state ' + id + ' applied and cleared' : r.message };
             }
         },

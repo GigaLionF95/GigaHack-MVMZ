@@ -826,7 +826,7 @@ module.exports = async function (ctx) {
   });
   check('this module writes no game state of its own, so it declares no compat control — and where GigaHack\'s writes have been refused this session the panel lists the control and the reason beside the triggers that will appear to do nothing',
     writes.listsControl && writes.listsWhy && writes.offersRetry && writes.clearsAway &&
-    writes.autoHooks.length === 4,
+    writes.autoHooks.length === 5,
     JSON.stringify(writes));
 
   const inPlace = await ev(() => {

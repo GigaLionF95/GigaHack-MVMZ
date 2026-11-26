@@ -510,6 +510,7 @@
     var HOOK_BATTLE = 'BattleManager.setup (auto: battle started)';
     var HOOK_NEWGAME = 'DataManager.setupNewGame (auto: run start)';
     var HOOK_LOAD = 'DataManager.extractSaveContents (auto: a load happened)';
+    var HOOK_AFTERLOAD = 'Game_System.onAfterLoad (auto: load clock)';
 
     /**
      * Why each alias matters, written once.
@@ -539,6 +540,10 @@
         'told apart from an ordinary frame: the baselines still re-prime through the gameobjects ' +
         'event, but a run whose clock moves is marked "the clock was edited" rather than "a save ' +
         'was loaded".';
+    REASONS[HOOK_AFTERLOAD] =
+        'Game_System.prototype.onAfterLoad is not the function GigaHack aliased, so the moment a load ' +
+        'puts the engine clock back cannot be seen. The load scene calls it only after its fade, so ' +
+        'without it a load is told apart from a play-time edit only by GigaHack\'s own quick load.';
 
     function installed(name) { return !!($.hooks[name] && $.hooks[name].installed); }
     function hookWhy(name) {
@@ -1569,6 +1574,7 @@
        would. Nothing here caches $gameSwitches or $gameVariables: the objects
        it is called about are brand new. */
     var loadStamp = -1;
+    var startAfterLoad = false;
     $.install(HOOK_LOAD,
         typeof DataManager !== 'undefined' ? DataManager : null, 'extractSaveContents',
         function (original) {
@@ -1578,7 +1584,11 @@
                     loadStamp = $.frameCount;
                     primePoll();
                     if (on('route.on') && on('route.startOnLoad') && currentRoute()) {
-                        R.start('a save was loaded');
+                        /* Not yet where the onAfterLoad alias is in place: the
+                           engine clock still reads the session being left, and
+                           an anchor taken now would be measured against it. */
+                        if (installed(HOOK_AFTERLOAD)) startAfterLoad = true;
+                        else R.start('a save was loaded');
                     }
                 }, 'auto: load stamp');
                 return r;
@@ -1586,11 +1596,36 @@
         },
         REASONS[HOOK_LOAD]);
 
+    /* Where the clock actually jumps on a load. The load scene calls this from
+       its terminate(), after a fade of a few dozen frames, so a stamp taken at
+       extractSaveContents is long stale by the time the sampler sees the jump.
+       Stamped again here, so the next frame's jump is recognised as the load. */
+    $.install(HOOK_AFTERLOAD,
+        typeof Game_System !== 'undefined' ? Game_System.prototype : null, 'onAfterLoad',
+        function (original) {
+            return function () {
+                var r = original.apply(this, arguments);
+                $.safe(function () {
+                    loadStamp = $.frameCount;
+                    if (startAfterLoad) {
+                        startAfterLoad = false;
+                        /* The run begins on the loaded clock, so the jump that
+                           just happened is not one it has to absorb. */
+                        clock.last = engineFrame();
+                        R.start('a save was loaded');
+                    }
+                }, 'auto: after load');
+                return r;
+            };
+        },
+        REASONS[HOOK_AFTERLOAD]);
+
     /* Hooks already emits this from its own createGameObjects alias on BOTH
        the new-game and the load path, so Auto adds no second alias for it. */
     $.on('gameobjects', function () {
         book = null; bookKey = null;   // the title may have changed with the world
         pollArmed = false;
+        startAfterLoad = false;        // a load that never finished starts nothing
         A.clockReset();
         recomputeSource();
     });

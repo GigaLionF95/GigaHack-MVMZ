@@ -497,7 +497,10 @@
         return $.safe(function () {
             var dir = dirFor(scope || 'game');
             if (dir && fs() && pathMod()) {
-                fs().mkdirSync(dir, { recursive: true });
+                // Not mkdirSync({recursive}): stock MV's Node 9 ignores the
+                // option and throws EEXIST on a folder that is already there.
+                if ($.mkdirp) $.mkdirp(dir, fs(), pathMod());
+                else fs().mkdirSync(dir, { recursive: true });
                 var file = pathMod().join(dir, name + '.js');
                 fs().writeFileSync(file, String(src), 'utf8');
                 $.log('ok', 'wrote ' + file);
@@ -722,6 +725,7 @@
     var seenSaves;
     var seenSystem;
     var seenPage;
+    var seenRecN;       // the highest dialogue record number already handed out
 
     function watchGame() {
         /* Map. mapId() is a getter on a live object and costs nothing; the
@@ -790,11 +794,21 @@
             if (rev !== null && rev !== seenPage) {
                 var first = seenPage === undefined;
                 seenPage = rev;
-                if (!first) {
-                    var lines = $.safe(function () { return t.history.lines(); }, 'addon message lines', []);
-                    var last = lines.length ? lines[lines.length - 1] : null;
-                    if (last) fire('message', last.text);
+                /* By record number, not by "the last line": the revision also
+                   moves on a clear, a trim and the break a load leaves, none of
+                   which is anything being said, and two pages in one frame are
+                   two messages. Only pages — not choices, prompts or breaks. */
+                var lines = $.safe(function () { return t.history.lines(); }, 'addon message lines', []) || [];
+                var top = lines.length ? (lines[lines.length - 1].n || 0) : 0;
+                if (!first && seenRecN !== undefined) {
+                    for (var li = 0; li < lines.length; li++) {
+                        var ln = lines[li];
+                        if (!(ln.n > seenRecN)) continue;
+                        if (ln.kind !== 'say' && ln.kind !== 'scroll') continue;
+                        fire('message', ln.text);
+                    }
                 }
+                if (seenRecN === undefined || top > seenRecN) seenRecN = top;
             }
         }
     }
@@ -1016,11 +1030,37 @@
             /* ------------------------------------------------------ hooks */
             hook: function (name, owner, method, factory, reason) {
                 var full = String(name || (method || 'alias')) + ' (addon:' + rec.id + ')';
-                if (Object.prototype.hasOwnProperty.call($.hooks, full)) {
-                    api.log('warn', rec.id + ': the alias "' + full + '" is already installed. An alias ' +
-                        'cannot be installed twice and cannot be removed once something has aliased on ' +
-                        'top, so the first one stands — and it still consults this addon\'s enabled flag.');
-                    return false;
+                var addonId = rec.id;
+                if (Object.prototype.hasOwnProperty.call($.hooks, full) && $.hooks[full].installed) {
+                    /* Already in the chain — this addon loaded before this
+                       session, or was removed and imported again. The alias
+                       itself cannot be installed twice, but what it RUNS lives
+                       in a slot, so the new factory replaces the old body. A
+                       wrapper bound to the old record ran a dead record's flag
+                       forever and the re-imported addon's alias never ran. */
+                    var slot = hookSlots[full];
+                    if (!slot || !slot.hasOriginal) {
+                        api.log('warn', rec.id + ': the alias "' + full + '" is already installed and ' +
+                            'was not installed by an addon, so it was left alone.');
+                        return false;
+                    }
+                    var again;
+                    try { again = factory(slot.original); } catch (e) {
+                        api.log('warn', rec.id + ': the factory for "' + full + '" threw — ' +
+                            ((e && e.message) || e) + '. The alias stays a pass-through.');
+                        slot.made = null;
+                        return false;
+                    }
+                    if (typeof again !== 'function') {
+                        api.log('warn', rec.id + ': the factory for "' + full + '" did not return a function, ' +
+                            'so the alias stays a pass-through.');
+                        slot.made = null;
+                        return false;
+                    }
+                    slot.made = again;
+                    if (reg.hooks.indexOf(full) < 0) reg.hooks.push(full);
+                    rec.registered++;
+                    return true;
                 }
                 var stacked = ourOwnPatch(owner, method);
                 var ok = $.install(full, owner, method, function (original) {
@@ -1028,13 +1068,19 @@
                     if (typeof made !== 'function') {
                         throw new Error('the factory did not return a function');
                     }
+                    hookSlots[full] = { original: original, hasOriginal: true, made: made };
                     /* THE WHOLE REASON THIS IS A WRAPPER. An alias cannot be
                        taken back out of a chain, so disabling the addon must
                        not try: the wrapper stays where it is forever and turns
-                       into a pass-through the moment the flag goes false. */
+                       into a pass-through the moment the flag goes false.
+
+                       The record is looked up by id on every call rather than
+                       captured: a removed and re-imported addon is a NEW record,
+                       and the old one's flag is false for good. */
                     return function () {
-                        if (!rec.enabled) return original.apply(this, arguments);
-                        return made.apply(this, arguments);
+                        var cur = addons[addonId], s = hookSlots[full];
+                        if (!cur || !cur.enabled || !s || !s.made) return original.apply(this, arguments);
+                        return s.made.apply(this, arguments);
                     };
                 }, reason || ('the addon "' + (rec.name || rec.id) + '" wanted to alias ' + method +
                     ' and this build does not have it, so whatever that alias was for is not happening.'));
@@ -1096,6 +1142,9 @@
 
     var commandOwners = {};
     var commandHelp = {};
+    /* alias name -> { original, made }: what an addon alias runs, replaceable
+       because the alias in the chain is not. */
+    var hookSlots = {};
     function ownsCommand(id, key) {
         return Object.prototype.hasOwnProperty.call(commandOwners, key) && commandOwners[key] === id;
     }

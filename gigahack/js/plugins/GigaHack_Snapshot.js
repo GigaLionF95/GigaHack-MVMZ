@@ -396,7 +396,10 @@
                 origin: opts.origin || 'manual',
                 slot: opts.slot, ok: opts.ok, why: opts.why,
                 side: 'live', title: gameTitle(),
-                playFrames: frameCountNow()
+                /* A load is anchored before onAfterLoad puts the engine clock
+                   back, so the clock still reads the session being left. The
+                   save's own _framesOnSave is its playtime; null takes it. */
+                playFrames: opts.origin === 'load' ? null : frameCountNow()
             });
         }, 'snapshot.take', null);
     };

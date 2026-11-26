@@ -344,6 +344,13 @@
         ask('pinned variables and switches', $.vars && $.vars.reloadMarks);
         ask('console snippets', $.console && $.console.reload);
         ask('loadouts and the shop', $.kit && $.kit.reload);
+        /* Both automation files are read once and written back on every fire
+           count — the triggers through a debounced save on each edge, which
+           makes them the likeliest of all of these to write first. Missing
+           here, the first trigger to fire after a move put the old folder's
+           list over the new folder's file. */
+        ask('automation triggers', $.auto && $.auto.reload);
+        ask('automation routes', $.auto && $.auto.route && $.auto.route.reload);
         ask('the Forge library', $.forge && $.forge.load);
         ask('the addon index', $.addons && $.addons.rescan);
         ask('actor portraits', $.party && $.party.clearImageCache);

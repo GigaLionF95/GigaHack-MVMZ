@@ -1012,7 +1012,7 @@
             }
             if (!fs().existsSync(src)) { $.log('warn', 'slot ' + id + ' has no file to export'); return null; }
             var out = S.exportDir();
-            fs().mkdirSync(out, { recursive: true });
+            $.mkdirp(out, fs(), pathMod());
             var name = 'slot' + id + '_' + (stamp || fileStamp()) + saveExt();
             var dst = pathMod().join(out, name);
             fs().copyFileSync(src, dst);
@@ -1041,7 +1041,7 @@
         var dir = S.importDir(), ext = saveExt();
         if (!dir || !fs() || !ext) return [];
         return $.safe(function () {
-            fs().mkdirSync(dir, { recursive: true });
+            $.mkdirp(dir, fs(), pathMod());
             return fs().readdirSync(dir).filter(function (n) { return n.slice(-ext.length) === ext; }).sort();
         }, 'list imports', []);
     };
@@ -1088,8 +1088,34 @@
                so by returning false when it can do neither. Either way the
                imported file IS the save; the index only carries the title and
                playtime the menu shows. */
+            /* An EMPTY slot has no index entry to retitle, and both engines
+               gate loading on that entry: one refuses to load a slot whose
+               entry is missing, the other's save list draws it as empty and
+               will not select it — and this panel's own load button asks the
+               same question. So an import into an empty slot wrote a file
+               nothing could reach, reported IMPORTED, and was overwritten by
+               the next save to that slot. The entry is created here, with only
+               what is true of it: the fields a listing reads, the game's own
+               title and id (one engine compares both before it will load), and
+               no party or playtime, which would be this session's and not the
+               file's. */
             var retitled = $.eng.updateGlobalInfo(function (gi) {
-                if (gi && gi[id]) gi[id].title = (gi[id].title || '') + ' (imported)';
+                if (!gi) return;
+                if (!gi[id]) {
+                    var entry = {
+                        title: $.safe(function () { return String($dataSystem.gameTitle || ''); },
+                            'game title for an imported slot', '') + ' (imported)',
+                        characters: [], faces: [], playtime: '',
+                        timestamp: Date.now()
+                    };
+                    var gid = $.safe(function () { return DataManager._globalId; }, 'global id', null);
+                    if (gid !== null && gid !== undefined) entry.globalId = gid;
+                    gi[id] = entry;
+                    return;
+                }
+                var t = String(gi[id].title || '');
+                // Importing twice into the same slot used to stack the suffix.
+                if (!/ \(imported\)$/.test(t)) gi[id].title = t + ' (imported)';
             });
             $.eng.invalidateSaveInfo();
             $.log('ok', fileName + ' imported into slot ' + id +

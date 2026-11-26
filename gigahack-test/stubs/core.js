@@ -446,6 +446,21 @@ var DataManager = {
     return object;
   },
 
+  /* DataManager.isDatabaseLoaded — the same body on both engines:
+     every database global present (checkError not modelled). Many MV plugin
+     suites alias this to run their note-tag processing on the first true, and
+     the Forge injects ahead of them here. The list is the stock one minus
+     $dataAnimations, which this harness does not model. */
+  _databaseFiles: ['$dataActors', '$dataClasses', '$dataSkills', '$dataItems', '$dataWeapons',
+    '$dataArmors', '$dataEnemies', '$dataTroops', '$dataStates', '$dataTilesets',
+    '$dataCommonEvents', '$dataSystem', '$dataMapInfos'].map(function (n) { return { name: n, src: '' }; }),
+  isDatabaseLoaded: function () {
+    for (var i = 0; i < this._databaseFiles.length; i++) {
+      if (!window[this._databaseFiles[i].name]) return false;
+    }
+    return true;
+  },
+
   /* makeSaveContents / extractSaveContents write and read the same ten keys
      in the same order on both engines (MV :430-457 / MZ :389-416). */
   makeSaveContents: function () {

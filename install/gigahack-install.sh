@@ -58,7 +58,13 @@ cleanup_tmps() {
 		[ -n "$f" ] && rm -f "$f"
 	done
 }
-trap cleanup_tmps EXIT INT TERM
+# INT and TERM must EXIT, not just clean up: a trap that returns hands control
+# back to the next command, so Ctrl-C deleted the temp files and then carried on
+# installing into every remaining game. exit runs the EXIT trap as well, and a
+# second cleanup is harmless.
+trap cleanup_tmps EXIT
+trap 'cleanup_tmps; exit 130' INT
+trap 'cleanup_tmps; exit 143' TERM
 
 # Everything a killed run of this script could have left beside plugins.js.
 # One list, because verify reports them and uninstall removes them and two
@@ -412,9 +418,28 @@ do_install() {
 	# 1. Back up the original ONCE, and never overwrite that backup — the
 	#    point of it is to hold the file as the game shipped it, and a second
 	#    run would otherwise capture our own edit as the "original".
+	#
+	#    The exception is a plugins.js with no GigaHack block in it. That is
+	#    the game's own file as it stands NOW — a game update replaced it — so
+	#    it supersedes the old backup. Keeping the old one would make a later
+	#    uninstall put back the plugin list from before the update.
+	#
+	#    Every cp here is checked: do_install runs under `|| true`, which turns
+	#    set -e off for the whole function.
 	if [ ! -f "$pj$BACKUP_SUFFIX" ]; then
 		if [ "$dry" = 1 ]; then step "would back up js/plugins.js"
-		else cp "$pj" "$pj$BACKUP_SUFFIX"; step "backed up js/plugins.js -> plugins.js$BACKUP_SUFFIX"; fi
+		elif cp "$pj" "$pj$BACKUP_SUFFIX"; then step "backed up js/plugins.js -> plugins.js$BACKUP_SUFFIX"
+		else
+			bad "could not back up js/plugins.js. Nothing was changed."
+			failed=$((failed + 1)); return 1
+		fi
+	elif ! grep -q "$ANY_BEGIN" "$pj" 2>/dev/null; then
+		if [ "$dry" = 1 ]; then step "would refresh the backup (js/plugins.js has no GigaHack entries, so it is the game's current file)"
+		elif cp "$pj" "$pj$BACKUP_SUFFIX"; then step "backup refreshed — js/plugins.js had no GigaHack entries, so it is the game's current file"
+		else
+			bad "could not refresh plugins.js$BACKUP_SUFFIX from the game's current js/plugins.js. Nothing was changed."
+			failed=$((failed + 1)); return 1
+		fi
 	else
 		step "backup already exists (kept from the first install)"
 	fi
@@ -428,7 +453,11 @@ do_install() {
 			failed=$((failed + 1)); return 1
 		fi
 		if [ "$dry" != 1 ]; then
-			cp "$src" "$root/js/plugins/$m.js"
+			if ! cp "$src" "$root/js/plugins/$m.js"; then
+				bad "could not copy $m.js into js/plugins/ — js/plugins.js was left untouched."
+				bad "If an earlier install ran with sudo, those files belong to root: re-run it the same way."
+				failed=$((failed + 1)); return 1
+			fi
 			# 644 explicitly. Two modules once shipped mode 600 owned by root;
 			# every check passed and every read failed.
 			chmod 644 "$root/js/plugins/$m.js"
@@ -478,7 +507,11 @@ do_install() {
 		step "would write js/plugins.js with $want entries appended at the end"
 		rm -f "$tmp"
 	else
-		mv "$tmp" "$pj"
+		if ! mv "$tmp" "$pj"; then
+			rm -f "$tmp"
+			bad "could not replace js/plugins.js. Left untouched."
+			failed=$((failed + 1)); return 1
+		fi
 		chmod 644 "$pj"
 		step "js/plugins.js updated — $want entries, appended last"
 	fi
@@ -494,29 +527,54 @@ do_uninstall() {
 	root="$1"
 	say "$root"
 	pj="$root/js/plugins.js"
-	n=0
-	for m in $(modules); do
-		[ -f "$root/js/plugins/$m.js" ] && { rm -f "$root/js/plugins/$m.js"; n=$((n + 1)); }
-	done
-	step "removed $n module files"
 
+	# plugins.js FIRST, and the module files only once it no longer lists
+	# them. The other order, with an unchecked cp, deleted the modules and
+	# then the backup when the restore failed — a plugins.js listing files
+	# that no longer exist is a red screen on launch, and the only copy of
+	# the original was gone. do_uninstall runs under `|| true`, so set -e is
+	# off here and every step is checked by hand.
+	#
+	# Through a temp file and mv, as install does: replacing the file needs
+	# only the folder to be writable, so a plugins.js left owned by root by
+	# a sudo install is still restored.
+	tmp="$pj.gigahack-tmp$$"
+	tmp_track "$tmp"
 	if [ -f "$pj$BACKUP_SUFFIX" ]; then
-		cp "$pj$BACKUP_SUFFIX" "$pj"
-		rm -f "$pj$BACKUP_SUFFIX"
-		step "js/plugins.js restored from the backup, byte for byte"
+		if cp "$pj$BACKUP_SUFFIX" "$tmp" && mv "$tmp" "$pj"; then
+			rm -f "$pj$BACKUP_SUFFIX"
+			step "js/plugins.js restored from the backup, byte for byte"
+		else
+			rm -f "$tmp"
+			bad "could not restore js/plugins.js from plugins.js$BACKUP_SUFFIX — nothing was removed."
+			bad "Check that you can read the backup and write to js/ (an install run with sudo needs sudo here too)."
+			failed=$((failed + 1)); return 1
+		fi
 	elif grep -q "$ANY_BEGIN" "$pj" 2>/dev/null; then
 		# strip_block already removes the separating comma, so there is no
 		# second cleanup pass. There was one, and it used a backreference in
 		# awk's sub() — awk has no capture groups, so it wrote the literal
 		# text "]\1" into plugins.js and the game would not boot.
-		tmp="$pj.gigahack-tmp$$"
-		tmp_track "$tmp"
-		strip_block "$pj" > "$tmp"
-		mv "$tmp" "$pj"
-		step "GigaHack entries removed from js/plugins.js (no backup was present)"
+		if strip_block "$pj" > "$tmp" && mv "$tmp" "$pj"; then
+			step "GigaHack entries removed from js/plugins.js (no backup was present)"
+		else
+			rm -f "$tmp"
+			bad "could not rewrite js/plugins.js — nothing was removed."
+			failed=$((failed + 1)); return 1
+		fi
 	else
 		step "js/plugins.js had no GigaHack entries"
 	fi
+
+	n=0; stuck=""
+	for m in $(modules); do
+		f="$root/js/plugins/$m.js"
+		[ -f "$f" ] || continue
+		if rm -f "$f"; then n=$((n + 1)); else stuck="$stuck $m"; fi
+	done
+	step "removed $n module files"
+	# Harmless to the game now that plugins.js no longer lists them, but said.
+	if [ -n "$stuck" ]; then bad "could not remove:$stuck"; fi
 
 	# And anything an interrupted run left behind, which nothing else removes.
 	nstray=0
@@ -541,9 +599,16 @@ if [ -n "$TARGETS" ]; then
 	# is torn into three targets, each reported as "not a game folder" while
 	# the real one is never tried. The user sees three confident refusals and
 	# no install.
+	#
+	# And no globbing while the list is split: "[RJ01234567] Title", the
+	# normal name for a DLsite release, is a one-character bracket class to
+	# the shell, and would expand to "R Title" if a folder of that name
+	# existed. set -f covers the split only; discovery inside needs globs.
 	SAVED_IFS="$IFS"; IFS='
 '
+	set -f
 	for t in $TARGETS; do
+		set +f
 		[ -n "$t" ] || continue
 		if game_root_p "$t"; then
 			roots="$roots
@@ -559,6 +624,7 @@ $found"
 			fi
 		fi
 	done
+	set +f
 	IFS="$SAVED_IFS"
 else
 	roots="$(discover ".")
@@ -583,7 +649,9 @@ fi
 printf '%s\n' "$roots" | while IFS= read -r r; do :; done   # no-op; keeps sh happy
 OLDIFS="$IFS"; IFS='
 '
+set -f          # the split only — see the targets loop above
 for root in $roots; do
+	set +f
 	[ -n "$root" ] || continue
 	case "$MODE" in
 		install)   do_install   "$root" 0 || true ;;
@@ -593,6 +661,7 @@ for root in $roots; do
 	esac
 	say ""
 done
+set +f
 IFS="$OLDIFS"
 
 say "$MODE: $ok ok, $failed failed, $skipped skipped"

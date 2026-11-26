@@ -341,8 +341,31 @@ check "$([ "$n" = 0 ] && echo 1 || echo 0)" "uninstall takes the leftovers with 
 # few milliseconds wide — so the guard is checked statically, the same way
 # `awk -v` is. A trap that covers EXIT only would not survive the case that
 # produced the litter: the run was killed, not returned from.
-check "$(grep -q '^trap cleanup_tmps EXIT INT TERM' "$INSTALLER" && echo 1 || echo 0)" \
+check "$(grep -q '^trap cleanup_tmps EXIT' "$INSTALLER" && grep -q "^trap 'cleanup_tmps; exit [0-9]*' INT" "$INSTALLER" && grep -q "^trap 'cleanup_tmps; exit [0-9]*' TERM" "$INSTALLER" && echo 1 || echo 0)" \
       "the installer traps INT and TERM, not only EXIT, so a killed run cleans up after itself"
+
+# A trap that only cleans up RETURNS, and the shell carries on with the next
+# command — Ctrl-C deleted the temp files and went on installing. Staged for
+# real: an awk that takes two seconds holds the installer inside its
+# plugins.js rewrite, the installer alone is sent TERM, and nothing after the
+# signal may run — no summary line, and no temp file left behind.
+build_bed
+SIGSHIM="$BED/sigshim"
+mkdir -p "$SIGSHIM"
+printf '#!/bin/sh\nsleep 2\nexec %s "$@"\n' "$(command -v awk)" > "$SIGSHIM/awk"
+chmod +x "$SIGSHIM/awk"
+PATH="$SIGSHIM:$PATH" "$INSTALLER" "$BED/pretty-mz" > "$BED/sig.out" 2>&1 &
+sigpid=$!
+sleep 1
+kill -TERM "$sigpid" 2>/dev/null
+wait "$sigpid"; sigrc=$?
+sleep 2   # let the orphaned slow awk finish before the bed is rebuilt
+n=$(ls "$BED/pretty-mz/js/"plugins.js.gigahack-tmp* "$BED/pretty-mz/js/"plugins.js.gigahack-ent* \
+       "$BED/pretty-mz/js/"plugins.js.gigahack-strip* 2>/dev/null | wc -l | tr -d ' ')
+check "$([ "$sigrc" -ne 0 ] && ! grep -q '^install: ' "$BED/sig.out" && [ "$n" = 0 ] && echo 1 || echo 0)" \
+      "a TERM stops the installer and cleans up — it does not carry on to the summary" \
+      "rc=$sigrc leftovers=$n $(tr '\n' ' ' < "$BED/sig.out" | cut -c1-200)"
+rm -rf "$SIGSHIM"
 
 echo
 #-----------------------------------------------------------------------------
@@ -364,6 +387,73 @@ out=$("$INSTALLER" --verify "$BED/My Game 1.2 mac" 2>&1); rc=$?
 check "$([ $rc -eq 0 ] && echo 1 || echo 0)" "...and verifies clean"
 out=$("$INSTALLER" --uninstall "$BED/My Game 1.2 mac" 2>&1)
 check "$([ "$(count_gh "$BED/My Game 1.2 mac/js/plugins.js")" = 0 ] && echo 1 || echo 0)" "...and uninstalls"
+
+echo
+#-----------------------------------------------------------------------------
+# DLsite releases are named "[RJ01234567] Title", and a bracket is a glob
+# character to every tool that expands one. The shell installer's unquoted
+# loops would match it as a one-character class; PowerShell's -Path did, and
+# reported the folder as not a game.
+echo "-- a game folder with brackets in its name"
+build_bed
+BR="$BED/[RJ01234567] Some Game"
+mkgame "$BR" MZ 'var $plugins = [
+{"name":"AlphaPlugin","status":true,"description":"","parameters":{}}
+];
+'
+# A decoy the bracket class WOULD match if it were expanded as a glob.
+mkdir -p "$BED/R Some Game"
+out=$("$INSTALLER" "$BR" 2>&1); rc=$?
+check "$([ $rc -eq 0 ] && echo 1 || echo 0)" "a path with brackets installs" "$out"
+check "$([ "$(count_gh "$BR/js/plugins.js")" = "$N_MODULES" ] && echo 1 || echo 0)" "...with all $N_MODULES modules"
+out=$("$INSTALLER" --verify "$BR" 2>&1); rc=$?
+check "$([ $rc -eq 0 ] && echo 1 || echo 0)" "...and verifies clean" "$out"
+"$INSTALLER" --uninstall "$BR" >/dev/null 2>&1
+check "$([ "$(count_gh "$BR/js/plugins.js")" = 0 ] && [ ! -f "$BR/js/plugins.js.gigahack-backup" ] && echo 1 || echo 0)" "...and uninstalls"
+
+echo
+#-----------------------------------------------------------------------------
+# The restore is the step that can fail — a backup or a plugins.js left owned
+# by root by a sudo install. It used to delete the modules first and then the
+# backup whatever the restore did, leaving a plugins.js that listed files that
+# no longer existed (a red screen on launch) and no copy of the original.
+echo "-- uninstall when the restore cannot be made"
+build_bed
+"$INSTALLER" "$BED/pretty-mz" >/dev/null 2>&1
+if [ "$(id -u)" != 0 ]; then
+	chmod 000 "$BED/pretty-mz/js/plugins.js.gigahack-backup"
+	out=$("$INSTALLER" --uninstall "$BED/pretty-mz" 2>&1); rc=$?
+	chmod 644 "$BED/pretty-mz/js/plugins.js.gigahack-backup"
+	check "$([ $rc -ne 0 ] && echo 1 || echo 0)" "uninstall fails when the backup cannot be copied back" "$out"
+	check "$([ -f "$BED/pretty-mz/js/plugins.js.gigahack-backup" ] && echo 1 || echo 0)" "...and keeps the backup"
+	n=$(ls "$BED/pretty-mz/js/plugins"/GigaHack_*.js 2>/dev/null | wc -l | tr -d ' ')
+	check "$([ "$n" = "$N_MODULES" ] && [ "$(count_gh "$BED/pretty-mz/js/plugins.js")" = "$N_MODULES" ] && echo 1 || echo 0)" \
+	      "...and removes no module file, so plugins.js still names files that exist" "modules=$n"
+	check "$(echo "$out" | grep -qi 'nothing was removed' && echo 1 || echo 0)" "...and says nothing was removed"
+	"$INSTALLER" --uninstall "$BED/pretty-mz" >/dev/null 2>&1
+	check "$([ "$(count_gh "$BED/pretty-mz/js/plugins.js")" = 0 ] && echo 1 || echo 0)" "...and a retry once it is readable again succeeds"
+else
+	printf '  SKIP  restore-failure handling (running as root, which can read anything)\n'
+fi
+
+echo
+#-----------------------------------------------------------------------------
+# A game update replaces plugins.js wholesale. The backup taken at the first
+# install is then the plugin list from BEFORE the update, and an uninstall that
+# restored it would drop what the update added.
+echo "-- a game update between installs"
+build_bed
+"$INSTALLER" "$BED/pretty-mz" >/dev/null 2>&1
+printf 'var $plugins = [\n{"name":"AlphaPlugin","status":true,"description":"","parameters":{}},\n{"name":"NewInUpdate","status":true,"description":"","parameters":{}}\n];\n' > "$BED/pretty-mz/js/plugins.js"
+cp "$BED/pretty-mz/js/plugins.js" "$BED/updated.js"
+out=$("$INSTALLER" "$BED/pretty-mz" 2>&1)
+check "$(echo "$out" | grep -qi 'backup refreshed' && echo 1 || echo 0)" "reinstalling after an update refreshes the backup, and says so" "$out"
+"$INSTALLER" --uninstall "$BED/pretty-mz" >/dev/null 2>&1
+if cmp -s "$BED/updated.js" "$BED/pretty-mz/js/plugins.js"; then
+	pass "...so uninstall puts back the updated plugins.js, not the one from before the update"
+else
+	fail "...uninstall put back a stale plugins.js" "$(diff "$BED/updated.js" "$BED/pretty-mz/js/plugins.js" | head -5)"
+fi
 
 echo
 #-----------------------------------------------------------------------------
@@ -429,6 +519,18 @@ else
 	check "$([ "$(count_gh "$BED/pretty-mz/js/plugins.js")" = 0 ] && echo 1 || echo 0)" "ps: uninstall removes every entry"
 	n=$(ls "$BED/pretty-mz/js/plugins"/GigaHack_*.js 2>/dev/null | wc -l | tr -d ' ')
 	check "$([ "$n" = 0 ] && echo 1 || echo 0)" "ps: uninstall removes every module file"
+
+	# -Path treats [ ] as a wildcard; a DLsite-style name must still be found.
+	PSBR="$BED/[RJ01234567] Some Game"
+	mkgame "$PSBR" MZ 'var $plugins = [
+{"name":"AlphaPlugin","status":true,"description":"","parameters":{}}
+];
+'
+	out="$("$PS" -NoProfile -File "$PSBED/gigahack-install.ps1" -Path "$PSBR" 2>&1)"; rc=$?
+	check "$([ $rc -eq 0 ] && [ "$(count_gh "$PSBR/js/plugins.js")" = "$N_MODULES" ] && echo 1 || echo 0)" \
+	      "ps: a path with brackets installs" "$out"
+	"$PS" -NoProfile -File "$PSBED/gigahack-install.ps1" -Path "$PSBR" -Uninstall >/dev/null 2>&1
+	check "$([ "$(count_gh "$PSBR/js/plugins.js")" = 0 ] && echo 1 || echo 0)" "ps: ...and uninstalls"
 
 	# The defect that reached a user: an installer copied INTO a game folder
 	# adopted the GAME's own js/plugins as its payload and began backing up

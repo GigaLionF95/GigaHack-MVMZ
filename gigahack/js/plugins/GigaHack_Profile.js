@@ -82,9 +82,26 @@
        it. Each is derived from data the engine has already loaded.
        ===================================================================== */
 
+    /* Every database array a resolved profile is built from, and not just the
+       first two. The engine requests all of them at once and they arrive in
+       whatever order the disk answers, so "System and Items are here" said
+       nothing about Skills or States. A profile resolved in that window — the
+       shell's title-bar clock asks every 700ms from the moment the overlay
+       mounts — was CACHED with a zero count for every kind still in flight,
+       and so a Forge id base of 1001 for it. Forge records the base it is
+       given, and on a database with more than a thousand of that kind its
+       first forged row lands on top of one of the game's own. */
+    var DB_GLOBALS = ['$dataSystem', '$dataItems', '$dataWeapons', '$dataArmors', '$dataSkills',
+        '$dataStates', '$dataActors', '$dataClasses', '$dataEnemies', '$dataTroops',
+        '$dataCommonEvents', '$dataMapInfos'];
+
+    function loaded(name) {
+        return $.safe(function () { return !!window[name]; }, 'probe ' + name, false);
+    }
+
     function dataReady() {
-        return typeof $dataSystem !== 'undefined' && !!$dataSystem &&
-               typeof $dataItems !== 'undefined' && !!$dataItems;
+        for (var i = 0; i < DB_GLOBALS.length; i++) if (!loaded(DB_GLOBALS[i])) return false;
+        return true;
     }
 
     function counts() {
@@ -119,7 +136,11 @@
     var BASE_MARGIN = 200;      // room for the game to grow before we collide
     var BASE_ROUND  = 1000;     // round bases to a readable number
 
-    function computeBase(arrLen) {
+    /* Null for a kind whose data has not arrived: a base computed from a count
+       of zero is a guess presented as a measurement, and the caller is better
+       served by "not yet" than by 1001. */
+    function computeBase(arrLen, present) {
+        if (present === false) return null;
         var need = (arrLen || 0) + BASE_MARGIN;
         var base = Math.ceil(need / BASE_ROUND) * BASE_ROUND;
         return Math.max(BASE_ROUND, base) + 1;   // 1001, 2001, 3001, …
@@ -128,16 +149,16 @@
     function defaultForgeBases() {
         var c = counts();
         return {
-            item:   computeBase(c.items),
-            weapon: computeBase(c.weapons),
-            armor:  computeBase(c.armors),
-            skill:  computeBase(c.skills),
-            state:  computeBase(c.states),
-            actor:  computeBase(c.actors),
-            klass:  computeBase(c.classes),
-            enemy:  computeBase(c.enemies),
-            troop:  computeBase(c.troops),
-            common: computeBase(c.common)
+            item:   computeBase(c.items, loaded('$dataItems')),
+            weapon: computeBase(c.weapons, loaded('$dataWeapons')),
+            armor:  computeBase(c.armors, loaded('$dataArmors')),
+            skill:  computeBase(c.skills, loaded('$dataSkills')),
+            state:  computeBase(c.states, loaded('$dataStates')),
+            actor:  computeBase(c.actors, loaded('$dataActors')),
+            klass:  computeBase(c.classes, loaded('$dataClasses')),
+            enemy:  computeBase(c.enemies, loaded('$dataEnemies')),
+            troop:  computeBase(c.troops, loaded('$dataTroops')),
+            common: computeBase(c.common, loaded('$dataCommonEvents'))
         };
     }
 

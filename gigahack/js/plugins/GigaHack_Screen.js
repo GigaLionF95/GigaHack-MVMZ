@@ -860,16 +860,19 @@
         if (['tone', 'weather', 'zoom'].indexOf(which) < 0) return null;
         if (!$.allowWrite('Holding the ' + which)) return S.holds()[which];
         var s = alive() ? S.state() : null;
+        // An explicit 0 is a value, not an absence: `||` would swap it for the
+        // live one and hold somewhere the caller never asked for.
+        function given(k, live) { return (value && value[k] != null) ? value[k] : live; }
         if (on) {
             if (which === 'tone') set('holdTone', (value && tone4(value)) || (s ? s.tone.slice() : [0, 0, 0, 0]));
             if (which === 'weather') {
-                set('holdWeather.type', (value && value.type) || (s ? s.weatherType : 'none'));
-                set('holdWeather.power', (value && value.power) || (s ? s.weatherPower : 0));
+                set('holdWeather.type', given('type', s ? s.weatherType : 'none'));
+                set('holdWeather.power', given('power', s ? s.weatherPower : 0));
             }
             if (which === 'zoom') {
-                set('holdZoom.x', (value && value.x) || (s ? s.zoomX : 0));
-                set('holdZoom.y', (value && value.y) || (s ? s.zoomY : 0));
-                set('holdZoom.scale', (value && value.scale) || (s ? s.zoomScale : 1));
+                set('holdZoom.x', given('x', s ? s.zoomX : 0));
+                set('holdZoom.y', given('y', s ? s.zoomY : 0));
+                set('holdZoom.scale', given('scale', s ? s.zoomScale : 1));
             }
         }
         set('hold.' + which, !!on);
@@ -916,6 +919,9 @@
         var stop = guard('Changing the screen tint'); if (stop) return stop;
         var want = tone4(tone), d = Math.max(0, Math.round(nz(duration)));
         var before = S.state();
+        // A hold follows what the user applies here; otherwise the next frame
+        // puts the old held value straight back over it.
+        if (holdOn('tone')) set('holdTone', want.slice());
         var r = verify('screen.tone', function () {
             mine(function () {
                 var g = $gameScreen;
@@ -1066,6 +1072,7 @@
         var sc = clamp(nz(scaleValue, 1), 0.01, 100);
         var d = Math.max(0, Math.round(nz(duration)));
         var before = S.state();
+        if (holdOn('zoom')) { set('holdZoom.x', zx); set('holdZoom.y', zy); set('holdZoom.scale', sc); }
         var r = verify('screen.zoom', function () {
             mine(function () {
                 var g = $gameScreen;
@@ -1097,6 +1104,7 @@
         var p = clamp(nz(power), 0, 9);
         var d = Math.max(0, Math.round(nz(duration)));
         var before = S.state();
+        if (holdOn('weather')) { set('holdWeather.type', t); set('holdWeather.power', t === 'none' ? 0 : p); }
         var r = verify('screen.weather', function () {
             mine(function () {
                 var g = $gameScreen;
@@ -1651,7 +1659,7 @@
     $.install('Game_Screen.startTint (screen log)', GS, 'startTint',
         function (original) {
             return function (tone, duration) {
-                var held = holdOn('tone') ? heldTone() : null;
+                var held = (!selfWrite && holdOn('tone')) ? heldTone() : null;
                 $.safe(function () { record('tint', [tone4(tone), nz(duration)], !!held); }, 'screen log tint');
                 if (held) return original.call(this, held.slice(), 0);
                 return original.apply(this, arguments);
@@ -1664,7 +1672,7 @@
     $.install('Game_Screen.changeWeather (screen log)', GS, 'changeWeather',
         function (original) {
             return function (type, power, duration) {
-                var held = holdOn('weather') ? heldWeather() : null;
+                var held = (!selfWrite && holdOn('weather')) ? heldWeather() : null;
                 // The type string is recorded VERBATIM, which is how the panel
                 // learns that this game's weather plugin uses names outside the
                 // engine's four without having to know the plugin.
@@ -1727,7 +1735,7 @@
     $.install('Game_Screen.startZoom (screen log)', GS, 'startZoom',
         function (original) {
             return function (x, y, scaleValue, duration) {
-                var held = holdOn('zoom') ? heldZoom() : null;
+                var held = (!selfWrite && holdOn('zoom')) ? heldZoom() : null;
                 $.safe(function () {
                     record('zoom', [nz(x), nz(y), nz(scaleValue, 1), nz(duration)], !!held);
                 }, 'screen log zoom');
@@ -1754,7 +1762,7 @@
                 // startZoom with a duration of zero sets only the target.
                 // Hooking startZoom alone would log the zooms that do nothing
                 // and miss the ones that work.
-                var held = holdOn('zoom') ? heldZoom() : null;
+                var held = (!selfWrite && holdOn('zoom')) ? heldZoom() : null;
                 $.safe(function () {
                     record('zoom', [nz(x), nz(y), nz(scaleValue, 1), 'set'], !!held);
                 }, 'screen log setZoom');

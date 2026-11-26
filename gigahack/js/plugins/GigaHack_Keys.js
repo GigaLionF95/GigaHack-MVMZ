@@ -703,8 +703,12 @@
         var a = restoreOne(kb, 'keyMapper', label, quiet);
         var b = (pad && padOk()) ? restoreOne(pad, 'gamepadMapper', label, quiet)
             : { ok: true, changed: false, message: '' };
-        var changed = a.changed === true || b.changed === true;
-        if (!a.ok) return { ok: false, changed: false, message: a.message };
+        /* verified:false means the keyboard write WAS made and read back
+           wrong, so the live map may be half-written: that is a change too. */
+        var changed = a.changed === true || a.verified === false || b.changed === true;
+        /* The undo is pushed BEFORE the keyboard's failure is returned: the
+           pad write was already made silently, and returning first left it in
+           place with nothing on the stack to take it back. */
         if (changed) {
             $.undo.push(label, function () {
                 var backKb = liveMap('keyMapper');
@@ -714,8 +718,9 @@
                 clearInput();
                 $.emit('keys:change', { which: 'both', undo: true });
             });
-            $.log('ok', label);
+            if (a.ok) $.log('ok', label);
         }
+        if (!a.ok) return { ok: false, changed: changed, message: a.message };
         return { ok: b.ok, changed: changed, message: b.ok ? '' : b.message, pad: b.ok };
     }
 

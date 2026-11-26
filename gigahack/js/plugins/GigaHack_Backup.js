@@ -209,7 +209,10 @@
      *   { created:true, entry }        a new snapshot was written
      *   { created:false, skipped:'unchanged' | 'disabled' | 'unavailable' | 'empty' }
      */
-    B.make = function (reason, force) {
+    /* `opts.spare` names a backup directory the prune that follows this one
+       must not take. Restore needs it: see B.restore. */
+    B.make = function (reason, force, opts) {
+        opts = opts || {};
         if (!B.available()) return { created: false, skipped: 'unavailable', why: B.reason() };
         if (!saveExt()) {
             return {
@@ -246,7 +249,7 @@
             var base = pathMod().join(root, stamp + '_' + (slug || 'manual'));
             var dir = base, n = 1;
             while (fs().existsSync(dir) && n < 100) { n++; dir = base + '-' + n; }
-            fs().mkdirSync(dir, { recursive: true });
+            $.mkdirp(dir, fs(), pathMod());
 
             var srcDir = B.saveDir(), copied = [];
             files.forEach(function (f) {
@@ -267,11 +270,12 @@
                 engine: ($.caps && $.caps.engine) || 'unknown',
                 ext: saveExt()
             };
-            fs().writeFileSync(pathMod().join(dir, 'gigahack-backup.json'), JSON.stringify(meta, null, 2), 'utf8');
+            // Atomic: a half-written description is what readEntry() has to cope with.
+            $.writeAtomic(pathMod().join(dir, 'gigahack-backup.json'), JSON.stringify(meta, null, 2), fs());
 
             lastFingerprint = fp;
             $.log('ok', 'save backup (' + meta.reason + '): ' + copied.length + ' file(s) → ' + dir);
-            B.prune();
+            B.prune(null, opts.spare);
             return { created: true, entry: B.describe(dir, meta) };
         }, 'backup', { created: false, skipped: 'error' });
     };
@@ -286,6 +290,34 @@
         };
     };
 
+    /* One backup's description, read on its own.
+
+       Its own guard, and not the listing's: the parse used to sit inside the
+       one $.safe that wrapped the whole walk, so a single truncated metadata
+       file — a crash mid-write, a full disk, a hand edit — threw out of the
+       map and the listing came back EMPTY. Every backup vanished from the
+       Restore table at once, prune stopped pruning, and the "is the newest one
+       already this" test in make() could never match. A backup whose
+       description cannot be read is still a folder full of save files; it is
+       listed with what is actually in it, and says why it is vague. */
+    function readEntry(dir) {
+        var metaFile = pathMod().join(dir, 'gigahack-backup.json');
+        var meta = null, why = '';
+        try {
+            if (fs().existsSync(metaFile)) meta = JSON.parse(fs().readFileSync(metaFile, 'utf8'));
+        } catch (e) {
+            why = 'its gigahack-backup.json could not be read (' + (e && e.message ? e.message : e) + ')';
+        }
+        if (!meta || typeof meta !== 'object') {
+            var files = $.safe(function () {
+                return fs().readdirSync(dir).filter(isSaveName);
+            }, 'list ' + dir, []) || [];
+            meta = { at: '', reason: why ? 'unreadable' : 'unknown', files: files };
+            if (why) $.log('warn', 'backup ' + dir + ': ' + why + ' — listed from the files it holds.');
+        }
+        return B.describe(dir, meta);
+    }
+
     /** Newest first. */
     B.list = function () {
         return $.safe(function () {
@@ -293,20 +325,18 @@
             if (!root || !fs().existsSync(root)) return [];
             return fs().readdirSync(root).map(function (n) {
                 var dir = pathMod().join(root, n);
-                if (!fs().statSync(dir).isDirectory()) return null;
-                var metaFile = pathMod().join(dir, 'gigahack-backup.json');
-                var meta = fs().existsSync(metaFile)
-                    ? JSON.parse(fs().readFileSync(metaFile, 'utf8'))
-                    : { at: '', reason: 'unknown', files: [] };
-                return B.describe(dir, meta);
+                var isDir = $.safe(function () { return fs().statSync(dir).isDirectory(); }, 'stat ' + dir, false);
+                return isDir ? readEntry(dir) : null;
             }).filter(Boolean).sort(function (a, b) { return a.name < b.name ? 1 : -1; });
         }, 'list backups', []) || [];
     };
 
-    B.prune = function (keep) {
+    /* `spare` is a directory that is never pruned, whatever its age. */
+    B.prune = function (keep, spare) {
         keep = keep || $.store.cfgGet('behaviour.backupKeep', 20);
         return $.safe(function () {
             var all = B.list();
+            if (spare) all = all.filter(function (e) { return e.dir !== spare; });
             if (all.length <= keep) return 0;
             var doomed = all.slice(keep);
             doomed.forEach(function (e) { rmDirRecursive(e.dir); });
@@ -326,12 +356,20 @@
         }
         if (!$.allowWrite('Restoring a save backup')) return false;
         return $.safe(function () {
-            B.make('pre-restore', true);
+            /* The safety backup is taken with THIS entry spared from the prune
+               it triggers. With the ring full, the prune that follows a new
+               backup removes the oldest one — and restoring the oldest one is
+               the ordinary way to go back furthest. It was deleted out from
+               under its own restore: every file then failed the existence test
+               below, nothing was copied, the stale-sibling sweep still ran, and
+               the panel reported "RESTORED 0 file(s)" over a backup that no
+               longer existed anywhere. */
+            B.make('pre-restore', true, { spare: entry.dir });
             // Resolved again here rather than taken from the snapshot: the
             // folder may have moved since it was written, and the live one is
             // the one the game will read.
             var dstDir = B.saveDir();
-            fs().mkdirSync(dstDir, { recursive: true });
+            $.mkdirp(dstDir, fs(), pathMod());
             var names = entry.files || [];
             var n = 0;
             names.forEach(function (name) {

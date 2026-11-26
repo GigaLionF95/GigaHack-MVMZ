@@ -590,6 +590,9 @@
        ===================================================================== */
     var errors = [];
     var MAX_ERRORS = 60;
+    /* Total ever recorded. The ring's LENGTH stops moving at MAX_ERRORS, so a
+       panel that repaints on a length change goes blind at the 61st error. */
+    var errorsSeen = 0;
 
     /* =====================================================================
        ACTION RECORDER
@@ -674,6 +677,7 @@
     };
 
     C.errors = function () { return errors.slice(); };
+    C.errorsSeen = function () { return errorsSeen; };
     C.clearErrors = function () { errors.length = 0; };
 
     function record(kind, message, where, stack) {
@@ -681,6 +685,7 @@
             kind: kind, message: String(message || 'unknown'),
             where: where || '', stack: stack || '', t: Date.now()
         });
+        errorsSeen++;
         while (errors.length > MAX_ERRORS) errors.shift();
     }
 
@@ -1145,6 +1150,7 @@
             return errs.length;
         }
         var errCount = paintErrors();
+        var errSeen = errorsSeen;
         var errGroup = W.group('Uncaught errors', [
             errBox,
             W.button({
@@ -1204,11 +1210,12 @@
         paintCounts();
 
         U.live(function () {
-            return $.logDropped() + ':' + logCount() + ':' + C.errors().length;
+            return $.logDropped() + ':' + logCount() + ':' + errorsSeen + ':' + errors.length;
         }, function () {
             repaint();
             paintCounts();
-            if (C.errors().length === errCount) return;
+            if (errorsSeen === errSeen && errors.length === errCount) return;
+            errSeen = errorsSeen;
             errCount = paintErrors();
             errGroup.mm.tag(errCount ? errCount + ' caught' : 'clean');
         }, {

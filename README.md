@@ -289,14 +289,14 @@ cd gigahack-test
 npm install                # playwright, once
 
 npm run lint               # build lint, 36 modules + 1 shipped profile
-npm test                   # stock MZ 1.9.0        — 1270 checks
-npm run test:mv            # stock MV 1.6.1        — 1284 checks
-npm run test:mv-modded     # MV + modelled plugins — 1313 checks
+npm test                   # stock MZ 1.9.0        — 1341 checks
+npm run test:mv            # stock MV 1.6.1        — 1355 checks
+npm run test:mv-modded     # MV + modelled plugins — 1384 checks
 npm run test:all           # lint plus all three
 ```
 
 ```sh
-./test-installers.sh       # 121 installer checks
+./test-installers.sh       # 133 installer checks
 ```
 
 Exit code is the contract: 0 clean, 1 any failure. The three engine runs share

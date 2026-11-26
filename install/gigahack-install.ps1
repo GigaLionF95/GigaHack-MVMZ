@@ -54,10 +54,14 @@ $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 # manifest.json sitting next to js\plugins\GigaHack_Core.js is unambiguous.
 # Both are required, so a half-copied folder is caught here rather than
 # halfway through an install.
+#
+# Every path below goes through -LiteralPath. Plain -Path treats [ and ] as a
+# wildcard, so a game in "[RJ01234567] Title" - the normal name for a DLsite
+# release - tested as absent and was reported as not a game folder.
 function Test-Payload ($dir) {
     if (-not $dir) { return $false }
-    return (Test-Path (Join-Path $dir 'manifest.json')) -and
-           (Test-Path (Join-Path $dir 'js\plugins\GigaHack_Core.js'))
+    return (Test-Path -LiteralPath (Join-Path $dir 'manifest.json')) -and
+           (Test-Path -LiteralPath (Join-Path $dir 'js\plugins\GigaHack_Core.js'))
 }
 
 $Payload = $null; $Manifest = $null
@@ -68,7 +72,7 @@ foreach ($cand in @(
     (Join-Path $Here '..\gigahack')         # a source checkout, run from install\
 )) {
     if (Test-Payload $cand) {
-        $root     = (Resolve-Path $cand).Path
+        $root     = (Resolve-Path -LiteralPath $cand).Path
         $Payload  = Join-Path $root 'js\plugins'
         $Manifest = Join-Path $root 'manifest.json'
         break
@@ -86,9 +90,9 @@ if (-not $Payload) {
     # The specific mistake, named. Anyone who lands here has almost certainly
     # copied the installer INTO their game, which is the one place it must not
     # be — the installer has to keep its own files to copy FROM.
-    $looksLikeGame = (Test-Path (Join-Path $Here 'index.html')) -or
-                     (Test-Path (Join-Path $Here 'js\plugins.js')) -or
-                     (Test-Path (Join-Path $Here 'www\index.html'))
+    $looksLikeGame = (Test-Path -LiteralPath (Join-Path $Here 'index.html')) -or
+                     (Test-Path -LiteralPath (Join-Path $Here 'js\plugins.js')) -or
+                     (Test-Path -LiteralPath (Join-Path $Here 'www\index.html'))
     if ($looksLikeGame) {
         Write-Host '  This folder looks like the GAME, not the GigaHack folder.'
         Write-Host '  The installer does not go inside the game. Leave it in the folder'
@@ -126,11 +130,11 @@ function Bad  ($m) { Write-Host "  ! $m" -ForegroundColor Yellow }
 # Boot before Core and nothing would work.
 #-----------------------------------------------------------------------------
 function Get-Modules {
-    if (-not (Test-Path $Manifest)) {
+    if (-not (Test-Path -LiteralPath $Manifest)) {
         Write-Error "$Manifest is missing and load order cannot be guessed."
         exit 1
     }
-    $json = Get-Content -Raw -Encoding UTF8 $Manifest | ConvertFrom-Json
+    $json = Get-Content -LiteralPath $Manifest -Raw -Encoding UTF8 | ConvertFrom-Json
     return @($json.modules | ForEach-Object { $_.name })
 }
 
@@ -138,14 +142,14 @@ function Get-Modules {
 # Discovery
 #-----------------------------------------------------------------------------
 function Test-GameRoot ($dir) {
-    return (Test-Path (Join-Path $dir 'index.html')) -and
-           (Test-Path (Join-Path $dir 'js\plugins.js')) -and
-           (Test-Path (Join-Path $dir 'js\plugins') -PathType Container)
+    return (Test-Path -LiteralPath (Join-Path $dir 'index.html')) -and
+           (Test-Path -LiteralPath (Join-Path $dir 'js\plugins.js')) -and
+           (Test-Path -LiteralPath (Join-Path $dir 'js\plugins') -PathType Container)
 }
 
 function Get-Engine ($dir) {
-    if (Test-Path (Join-Path $dir 'js\rmmz_core.js')) { return 'MZ' }
-    if (Test-Path (Join-Path $dir 'js\rpg_core.js'))  { return 'MV' }
+    if (Test-Path -LiteralPath (Join-Path $dir 'js\rmmz_core.js')) { return 'MZ' }
+    if (Test-Path -LiteralPath (Join-Path $dir 'js\rpg_core.js'))  { return 'MV' }
     return 'unknown'
 }
 
@@ -158,8 +162,8 @@ function Find-Games ($base) {
     }
     $candidates += (Join-Path $base 'www')
     foreach ($c in $candidates) {
-        if ((Test-Path $c -PathType Container) -and (Test-GameRoot $c)) {
-            $full = (Resolve-Path $c).Path
+        if ((Test-Path -LiteralPath $c -PathType Container) -and (Test-GameRoot $c)) {
+            $full = (Resolve-Path -LiteralPath $c).Path
             if (-not $out.Contains($full)) { $out.Add($full) }
         }
     }
@@ -260,7 +264,7 @@ function Invoke-Verify ($root, $quiet) {
     foreach ($m in $mods) {
         $n++
         $f = Join-Path $root "js\plugins\$m.js"
-        if (-not (Test-Path $f)) { $missing += $m; continue }
+        if (-not (Test-Path -LiteralPath $f)) { $missing += $m; continue }
         try { [void][System.IO.File]::ReadAllBytes($f) }
         catch {
             # A file the game cannot READ is invisible, not broken: an
@@ -271,7 +275,7 @@ function Invoke-Verify ($root, $quiet) {
         }
     }
     $pj = Join-Path $root 'js\plugins.js'
-    $text = Get-Content -Raw -Encoding UTF8 $pj
+    $text = [string](Get-Content -LiteralPath $pj -Raw -Encoding UTF8)
     $listed = $text.Contains($AnyBegin)
     $last = $true
     if ($listed) {
@@ -304,7 +308,7 @@ function Invoke-Install ($root, $dry) {
     $pluginsDir = Join-Path $root 'js\plugins'
 
     try { $probe = Join-Path $pluginsDir '.gigahack-write-probe'
-          [System.IO.File]::WriteAllText($probe, 'ok'); Remove-Item $probe -Force }
+          [System.IO.File]::WriteAllText($probe, 'ok'); Remove-Item -LiteralPath $probe -Force }
     catch {
         Bad 'js\plugins\ is not writable.'
         Bad 'A Steam install may need the game folder made writable first, or copy the game elsewhere.'
@@ -314,21 +318,41 @@ function Invoke-Install ($root, $dry) {
     # Back up the original ONCE, and never overwrite that backup - the point of
     # it is to hold the file as the game shipped it, and a second run would
     # otherwise capture our own edit as the "original".
+    #
+    # The exception is a plugins.js with no GigaHack block in it: that is the
+    # game's own file as it stands NOW - a game update replaced it - so it
+    # supersedes the old backup. Keeping the old one would make a later
+    # uninstall put back the plugin list from before the update.
     $backup = $pj + $BackupSuffix
-    if (-not (Test-Path $backup)) {
+    $current = [string](Get-Content -LiteralPath $pj -Raw -Encoding UTF8)
+    if (-not (Test-Path -LiteralPath $backup)) {
         if ($dry) { Step 'would back up js\plugins.js' }
-        else { Copy-Item $pj $backup -Force; Step "backed up js\plugins.js -> plugins.js$BackupSuffix" }
+        else {
+            try { Copy-Item -LiteralPath $pj -Destination $backup -Force }
+            catch { Bad "could not back up js\plugins.js - nothing was changed: $($_.Exception.Message)"; $script:Failed++; return }
+            Step "backed up js\plugins.js -> plugins.js$BackupSuffix"
+        }
+    } elseif (-not $current.Contains($AnyBegin)) {
+        if ($dry) { Step "would refresh the backup (js\plugins.js has no GigaHack entries, so it is the game's current file)" }
+        else {
+            try { Copy-Item -LiteralPath $pj -Destination $backup -Force }
+            catch { Bad "could not refresh plugins.js$BackupSuffix - nothing was changed: $($_.Exception.Message)"; $script:Failed++; return }
+            Step "backup refreshed - js\plugins.js had no GigaHack entries, so it is the game's current file"
+        }
     } else { Step 'backup already exists (kept from the first install)' }
 
     $mods = Get-Modules
     foreach ($m in $mods) {
         $src = Join-Path $Payload "$m.js"
-        if (-not (Test-Path $src)) { Bad "payload is incomplete: $m.js is missing from $Payload"; $script:Failed++; return }
-        if (-not $dry) { Copy-Item $src (Join-Path $pluginsDir "$m.js") -Force }
+        if (-not (Test-Path -LiteralPath $src)) { Bad "payload is incomplete: $m.js is missing from $Payload"; $script:Failed++; return }
+        if (-not $dry) {
+            try { Copy-Item -LiteralPath $src -Destination (Join-Path $pluginsDir "$m.js") -Force }
+            catch { Bad "could not copy $m.js into js\plugins\ - js\plugins.js was left untouched: $($_.Exception.Message)"; $script:Failed++; return }
+        }
     }
     Step (($(if ($dry) {'would copy'} else {'copied'})) + " $($mods.Count) modules into js\plugins\")
 
-    $text = Get-Content -Raw -Encoding UTF8 $pj
+    $text = [string](Get-Content -LiteralPath $pj -Raw -Encoding UTF8)
     try { $new = Add-Block (Remove-Block $text) (New-Entries) }
     catch {
         switch -Wildcard ($_.Exception.Message) {
@@ -362,23 +386,38 @@ function Invoke-Uninstall ($root) {
     Say $root
     $pj = Join-Path $root 'js\plugins.js'
     $mods = Get-Modules
-    $n = 0
+
+    # plugins.js FIRST, and the module files only once it no longer lists
+    # them. The other order left a plugins.js naming deleted files - a red
+    # screen on launch - whenever the restore failed.
+    $backup = $pj + $BackupSuffix
+    try {
+        if (Test-Path -LiteralPath $backup) {
+            Copy-Item -LiteralPath $backup -Destination $pj -Force
+            Remove-Item -LiteralPath $backup -Force
+            Step 'js\plugins.js restored from the backup, byte for byte'
+        } else {
+            $text = [string](Get-Content -LiteralPath $pj -Raw -Encoding UTF8)
+            if ($text.Contains($AnyBegin)) {
+                [System.IO.File]::WriteAllText($pj, (Remove-Block $text), (New-Object System.Text.UTF8Encoding $false))
+                Step 'GigaHack entries removed from js\plugins.js (no backup was present)'
+            } else { Step 'js\plugins.js had no GigaHack entries' }
+        }
+    } catch {
+        Bad "could not restore js\plugins.js - no module file was removed: $($_.Exception.Message)"
+        $script:Failed++; return
+    }
+
+    $n = 0; $stuck = @()
     foreach ($m in $mods) {
         $f = Join-Path $root "js\plugins\$m.js"
-        if (Test-Path $f) { Remove-Item $f -Force; $n++ }
+        if (Test-Path -LiteralPath $f) {
+            try { Remove-Item -LiteralPath $f -Force; $n++ } catch { $stuck += $m }
+        }
     }
     Step "removed $n module files"
-    $backup = $pj + $BackupSuffix
-    if (Test-Path $backup) {
-        Copy-Item $backup $pj -Force; Remove-Item $backup -Force
-        Step 'js\plugins.js restored from the backup, byte for byte'
-    } else {
-        $text = Get-Content -Raw -Encoding UTF8 $pj
-        if ($text.Contains($AnyBegin)) {
-            [System.IO.File]::WriteAllText($pj, (Remove-Block $text), (New-Object System.Text.UTF8Encoding $false))
-            Step 'GigaHack entries removed from js\plugins.js (no backup was present)'
-        } else { Step 'js\plugins.js had no GigaHack entries' }
-    }
+    # Harmless to the game now that plugins.js no longer lists them, but said.
+    if ($stuck.Count) { Bad ("could not remove: " + ($stuck -join ', ')) }
     $script:Ok++
 }
 
@@ -391,10 +430,10 @@ Say ''
 $roots = New-Object System.Collections.Generic.List[string]
 if ($Path) {
     foreach ($p in $Path) {
-        if (-not (Test-Path $p -PathType Container)) { Bad "$p does not exist."; $script:Skipped++; continue }
-        if (Test-GameRoot $p) { $roots.Add((Resolve-Path $p).Path) }
+        if (-not (Test-Path -LiteralPath $p -PathType Container)) { Bad "$p does not exist."; $script:Skipped++; continue }
+        if (Test-GameRoot $p) { $roots.Add((Resolve-Path -LiteralPath $p).Path) }
         else {
-            $found = Find-Games (Resolve-Path $p).Path
+            $found = Find-Games (Resolve-Path -LiteralPath $p).Path
             if ($found.Count) { $found | ForEach-Object { $roots.Add($_) } }
             else {
                 Bad "$p is not an RPG Maker MV/MZ game folder, and none was found inside it."

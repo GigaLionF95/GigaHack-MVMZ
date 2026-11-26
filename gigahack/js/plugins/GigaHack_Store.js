@@ -57,6 +57,43 @@
     function lsLegacyKey(name) { return 'gigahack:' + name; }
 
     /* ---------------------------------------------------------------- read */
+
+    /* A file that is THERE and does not parse is not the same answer as a file
+       that is not there, and it used to be given the same one. Every caller
+       then did the natural thing with "nothing" — started from defaults, or
+       from an empty list — and its next write put that over the unreadable
+       file: one bad byte in profiles.json and the next "save as a profile"
+       left a file holding that one profile; one truncated settings.json and
+       the first-run save at boot replaced it with defaults. The writes are not
+       atomic, so a crash at the wrong moment is all it takes to get there.
+
+       So the unreadable file is moved aside under a name that says what it
+       is, BEFORE anything can write over it, and the read answers the
+       fallback as before. Whatever was in it is still on disk to be recovered
+       by hand, and the log says where. */
+    function quarantine(name, why, move) {
+        var stamp = $.safe(function () { return $.stamp(); }, 'stamp', String(Date.now()));
+        var aside = name + '.corrupt-' + stamp;
+        var ok = $.safe(function () { return move(aside) !== false; }, 'set aside ' + name, false);
+        /* A warning when the copy is safe — nothing has been lost, and the
+           next write starts a fresh file — and an error only when it is not. */
+        $.log(ok ? 'warn' : 'err', name + ' could not be parsed (' + why + ') — ' +
+            (ok ? 'kept as ' + aside + ' so nothing writes over it; starting from defaults.'
+                : 'and could not be set aside either; persistence for it is disabled for this session ' +
+                  'so the unreadable copy is not overwritten.'));
+        if (!ok) failed[name] = true;
+        return ok;
+    }
+
+    function parseOrQuarantine(name, raw, move) {
+        try {
+            return { ok: true, value: JSON.parse(raw) };
+        } catch (e) {
+            quarantine(name, (e && e.message) || String(e), move);
+            return { ok: false };
+        }
+    }
+
     store.read = function (name, fallback) {
         return $.safe(function () {
             var p = $.paths;
@@ -64,7 +101,11 @@
                 var file = fsPath(name);
                 if (!file || !$.env.fs.existsSync(file)) return fallback;
                 var raw = $.env.fs.readFileSync(file, 'utf8');
-                return raw ? JSON.parse(raw) : fallback;
+                if (!raw) return fallback;
+                var got = parseOrQuarantine(name, raw, function (aside) {
+                    $.env.fs.renameSync(file, $.env.path.join($.env.path.dirname(file), aside));
+                });
+                return got.ok ? got.value : fallback;
             }
             if (p.mode === 'localStorage') {
                 var v = localStorage.getItem(lsKey(name));
@@ -78,7 +119,12 @@
                         v = old;
                     }
                 }
-                return v ? JSON.parse(v) : fallback;
+                if (!v) return fallback;
+                var parsed = parseOrQuarantine(name, v, function (aside) {
+                    localStorage.setItem(lsKey(aside), v);
+                    localStorage.removeItem(lsKey(name));
+                });
+                return parsed.ok ? parsed.value : fallback;
             }
             return Object.prototype.hasOwnProperty.call(memory, name) ? memory[name] : fallback;
         }, 'store.read(' + name + ')', fallback);
@@ -91,8 +137,9 @@
             var p = $.paths, json = JSON.stringify(obj, null, 2);
             if (p.mode === 'fs') {
                 var file = fsPath(name);
-                $.env.fs.mkdirSync($.env.path.dirname(file), { recursive: true });
-                $.env.fs.writeFileSync(file, json, 'utf8');
+                $.mkdirp($.env.path.dirname(file), $.env.fs, $.env.path);
+                // Through a temporary file and a rename: see $.writeAtomic.
+                $.writeAtomic(file, json, $.env.fs);
                 if (!quiet) $.log('ok', 'wrote ' + file);
                 return true;
             }
@@ -1372,7 +1419,14 @@
         return $.safe(function () {
             if (!$.env.fs.existsSync(file)) return null;
             var raw = $.env.fs.readFileSync(file, 'utf8');
-            var obj = raw ? JSON.parse(raw) : null;
+            /* Set aside rather than read as empty, for the reason store.read
+               gives: an empty answer here is followed by a write of this game's
+               sections alone, which would drop every other game's. */
+            var got = raw ? parseOrQuarantine('shared ' + COMMON_FILE, raw, function (aside) {
+                $.env.fs.renameSync(file, file + '.corrupt-' + aside.split('.corrupt-').pop());
+            }) : { ok: true, value: null };
+            if (!got.ok) return null;
+            var obj = got.value;
             if (!obj || typeof obj !== 'object') return null;
             if (!obj.sections || typeof obj.sections !== 'object') obj.sections = {};
             if (!obj.writers || typeof obj.writers !== 'object') obj.writers = {};
@@ -1384,8 +1438,8 @@
         var file = store.sharedFile();
         if (!file) return false;
         return $.safe(function () {
-            $.env.fs.mkdirSync($.env.path.dirname(file), { recursive: true });
-            $.env.fs.writeFileSync(file, JSON.stringify(obj, null, 2), 'utf8');
+            $.mkdirp($.env.path.dirname(file), $.env.fs, $.env.path);
+            $.writeAtomic(file, JSON.stringify(obj, null, 2), $.env.fs);
             $.log('ok', 'wrote ' + file);
             return true;
         }, 'write shared settings', false);
@@ -1750,7 +1804,7 @@
             return;
         }
         if (!isDirectory(src)) {
-            fs.mkdirSync(path.dirname(dst), { recursive: true });
+            $.mkdirp(path.dirname(dst), fs, path);
             fs.copyFileSync(src, dst);
             state.left--;
             state.pairs.push({ from: src, to: dst });
@@ -1762,7 +1816,7 @@
                 'still in ' + src + '.';
             return;
         }
-        fs.mkdirSync(dst, { recursive: true });
+        $.mkdirp(dst, fs, path);
         names = fs.readdirSync(src);
         state.depth++;
         for (i = 0; i < names.length; i++) {

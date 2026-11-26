@@ -692,7 +692,11 @@
         if (typeof AudioManager[fn] !== 'function') {
             return { ok: false, why: 'AudioManager.' + fn + ' was not found on this build.' };
         }
-        saveIfFirst();
+        /* Only an audition that REPLACES the music saves it. An effect or a
+           jingle leaves the game's track playing on, so a saved position
+           would be stale by the time the panel is left, and putting it back
+           rewound the game's own music by however long the panel was open. */
+        if (kind === 'bgm' || kind === 'bgs') saveIfFirst();
         var obj = audioObject(name);
         /* Through $.compat.verify like every other mutating control: a plugin
            that intercepts playback to enforce its own music is exactly the
@@ -1180,6 +1184,9 @@
     AS.evict = evict;
 
     var POLL_FRAMES = 300;
+    /* The folders whose engine loader passes smooth = false; every other
+       folder in IMG_DIRS is loaded smooth by the engine itself. */
+    var NEAREST_DIRS = ['img/characters', 'img/sv_actors', 'img/tilesets', 'img/system'];
 
     /**
      * Load a sheet and hand back its pixels as a data URL.
@@ -1195,8 +1202,11 @@
             if (typeof ImageManager === 'undefined' || !ImageManager.loadBitmap) return null;
             /* The trailing slash is what the engine's own loaders pass on both
                builds; the two extra arguments are ignored where the signature
-               takes two. */
-            return ImageManager.loadBitmap(folder + '/', name, 0, true);
+               takes two. Where they are not, the smooth flag is written onto
+               the CACHED bitmap the game itself draws from, so it has to be
+               the folder's own: a preview that passed `true` for a character
+               sheet left the walking sprites blurred until the cache cleared. */
+            return ImageManager.loadBitmap(folder + '/', name, 0, NEAREST_DIRS.indexOf(folder) < 0);
         }, 'media load sheet', null);
         if (!bmp) {
             cb({
@@ -1435,7 +1445,7 @@
         if (dir && bytes) {
             var name = C.nextName();
             var written = $.safe(function () {
-                $.env.fs.mkdirSync(dir, { recursive: true });
+                $.mkdirp(dir, $.env.fs, $.env.path);
                 var p = $.env.path.join(dir, name);
                 $.env.fs.writeFileSync(p, bytes);
                 return p;
@@ -2032,7 +2042,10 @@
                 }),
                 W.row('Speed', W.slider({
                     min: 1, max: 6, step: 1, value: speed, width: '104px', _ungated: true,
-                    onChange: function (v) { put('assets.speed', v); U.rerender(); }
+                    // Rebuilt on release, never per move: a rebuild mid-drag
+                    // removes the track holding the pointer capture.
+                    onChange: function (v) { put('assets.speed', v); },
+                    onCommit: function (v) { put('assets.speed', v); U.rerender(); }
                 })),
                 /* The formula, on its own line rather than beside the label:
                    it is the whole reason the number is what it is, and a
@@ -2044,7 +2057,8 @@
                 W.row('Zoom', W.slider({
                     min: 1, max: 4, step: 1, value: sNum('assets', 'zoom', 2, 1, 4), width: '104px',
                     _ungated: true,
-                    onChange: function (v) { put('assets.zoom', v); U.rerender(); }
+                    onChange: function (v) { put('assets.zoom', v); },
+                    onCommit: function (v) { put('assets.zoom', v); U.rerender(); }
                 }))
             ]);
         }

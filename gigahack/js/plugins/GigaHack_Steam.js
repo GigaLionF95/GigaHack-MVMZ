@@ -147,9 +147,19 @@
      * guessing from arity, which a native binding reports as 0 anyway.
      * `done` runs at most once, with true/false, or null for "no answer".
      */
+    /* A binding that neither returns nor calls back would otherwise hold its
+       caller forever — S.refresh() waits for every answer before it will run
+       again. Past this, silence is settled as "no answer". */
+    var CALL_TIMEOUT_MS = 8000;
+
     function call1(obj, method, arg, done) {
-        var answered = false;
-        function settle(v) { if (answered) return; answered = true; if (done) done(v); }
+        var answered = false, timer = null;
+        function settle(v, why) {
+            if (answered) return;
+            answered = true;
+            if (timer) { clearTimeout(timer); timer = null; }
+            if (done) done(v, why);
+        }
         var ok = $.safe(function () {
             var r = obj[method](arg,
                 function (v) { settle(v === undefined ? true : !!v); },
@@ -158,12 +168,25 @@
                 r.then(function (v) { settle(v === undefined ? true : !!v); }, function () { settle(null); });
             } else if (typeof r === 'boolean') {
                 settle(r);
+            } else if (typeof r === 'number' || typeof r === 'string') {
+                /* A synchronous adapter answering 0/1 or "true" — a plain
+                   value IS the answer. */
+                settle(typeof r === 'string' ? /^(true|1|yes)$/i.test(r) : !!r);
             }
+            /* undefined/null: the answer may still come through a callback,
+               or never. The timer settles the never. */
             return true;
         }, 'steam ' + method + ' ' + arg, false);
         if (!ok) settle(null);
+        else if (!answered && done) {
+            timer = setTimeout(function () { timer = null; settle(null, 'silent'); }, CALL_TIMEOUT_MS);
+        }
         return ok;
     }
+    S._callTimeout = function (ms) {           // test seam
+        if (typeof ms === 'number' && ms > 0) CALL_TIMEOUT_MS = ms;
+        return CALL_TIMEOUT_MS;
+    };
 
     /**
      * Normalise whatever was found into one shape. Every capability is
@@ -331,9 +354,33 @@
        global, carrying a call that unlocks an achievement. Bounded, guarded
        and run once — a property on `window` can throw simply for being read.
        ------------------------------------------------------------------ */
+    /* Another browsing context. In a sandboxed or cross-origin frame these are
+       WindowProxies whose every property read throws SecurityError — which is
+       not an error of anybody's, just a door this probe has no business with. */
+    function isOtherWindow(v) {
+        try {
+            if (v === window.parent || v === window.top || v === window.opener) return true;
+            return v.window === v && v !== window;
+        } catch (e) { return true; }
+    }
+
+    /* One candidate, every read guarded: a getter, a Proxy or a cross-origin
+       object can throw on any property, and one of them must not end the walk
+       for every global after it. Throws are skipped, never logged. */
+    function shaped(v) {
+        try {
+            if (!v || v === window) return false;
+            if (typeof v !== 'object' && typeof v !== 'function') return false;
+            if (isOtherWindow(v)) return false;
+            if (v.nodeType) return false;
+            return !!fnOf(v, UNLOCK_CALLS);
+        } catch (e) { return false; }
+    }
+
     function probeShim(skip) {
         var hit = $.safe(function () {
-            var keys = Object.keys(window);
+            var keys = [];
+            try { keys = Object.keys(window); } catch (e) { return null; }
             for (var i = 0; i < keys.length; i++) {
                 var k = keys[i];
                 if (!k || k.charAt(0) === '$' || /^(webkit|moz|ms|on)/.test(k)) continue;
@@ -341,19 +388,20 @@
                 try { v = window[k]; } catch (e) { continue; }
                 if (!v || v === window || skip.indexOf(v) > -1) continue;
                 if (typeof v !== 'object' && typeof v !== 'function') continue;
-                if (v.nodeType) continue;
-                if (fnOf(v, UNLOCK_CALLS)) return { obj: v, label: k };
+                if (isOtherWindow(v)) continue;
+                if (shaped(v)) return { obj: v, label: k };
 
                 var inner = [];
-                try { inner = Object.keys(v); } catch (e) { continue; }
+                try {
+                    if (v.nodeType) continue;
+                    inner = Object.keys(v);
+                } catch (e) { continue; }
                 if (inner.length > 40) continue;      // a namespace, not a database
                 for (var j = 0; j < inner.length; j++) {
                     var c = null;
                     try { c = v[inner[j]]; } catch (e) { continue; }
                     if (!c || skip.indexOf(c) > -1) continue;
-                    if (typeof c !== 'object' && typeof c !== 'function') continue;
-                    if (c.nodeType) continue;
-                    if (fnOf(c, UNLOCK_CALLS)) return { obj: c, label: k + '.' + inner[j] };
+                    if (shaped(c)) return { obj: c, label: k + '.' + inner[j] };
                 }
             }
             return null;
@@ -640,6 +688,19 @@
     S.revision = function () { return revision; };
 
     S.stateOf = function (id) { return achieved[id]; };
+    /* Test seam: a copy out, or a copy back in, so a check can leave the
+       answers the way it found them. */
+    S._achieved = function (restore) {
+        if (restore && typeof restore === 'object') {
+            achieved = {};
+            for (var k in restore) if (Object.prototype.hasOwnProperty.call(restore, k)) achieved[k] = restore[k];
+            revision++;
+        }
+        var out = {};
+        for (var j in achieved) if (Object.prototype.hasOwnProperty.call(achieved, j)) out[j] = achieved[j];
+        return out;
+    };
+    S._polling = function () { return polling; };
     S.known = function () { return Object.keys(achieved).length; };
 
     S.unlockedCount = function () {
@@ -709,7 +770,9 @@
      * answers nothing at all is simply not verified — silence is not evidence.
      */
     function afterWrite(id, want) {
-        return function (answered) {
+        return function (answered, why) {
+            // A binding that answers nothing is not an error; read it back.
+            if (answered === null && why === 'silent') { verifyWrite(id, want); return; }
             if (answered === null) {
                 $.log('warn', 'steam: the binding reported an error while trying to ' +
                     (want ? 'unlock' : 'clear') + ' "' + id + '".');

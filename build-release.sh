@@ -235,7 +235,12 @@ for a in "$DIST/GigaHack-MVMZ-$VERSION.tar.gz" "$DIST/GigaHack-MVMZ-$VERSION-sou
 	# owner and group. Reading field 2 sees the link count, which is 0 on every
 	# entry of every archive — a guard that cannot fail, which is worse than no
 	# guard at all. Mutation-checked against an archive known to carry a name.
-	OWNERS="$(tar tvzf "$a" | awk '{print $3"/"$4}' | sort -u | tr '\n' ' ')"
+	#
+	# And the two tars do not list alike: GNU tar prints owner/group as ONE
+	# field, the second (`-rw-r--r-- 0/0 1234 date name`). Reading $3/$4 there
+	# sees size and date, never "0/0", and every Linux build died here. A
+	# second field holding a slash is GNU's layout; anything else is bsdtar's.
+	OWNERS="$(tar tvzf "$a" | awk '{ if (index($2, "/")) print $2; else print $3"/"$4 }' | sort -u | tr '\n' ' ')"
 	if [ "$(printf '%s' "$OWNERS" | tr -d ' ')" != "0/0" ]; then
 		die "archive $a carries owner names in its headers: $OWNERS
 This publishes the build account to everyone who downloads it. See anon_tar above."

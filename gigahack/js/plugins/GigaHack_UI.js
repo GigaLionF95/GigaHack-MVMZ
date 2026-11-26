@@ -1286,6 +1286,8 @@
         });
         box.addEventListener('keydown', function (e) { if (e.key === 'Enter') box.blur(); });
         box.addEventListener('blur', paint);
+        // Escape is a cancel, not a commit — see mmNumber.
+        box.mmEscape = function () { box.value = val.toFixed(dec) + (opts.unit || ''); };
         paint();
         wrap.mm = { get: function () { return val; }, set: set, disable: function (d) { wrap.classList.toggle('mm-dis', d); } };
         return wrap;
@@ -1317,6 +1319,10 @@
         });
         input.addEventListener('focus', function () { wrap.classList.add('mm-focus'); });
         input.addEventListener('blur', function () { wrap.classList.remove('mm-focus'); input.value = val; });
+        // Escape is a cancel: the shell blurs the field after calling this,
+        // and the blur fires `change` with whatever was half-typed. Putting
+        // the old value back first makes that change a no-op.
+        input.mmEscape = function () { input.value = val; };
         wrap.mm = { get: function () { return val; }, set: set, disable: function (d) { wrap.classList.toggle('mm-dis', d); } };
         return wrap;
     }
@@ -1936,6 +1942,11 @@
                 if (ev.key === 'Enter') done(true);
                 if (ev.key === 'Escape') done(false);
             });
+            // The shell's hotkey handler sees Escape first, at window capture,
+            // stops it there and blurs the field — so the keydown above never
+            // runs and the blur below would COMMIT. It calls this before the
+            // blur, which settles the cell as a cancel.
+            inp.mmEscape = function () { done(false); };
             inp.addEventListener('blur', function () { done(true); });
         });
         span.mm = { set: function (v) { span.textContent = String(v); } };

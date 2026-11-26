@@ -373,7 +373,11 @@
         var e = history[0];
         if (!e) { U.toast({ title: 'NO HISTORY', msg: 'Nowhere to go back to', severity: 'warn' }); return false; }
         history.shift();               // teleport() will push the current spot
-        return M.teleport(e.mapId, e.x, e.y, 0, 0);
+        var n = history.length;
+        var ok = M.teleport(e.mapId, e.x, e.y, 0, 0);
+        // A refused teleport went nowhere, so the place is still one to go back to.
+        if (!ok && history.length === n) history.unshift(e);
+        return ok;
     };
 
     /* ----------------------------------------------------------- bookmarks */

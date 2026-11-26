@@ -667,7 +667,10 @@ module.exports = async function (ctx) {
 
     /* A save that changes nothing must not rewrite the shared file, or the
        "who last wrote this" row answers "whichever game you opened last". */
-    const countWrites = () => m.log().filter(e => e.op === 'writeFileSync' &&
+    /* A write lands on the target either directly or as the rename that puts a
+       temporary file in place ($.writeAtomic) — the model logs a rename as the
+       copy it performs, so both shapes are counted. */
+    const countWrites = () => m.log().filter(e => (e.op === 'writeFileSync' || e.op === 'copyFileSync:write') &&
       e.path === '/Users/p/Library/Application Support/GigaHack/_shared/settings.json').length;
     const writesBefore = countWrites();
     S.saveSettings();
