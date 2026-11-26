@@ -34,7 +34,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Version      = '2.2.0'
+$Version      = '2.2.1'
 $BeginMark    = "// >>> GigaHack $Version BEGIN - installed automatically; edit at your own risk"
 $AnyBegin     = '// >>> GigaHack'
 $EndMark      = '// <<< GigaHack END'

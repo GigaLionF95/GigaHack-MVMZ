@@ -539,6 +539,7 @@
    them ever wants the browser second-guessing their offset. */
 #mm-root .mm-tbody > *{overflow-anchor:none}
 #mm-root .mm-tr{display:flex;height:17px;align-items:center;border-bottom:1px solid #131417}
+#mm-root .mm-tr.mm-tr-grow{height:auto;min-height:17px}
 #mm-root .mm-tbody .mm-tr:nth-child(even){background:var(--mm-stripe)}
 #mm-root .mm-tbody .mm-tr:hover{background:var(--mm-hover)}
 #mm-root .mm-tbody .mm-tr.mm-on{background:var(--mm-accent-soft)}
@@ -1807,7 +1808,12 @@
         var spacerTop = null, spacerBot = null, viewport = null;
 
         function buildRow(r, i) {
-            var tr = h('div', { class: 'mm-tr' });
+            /* A plain table's row grows with its content: a cell a caller set
+               to wrap (white-space:normal) is taller than 17px, and a fixed
+               height laid its second line over the rows below it. A virtual
+               table keeps the fixed height, because its window and spacers are
+               computed from ROW_H — every row there must be exactly that tall. */
+            var tr = h('div', { class: virtual ? 'mm-tr' : 'mm-tr mm-tr-grow' });
             var cells = opts.render(r, i);
             for (var ci = 0; ci < opts.cols.length; ci++) {
                 var c = opts.cols[ci];

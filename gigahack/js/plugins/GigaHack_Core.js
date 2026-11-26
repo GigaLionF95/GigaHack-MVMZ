@@ -52,7 +52,7 @@ window.GigaHack = window.GigaHack || {};
     /* ---------------------------------------------------------------------
        Identity
        ------------------------------------------------------------------ */
-    $.version  = '2.2.0';
+    $.version  = '2.2.1';
     $.codename = 'GigaHack';
 
     /* Filled in by Profile once $dataSystem is loaded. Until then the mod has

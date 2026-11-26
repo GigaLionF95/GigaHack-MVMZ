@@ -29,7 +29,7 @@
 #=============================================================================
 set -eu
 
-VERSION="2.2.0"
+VERSION="2.2.1"
 BEGIN_MARK="// >>> GigaHack ${VERSION} BEGIN — installed automatically; edit at your own risk"
 END_MARK="// <<< GigaHack END"
 ANY_BEGIN="// >>> GigaHack"

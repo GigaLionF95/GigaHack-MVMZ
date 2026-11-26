@@ -343,6 +343,61 @@ module.exports = async function (ctx) {
     media.smooth.characters === false && media.smooth.pictures === true, JSON.stringify(media.smooth));
 
   /* =======================================================================
+     A WRAPPED CELL MAKES ITS ROW TALLER
+     Rows were a fixed 17px, so a cell set to white-space:normal (the
+     capability table's answers, for one) laid its second line over the rows
+     below it. A plain table's rows now grow; a virtual table's must not,
+     because its spacers are computed from the fixed height.
+     ==================================================================== */
+  const wrap = await ev(() => {
+    const W = window.GigaHack.ui.w, h = (tag, text, ws) => {
+      const s = document.createElement(tag); s.className = 'mm-cell mm-sub';
+      if (ws) s.style.whiteSpace = 'normal';
+      s.textContent = text; return s;
+    };
+    const root = document.getElementById('mm-root');
+    const box = document.createElement('div');
+    box.style.cssText = 'position:absolute;left:0;top:0;width:300px';
+    root.appendChild(box);
+    const long = 'unavailable — no Node filesystem — this is a browser or web-deployed build; ' +
+      'anything that reads the game folder is unavailable here.';
+    const mk = virtual => W.table({
+      key: 'regress-wrap-' + (virtual ? 'v' : 'p'), virtual: virtual,
+      cols: [{ label: 'capability', w: '0 0 100px' }, { label: 'answer', w: '1 1 0' }],
+      render: r => [h('span', r[0]), h('span', r[1], true)]
+    });
+    const out = {};
+    try {
+      const plain = mk(false);
+      box.appendChild(plain);
+      plain.mm.paint([['host', long], ['filesystem', 'no'], ['canvas id', 'GameCanvas']]);
+      const trs = Array.from(plain.mm.body.querySelectorAll('.mm-tr'));
+      const r = trs.map(t => t.getBoundingClientRect());
+      const cell = trs[0].children[1].firstChild;
+      out.firstH = Math.round(r[0].height);
+      out.cellFits = cell.getBoundingClientRect().bottom <= r[0].bottom + 0.5;
+      out.noOverlap = r.every((b, i) => i === 0 || b.top >= r[i - 1].bottom - 0.5);
+      out.shortH = Math.round(r[1].height);
+
+      const virt = mk(true);
+      box.appendChild(virt);
+      virt.mm.paint([['host', long]]);
+      const vt = virt.mm.body.querySelector('.mm-tr');
+      out.virtualH = Math.round(vt.getBoundingClientRect().height);
+    } catch (e) {
+      out.threw = String(e && e.message || e);
+    } finally {
+      box.remove();
+    }
+    return out;
+  });
+  check('a plain table row grows to hold a wrapped cell, and its text does not spill onto the next row',
+    !wrap.threw && wrap.firstH > 17 && wrap.cellFits === true && wrap.noOverlap === true && wrap.shortH <= 18,
+    JSON.stringify(wrap));
+  check('a virtual table keeps its fixed row height, which its scroll window is computed from',
+    !wrap.threw && wrap.virtualH === 17, JSON.stringify(wrap));
+
+  /* =======================================================================
      PUT IT BACK
      ==================================================================== */
   const back = await ev(() => {

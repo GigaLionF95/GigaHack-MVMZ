@@ -12,8 +12,8 @@
 set -euo pipefail
 
 REPO="GigaLionF95/GigaHack-MVMZ"
-TAG="v2.2.0"
-TITLE="GigaHack MV/MZ 2.2.0"
+TAG="v2.2.1"
+TITLE="GigaHack MV/MZ 2.2.1"
 
 # Arguments are passed straight through to build-release.sh. The only one that
 # matters is --fast, which skips the browser suite when Playwright and its

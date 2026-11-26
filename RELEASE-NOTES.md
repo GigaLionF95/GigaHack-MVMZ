@@ -1,4 +1,4 @@
-# GigaHack MV/MZ 2.2.0
+# GigaHack MV/MZ 2.2.1
 
 A mod menu for **any RPG Maker MV or MZ game**.
 
@@ -54,6 +54,18 @@ question is answered it reads and writes only beside the game, so an existing
 `settings.json` in the application-data folder is not lost but is not read
 either — answer *use the shared folder* and it is picked up again exactly as it
 was. Nothing is moved or deleted on either answer.
+
+## What 2.2.1 fixes
+
+**Wrapped text in a table no longer lies over the rows below it.** Every table
+row was a fixed 17px, so a cell that wraps — the answers in Debug →
+Environment → Engine capabilities, most visibly on a browser build where the
+filesystem row explains itself — printed its second and third lines on top of
+the next rows. A plain table's rows now grow with their content. Virtual tables
+(variables, switches, the item database) keep the fixed height, because their
+scrolling is computed from it.
+
+Upgrading from 2.2.0 replaces the module files and nothing else.
 
 ## What is new in 2.2.0
 
@@ -328,9 +340,9 @@ instead of pretending it worked.
 
 | Suite | Checks |
 |---|---|
-| Stock MZ 1.9 | 1341 |
-| Stock MV 1.6 | 1355 |
-| MV with a modelled third-party plugin stack | 1384 |
+| Stock MZ 1.9 | 1343 |
+| Stock MV 1.6 | 1357 |
+| MV with a modelled third-party plugin stack | 1386 |
 | Installer, against nine `plugins.js` shapes | 133 |
 | Build lint over all 37 files | — |
 
